@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Whiteboard</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="toolbar">
+      <span id="board-title" class="board-title" title="クリックしてタイトル変更"></span>
+
+      <!-- 色パレット（目立つ色7色） -->
+      <div id="color-swatches">
+        <div class="color-item">
+          <button class="color-swatch" data-color="#000000"></button>
+          <button class="color-fav" data-color="#000000" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#ff00a8"></button>
+          <button class="color-fav" data-color="#ff00a8" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#ff9100"></button>
+          <button class="color-fav" data-color="#ff9100" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#76ff03"></button>
+          <button class="color-fav" data-color="#76ff03" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#00e5ff"></button>
+          <button class="color-fav" data-color="#00e5ff" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#d500f9"></button>
+          <button class="color-fav" data-color="#d500f9" title="お気に入り">☆</button>
+        </div>
+        <div class="color-item">
+          <button class="color-swatch" data-color="#ffff00"></button>
+          <button class="color-fav" data-color="#ffff00" title="お気に入り">☆</button>
+        </div>
+      </div>
+
+      <!-- 微調整用カラーピッカー -->
+      <label>
+        色:
+        <input type="color" id="color-picker" value="#000000" />
+      </label>
+
+      <label>
+        太さ:
+        <input type="range" id="size-range" min="1" max="20" value="4" />
+        <span id="size-label">4</span>
+      </label>
+
+      <button id="pen-tool-btn">ペン</button>
+      <button id="eraser-tool-btn">消しゴム</button>
+      <button id="select-tool-btn">選択</button>
+      <button id="stroke-alpha-toggle-btn">半透明</button>
+      <button id="text-list-btn">テキスト一覧</button>
+      <button id="undo-btn">↻</button>
+
+      <label>
+        <select id="template-select">
+          <option value="">テンプレ挿入</option>
+        </select>
+      </label>
+
+    </div>
+
+    <div id="canvas-container">
+      <canvas id="board-canvas"></canvas>
+    </div>
+
+    <div id="text-list-panel" class="modal text-list-panel hidden">
+      <div class="text-list-header">
+        <span>テキスト一覧</span>
+        <button id="text-list-close-btn">閉じる</button>
+      </div>
+      <div id="text-list-body" class="text-list-body"></div>
+    </div>
+
+    <div id="user-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <h3>ユーザーを選択</h3>
+        <label>
+          ユーザー名:
+          <input list="user-datalist" id="user-name-input" autocomplete="off" />
+        </label>
+        <datalist id="user-datalist"></datalist>
+        <div class="modal-actions">
+          <button id="user-join-btn">開始</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/board.js"></script>
+  </body>
+</html>

@@ -1,0 +1,263 @@
+/* public/style.css */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  overflow: hidden;
+}
+
+/* 上のツールバー */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  font-size: 14px;
+}
+
+/* 色パレット */
+#color-swatches {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-right: 8px;
+}
+
+.color-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #888;
+  padding: 0;
+  cursor: pointer;
+}
+
+.color-swatch.selected {
+  outline: 2px solid #000;
+}
+
+.color-fav {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #ccc;
+  border-radius: 50%;
+  background: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.color-fav.active {
+  color: #f1c40f;
+  border-color: #f1c40f;
+  background: #fff9d6;
+}
+
+/* 画面の残り全部をキャンバスにする */
+#canvas-container {
+  position: relative;
+  width: 100vw;
+  height: calc(100vh - 48px);
+  background: #ffffff;
+  overflow: hidden;
+}
+
+/* キャンバスをコンテナいっぱいに */
+#board-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.attention-cursor {
+  cursor: none !important;
+}
+
+#board-id-label {
+  font-weight: bold;
+  margin-right: 16px;
+}
+
+#board-title {
+  font-weight: bold;
+  margin-right: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+#board-title:hover {
+  background: #e8e8e8;
+}
+
+#current-user-label {
+  font-weight: bold;
+  margin-right: 16px;
+}
+
+label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button {
+  padding: 4px 10px;
+  font-size: 13px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  background: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #eee;
+}
+
+/* テキスト入力用オーバーレイ */
+.text-editor-overlay {
+  position: absolute;
+  border: 1px solid #0078d7;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  resize: none;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+/* ユーザー選択モーダル */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 2000;
+  pointer-events: auto;
+}
+
+.modal-backdrop.hidden {
+  display: none;
+}
+
+.modal {
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  min-width: 260px;
+}
+
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* テキスト一覧ポップアップ */
+.text-list-panel {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 320px;
+  max-height: 70vh;
+  overflow: hidden;
+  z-index: 900;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.text-list-panel.hidden {
+  display: none;
+}
+
+.text-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #ddd;
+  font-weight: bold;
+}
+
+.text-list-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.text-list-item {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #fafafa;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.text-list-item:hover {
+  background: #f0f8ff;
+  border-color: #bcdfff;
+}
+
+.text-list-meta {
+  font-size: 12px;
+  color: #666;
+}
+
+.text-list-content {
+  font-size: 13px;
+  white-space: pre-line;
+}
+
+.text-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.text-label-badge {
+  font-size: 12px;
+  color: #444;
+  background: #fff3d1;
+  border: 1px solid #f0c761;
+  border-radius: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.text-label-badge:hover {
+  background: #ffe9a6;
+  border-color: #eebc44;
+}
