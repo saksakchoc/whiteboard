@@ -26,6 +26,7 @@ const io = new Server(server);
 
 // 設定
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || "0.0.0.0";
 
 // JSON / 静的ファイル
 app.use(express.json());
@@ -240,6 +241,6 @@ io.on("connection", (socket) => {
 });
 
 // サーバ起動
-server.listen(PORT, () => {
-  console.log(`Whiteboard server running on http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Whiteboard server running on http://${HOST}:${PORT}`);
 });

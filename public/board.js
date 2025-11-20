@@ -273,8 +273,9 @@
       labelRow.className = "text-label-row";
       const labelBadge = document.createElement("span");
       labelBadge.className = "text-label-badge";
-      const labelText = t.label ? `${t.label}` : "";
-      labelBadge.textContent = labelText ? `ラベル名：${labelText}` : "ラベル名：";
+      const firstLine = t.lines && t.lines.length > 0 ? t.lines[0] : "";
+      const labelText = t.label ? `${t.label}` : "#";
+      labelBadge.textContent = labelText;
       labelBadge.addEventListener("click", (e) => {
         e.stopPropagation();
         const current = t.label || "";
