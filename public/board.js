@@ -2395,11 +2395,15 @@
     if (isDrawing) {
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       if (isDrawingDraft) {
-        const stroke = draftStrokes.find((s) => s.id === activeDraftId) || draftStrokes[draftStrokes.length - 1];
-        if (stroke) stroke.points.push(worldPos);
+        const stroke = draftStrokes.find((s) => s.id === activeDraftId);
+        if (stroke) {
+          stroke.points.push(worldPos);
+        }
       } else {
-        const stroke = strokes[strokes.length - 1];
-        stroke.points.push(worldPos);
+        const stroke = strokes.find((s) => s.id === activeStrokeId);
+        if (stroke) {
+          stroke.points.push(worldPos);
+        }
       }
       redraw();
     }
