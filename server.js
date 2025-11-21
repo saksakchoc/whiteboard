@@ -18,6 +18,9 @@ const {
   saveImage,
   deleteImage,
   getBoardState,
+  saveDraftStroke,
+  deleteDraftStroke,
+  getDraftStrokes,
 } = require("./db");
 
 const app = express();
@@ -121,8 +124,8 @@ function ensureBoardState(boardId) {
     const dbState = getBoardState(boardId);
     boardStates.set(boardId, {
       title: dbState.title || boardId,
-      strokes: dbState.strokes || [],
-      texts: dbState.texts || [],
+      strokes: (dbState.strokes || []).map((s) => ({ ...s, layer: s.layer || "user" })),
+      texts: (dbState.texts || []).map((t) => ({ ...t, layer: t.layer || "user" })),
       images: dbState.images || [],
     });
   }
@@ -131,6 +134,7 @@ function ensureBoardState(boardId) {
 
 io.on("connection", (socket) => {
   let currentBoardId = null;
+  let currentUserName = null;
 
   socket.on("join", ({ boardId }) => {
     const board = getBoard(boardId);
@@ -142,6 +146,14 @@ io.on("connection", (socket) => {
     socket.join(boardId);
     const state = ensureBoardState(boardId);
     socket.emit("init", state);
+  });
+
+  socket.on("user:identify", ({ boardId, user }) => {
+    if (!boardId || !user) return;
+    currentBoardId = boardId;
+    currentUserName = user;
+    const drafts = getDraftStrokes(boardId, user);
+    socket.emit("draft:init", drafts);
   });
 
   socket.on("stroke:add", ({ boardId, stroke }) => {
@@ -233,6 +245,19 @@ io.on("connection", (socket) => {
   socket.on("attention:end", ({ boardId, user }) => {
     if (boardId !== currentBoardId) return;
     socket.to(boardId).emit("attention:end", { user });
+  });
+
+  // --- Draft strokes (private) ---
+  socket.on("draft:stroke:add", ({ boardId, stroke }) => {
+    if (boardId !== currentBoardId) return;
+    if (!stroke || !currentUserName) return;
+    saveDraftStroke({ ...stroke, board_id: boardId, user: currentUserName });
+  });
+
+  socket.on("draft:stroke:remove", ({ boardId, id }) => {
+    if (boardId !== currentBoardId) return;
+    if (!id || !currentUserName) return;
+    deleteDraftStroke(boardId, id, currentUserName);
   });
 
   socket.on("disconnect", () => {

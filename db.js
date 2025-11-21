@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS strokes_v2 (
   color TEXT NOT NULL,
   size INTEGER NOT NULL,
   points TEXT NOT NULL,
+  layer TEXT NOT NULL,
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS texts_v2 (
   y REAL NOT NULL,
   font_size REAL NOT NULL,
   color TEXT NOT NULL,
+  layer TEXT NOT NULL,
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   label TEXT
@@ -62,6 +64,17 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS draft_strokes (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL,
+  user TEXT NOT NULL,
+  color TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  points TEXT NOT NULL,
+  "order" INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
 // 既存テーブルへの列追加（存在しない場合だけ）
@@ -69,6 +82,16 @@ try {
   db.exec("ALTER TABLE texts_v2 ADD COLUMN label TEXT");
 } catch (e) {
   // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE strokes_v2 ADD COLUMN layer TEXT NOT NULL DEFAULT 'user'");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE texts_v2 ADD COLUMN layer TEXT NOT NULL DEFAULT 'user'");
+} catch (e) {
+  // ignore
 }
 
 // --- boards ---
@@ -102,8 +125,8 @@ function setBoardTitle(boardId, title) {
 // --- strokes_v2 ---
 function saveStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -112,6 +135,7 @@ function saveStroke(stroke) {
     stroke.color,
     stroke.size,
     JSON.stringify(stroke.points),
+    stroke.layer || "user",
     stroke.order || 0,
     Date.now()
   );
@@ -122,11 +146,53 @@ function deleteStroke(boardId, id) {
   stmt.run(boardId, id);
 }
 
+// --- draft_strokes ---
+function saveDraftStroke(stroke) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    stroke.id,
+    stroke.board_id,
+    stroke.user,
+    stroke.color,
+    stroke.size,
+    JSON.stringify(stroke.points),
+    stroke.order || 0,
+    stroke.createdAt || Date.now()
+  );
+}
+
+function deleteDraftStroke(boardId, id, user) {
+  const stmt = db.prepare(
+    `DELETE FROM draft_strokes WHERE board_id = ? AND id = ? AND user = ?`
+  );
+  stmt.run(boardId, id, user);
+}
+
+function getDraftStrokes(boardId, user) {
+  const stmt = db.prepare(`
+    SELECT id, color, size, points, "order", created_at
+    FROM draft_strokes
+    WHERE board_id = ? AND user = ?
+    ORDER BY "order" ASC
+  `);
+  return stmt.all(boardId, user).map((row) => ({
+    id: row.id,
+    color: row.color,
+    size: row.size,
+    points: JSON.parse(row.points),
+    order: row.order,
+    createdAt: row.created_at,
+  }));
+}
+
 // --- texts_v2 ---
 function saveText(text) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, "order", created_at, label)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     text.id,
@@ -137,6 +203,7 @@ function saveText(text) {
     text.y,
     text.fontSize,
     text.color,
+    text.layer || "user",
     text.order || 0,
     text.createdAt || Date.now(),
     text.label || null
@@ -183,7 +250,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const textsStmt = db.prepare(`
-    SELECT id, user, lines, x, y, font_size, color, "order", created_at, label
+    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label
     FROM texts_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -202,6 +269,7 @@ function getBoardState(boardId) {
     color: row.color,
     size: row.size,
     points: JSON.parse(row.points),
+    layer: row.layer || "user",
     order: row.order,
   }));
 
@@ -213,6 +281,7 @@ function getBoardState(boardId) {
     y: row.y,
     fontSize: row.font_size,
     color: row.color,
+    layer: row.layer || "user",
     order: row.order,
     label: row.label || "",
     createdAt: row.created_at,
@@ -245,4 +314,7 @@ module.exports = {
   saveImage,
   deleteImage,
   getBoardState,
+  saveDraftStroke,
+  deleteDraftStroke,
+  getDraftStrokes,
 };
