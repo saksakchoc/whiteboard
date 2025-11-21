@@ -2073,6 +2073,76 @@
     });
   }
 
+  function editTextAt(index) {
+    const t = texts[index];
+    if (!t) return;
+    if (!canInteractText(t)) return;
+    if (textEditor) {
+      textEditor.remove();
+      textEditor = null;
+    }
+    const base = worldToScreen(t.x, t.y);
+    const fontSizeWorld = t.fontSize || 16;
+    const fontSizePx = fontSizeWorld * scale;
+    const textarea = document.createElement("textarea");
+    textarea.className = "text-editor-overlay";
+    textarea.style.left = `${base.x}px`;
+    textarea.style.top = `${base.y}px`;
+    textarea.style.width = `240px`;
+    textarea.style.height = `${fontSizePx * 1.2 * Math.max(1, t.lines.length) + 8}px`;
+    textarea.style.fontSize = `${fontSizePx}px`;
+    const baseColor = normalizeHexColor(t.color || "#000000");
+    textarea.style.color = lightenColor(baseColor);
+    textarea.style.textShadow = buildTextShadow(baseColor, fontSizePx);
+    textarea.value = t.lines.join("\n");
+    container.appendChild(textarea);
+    textarea.focus();
+    textEditor = textarea;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    const finish = () => {
+      if (!textEditor) return;
+      const value = textEditor.value;
+      textEditor.remove();
+      textEditor = null;
+      const trimmed = value.trim();
+      if (!trimmed) {
+        // 空なら削除
+        const removed = texts.splice(index, 1)[0];
+        refreshTextList();
+        redraw();
+        if (removed && socketConnected) {
+          socket.emit("item:remove", { boardId, type: "text", id: removed.id });
+        }
+        return;
+      }
+      const lines = value.split(/\r?\n/);
+      texts[index] = {
+        ...t,
+        lines,
+        layer: t.layer,
+      };
+      refreshTextList();
+      redraw();
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: t.id,
+          patch: { lines },
+        });
+      }
+    };
+
+    textarea.addEventListener("blur", finish);
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        finish();
+      }
+    });
+  }
+
   // --- クリップボードからのテキスト挿入 ---
   function addTextFromClipboard(text, worldX, worldY) {
     if (activeLayer !== "user" && activeLayer !== "admin") return;
@@ -2843,7 +2913,7 @@
 
   canvas.addEventListener("mousedown", handlePointerDown);
   canvas.addEventListener("mousemove", handlePointerMove);
-    window.addEventListener("mouseup", handlePointerUp);
+  window.addEventListener("mouseup", handlePointerUp);
   window.addEventListener("mousemove", (e) => {
     if (!attentionActive) return;
     const canvasPos = getCanvasPointFromEvent(e);
@@ -2940,6 +3010,15 @@
     e.preventDefault();
     createTextEditorAt(pos.x, pos.y, initialChar);
     pendingTextPos = null;
+  });
+
+  canvas.addEventListener("dblclick", (e) => {
+    if (textEditor) return;
+    const canvasPos = getCanvasPointFromEvent(e);
+    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
+    if (textIndex >= 0) {
+      editTextAt(textIndex);
+    }
   });
 
   window.addEventListener("keyup", (e) => {
