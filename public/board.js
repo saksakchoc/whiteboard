@@ -2396,12 +2396,19 @@
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       if (isDrawingDraft) {
         const stroke = draftStrokes.find((s) => s.id === activeDraftId);
-        if (stroke) {
+        if (!stroke) {
+          isDrawing = false;
+          isDrawingDraft = false;
+          activeDraftId = null;
+        } else {
           stroke.points.push(worldPos);
         }
       } else {
         const stroke = strokes.find((s) => s.id === activeStrokeId);
-        if (stroke) {
+        if (!stroke) {
+          isDrawing = false;
+          activeStrokeId = null;
+        } else {
           stroke.points.push(worldPos);
         }
       }
