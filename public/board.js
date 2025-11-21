@@ -2804,17 +2804,29 @@
     e.preventDefault();
   });
 
+  canvas.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+  });
+
   canvas.addEventListener("drop", (e) => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const worldPos = screenToWorld(x, y);
-    if (!e.dataTransfer || !e.dataTransfer.files) return;
+    if (!e.dataTransfer) return;
 
-    const files = Array.from(e.dataTransfer.files).filter(
-      (file) => file.type && file.type.startsWith("image/")
-    );
+    let files = [];
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      files = Array.from(e.dataTransfer.files);
+    } else if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      files = Array.from(e.dataTransfer.items)
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+    }
+
+    files = files.filter((file) => file.type && file.type.startsWith("image/"));
     if (!files.length) return;
 
     (async () => {
