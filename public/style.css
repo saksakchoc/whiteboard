@@ -11,36 +11,51 @@ body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  display: block;
+  box-sizing: border-box;
+  --side-toolbar-width: 90px;
+  --top-toolbar-height: 62px;
+  height: 100%;
 }
 
 /* 上のツールバー */
 #toolbar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  row-gap: 6px;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 10px;
+  padding: 8px 14px;
   background: #f5f5f5;
   border-bottom: 1px solid #ddd;
   font-size: 14px;
-  overflow: visible;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  min-height: var(--top-toolbar-height);
+  height: auto;
+  box-sizing: border-box;
+  z-index: 1200;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .insert-menu-btn-wrap {
   position: relative;
 }
 
-/* 色パレット */
+/* 色パレットは、各色のパレットの下にお気に入りの色を配置 */
 #color-swatches {
   display: flex;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 6px;
-  margin-right: 8px;
+  margin-right: 0;
+  flex: 0 0 auto;
+  min-width: 180px;
 }
 
+/* 各色は、縦に並べる */
 .color-item {
   display: flex;
   flex-direction: column;
@@ -51,6 +66,7 @@ body {
 .color-swatch {
   width: 18px;
   height: 18px;
+  min-height: 18px;
   border-radius: 50%;
   border: 1px solid #888;
   padding: 0;
@@ -64,6 +80,7 @@ body {
 .color-fav {
   width: 18px;
   height: 18px;
+  min-height: 18px;
   padding: 0;
   border: 1px solid #ccc;
   border-radius: 50%;
@@ -79,12 +96,75 @@ body {
   background: #fff9d6;
 }
 
+#color-favs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.color-stack {
+  display: contents;
+}
+
+/* 上部色ツールバー */
+.top-color-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.top-color-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.top-scroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
+.top-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.top-scroll::-webkit-scrollbar-thumb {
+  background: #c8d3e0;
+  border-radius: 999px;
+}
+
+.board-title {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: bold;
+}
+
+.layer-display,
+.top-layer-btn {
+  margin-left: auto;
+}
+
+.top-color-row input[type="range"] {
+  width: 110px;
+}
+
 /* 画面の残り全部をキャンバスにする */
 #canvas-container {
-  position: relative;
-  flex: 1;
-  width: 100%;
-  min-height: 0;
+  position: absolute;
+  top: var(--top-toolbar-height);
+  left: var(--side-toolbar-width);
+  right: 0;
+  bottom: 0;
   background: #ffffff;
   overflow: hidden;
 }
@@ -95,6 +175,7 @@ body {
   width: 100%;
   height: 100%;
   cursor: crosshair;
+  touch-action: none;
 }
 
 .footer-hint {
@@ -158,9 +239,7 @@ body {
 }
 
 .insert-menu {
-  position: absolute;
-  top: 38px;
-  right: 0;
+  position: fixed;
   background: #fff;
   border: 1px solid #cfd8e3;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
@@ -168,6 +247,9 @@ body {
   min-width: 220px;
   padding: 8px;
   z-index: 1800;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  transform: translateZ(0);
 }
 
 .insert-menu.hidden {
@@ -213,6 +295,7 @@ label {
 button {
   padding: 4px 10px;
   font-size: 13px;
+  min-height: 32px;
   border-radius: 4px;
   border: 1px solid #ccc;
   background: #fff;
@@ -310,7 +393,7 @@ button:hover {
   top: 60px;
   right: 16px;
   width: 320px;
-  max-height: 70vh;
+  max-height: none;
   overflow: hidden;
   z-index: 900;
   padding: 0;
@@ -331,13 +414,134 @@ button:hover {
   font-weight: bold;
 }
 
+.text-list-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .text-list-body {
   padding: 8px 12px;
   overflow-y: auto;
-  max-height: 60vh;
+  max-height: none;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* サイドツールバー（機能アイコン） */
+#side-toolbar {
+  position: fixed;
+  top: var(--top-toolbar-height);
+  left: 0;
+  bottom: 0;
+  width: var(--side-toolbar-width);
+  background: #fdfdfd;
+  border-right: 1px solid #e2e8f0;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.05);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1400;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+}
+
+#side-toolbar .side-title {
+  font-size: 14px;
+  font-weight: bold;
+  justify-content: center;
+}
+
+.corner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+}
+
+.title-btn {
+  border: none;
+  background: transparent;
+  font-weight: bold;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.corner-layer {
+  font-size: 12px;
+  color: #445;
+}
+
+.side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 16px;
+}
+
+.side-button {
+  width: 100%;
+  height: 38px;
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid #d6dce8;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.side-button.active {
+  background: #0b4ea2;
+  color: #fff;
+  border-color: #0b4ea2;
+}
+
+.side-others {
+  position: relative;
+}
+
+.side-menu {
+  position: absolute;
+  top: -4px;
+  left: calc(100% + 8px);
+  background: #fff;
+  border: 1px solid #cfd8e3;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+  padding: 8px;
+  min-width: 190px;
+  z-index: 2000;
+}
+
+.side-menu.hidden {
+  display: none;
+}
+
+.side-menu button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.insert-menu-btn-wrap {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  body {
+    --side-toolbar-width: 70px;
+    --top-toolbar-height: 54px;
+  }
+}
+
+body.mobile-menu-open #toolbar {
+  display: flex;
 }
 
 .text-list-item {
@@ -386,4 +590,70 @@ button:hover {
 .text-label-badge:hover {
   background: #ffe9a6;
   border-color: #eebc44;
+}
+
+/* レスポンシブ調整 */
+@media (max-width: 1024px) {
+  #toolbar {
+    gap: 6px;
+    row-gap: 10px;
+    padding: 12px 12px 12px calc(12px + env(safe-area-inset-left, 0px));
+  }
+
+  #color-swatches {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+  }
+
+  .color-item {
+    flex: 0 0 auto;
+  }
+
+  .insert-menu {
+    left: 0;
+    right: 0;
+    margin: 0 8px;
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 14px;
+  }
+
+  #toolbar {
+    font-size: 13px;
+    display: flex;
+  }
+
+  body.mobile-menu-open #canvas-container {
+    filter: blur(0);
+  }
+
+  label {
+    width: 100%;
+  }
+
+  .layer-toggle {
+    width: 100%;
+    text-align: center;
+  }
+
+  .text-list-panel {
+    top: auto;
+    bottom: 12px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-height: 50vh;
+  }
+
+  #footer-hint {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+  }
 }

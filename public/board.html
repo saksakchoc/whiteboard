@@ -2,70 +2,82 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <title>Whiteboard</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <div id="toolbar">
+    <div id="side-toolbar">
+      <div class="side-stack">
+        <button id="pen-tool-btn" class="side-button" title="ペン">✏️</button>
+        <button id="eraser-tool-btn" class="side-button" title="消しゴム">🩹</button>
+        <button id="select-tool-btn" class="side-button" title="選択">🖱️</button>
+        <button id="shape-line-btn" class="side-button" title="直線">／</button>
+        <button id="shape-rect-btn" class="side-button" title="四角">▢</button>
+        <button id="shape-grid-btn" class="side-button" title="マス目">田</button>
+        <button id="text-list-btn" class="side-button" title="テキスト一覧">📝</button>
+        <button id="stroke-alpha-toggle-btn" class="side-button" title="半透明">🧊</button>
+        <button id="undo-btn" class="side-button" title="一手戻す">⟲</button>
+        <div class="side-others">
+          <button id="other-menu-btn" class="side-button" title="その他">⋯</button>
+          <div id="other-menu" class="side-menu hidden">
+            <button id="insert-menu-btn">挿入</button>
+            <div id="insert-menu" class="insert-menu hidden"></div>
+            <button id="text-list-btn-menu">テキスト一覧</button>
+            <button id="stroke-alpha-toggle-btn-menu" title="半透明">🌫️</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toolbar" class="top-color-row">
       <span id="board-title" class="board-title" title="クリックしてタイトル変更"></span>
-
-      <!-- 色パレット（目立つ色7色） -->
-      <div id="color-swatches">
-        <div class="color-item">
-          <button class="color-swatch" data-color="#000000"></button>
-          <button class="color-fav" data-color="#000000" title="お気に入り">☆</button>
+      <div class="top-scroll">
+        <div id="color-swatches" class="color-grid">
+          <div class="color-item">
+            <button class="color-swatch" data-color="#000000" title="黒"></button>
+            <button class="color-fav" data-color="#000000" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <button class="color-swatch" data-color="#ff00a8" title="ピンク"></button>
+            <button class="color-fav" data-color="#ff00a8" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <button class="color-swatch" data-color="#FF7A00" title="オレンジ"></button>
+            <button class="color-fav" data-color="#FF7A00" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <button class="color-swatch" data-color="#76ff03" title="グリーン"></button>
+            <button class="color-fav" data-color="#76ff03" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <button class="color-swatch" data-color="#00e5ff" title="シアン"></button>
+            <button class="color-fav" data-color="#00e5ff" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <button class="color-swatch" data-color="#d500f9" title="パープル"></button>
+            <button class="color-fav" data-color="#d500f9" title="お気に入り">☆</button>
+          </div>
+          <div class="color-item">
+            <!--薄すぎず濃すぎず、黒にも白にも映える黄色　-->
+            <button class="color-swatch" data-color="#FFE600" title="イエロー"></button>
+            <button class="color-fav" data-color="#FFE600" title="お気に入り">☆</button>
+          </div>
         </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#ff00a8"></button>
-          <button class="color-fav" data-color="#ff00a8" title="お気に入り">☆</button>
-        </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#ff9100"></button>
-          <button class="color-fav" data-color="#ff9100" title="お気に入り">☆</button>
-        </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#76ff03"></button>
-          <button class="color-fav" data-color="#76ff03" title="お気に入り">☆</button>
-        </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#00e5ff"></button>
-          <button class="color-fav" data-color="#00e5ff" title="お気に入り">☆</button>
-        </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#d500f9"></button>
-          <button class="color-fav" data-color="#d500f9" title="お気に入り">☆</button>
-        </div>
-        <div class="color-item">
-          <button class="color-swatch" data-color="#ffff00"></button>
-          <button class="color-fav" data-color="#ffff00" title="お気に入り">☆</button>
-        </div>
+        <label>
+          🎨
+          <input type="color" id="color-picker" value="#000000" />
+        </label>
+        <label>
+          ◉
+          <input type="range" id="size-range" min="1" max="15" value="4" />
+          <span id="size-label">4</span>
+        </label>
       </div>
-
-      <!-- 微調整用カラーピッカー -->
-      <label>
-        色:
-        <input type="color" id="color-picker" value="#000000" />
-      </label>
-
-      <label>
-        太さ:
-        <input type="range" id="size-range" min="1" max="20" value="4" />
-        <span id="size-label">4</span>
-      </label>
-
-      <button id="pen-tool-btn">ペン</button>
-      <button id="eraser-tool-btn">消しゴム</button>
-      <button id="select-tool-btn">選択</button>
-      <button id="stroke-alpha-toggle-btn">半透明</button>
-      <button id="text-list-btn">テキスト一覧</button>
-      <button id="undo-btn">↻</button>
-
-      <div class="insert-menu-btn-wrap">
-        <button id="insert-menu-btn">挿入▼</button>
-        <div id="insert-menu" class="insert-menu hidden"></div>
-      </div>
-
-      <button id="layer-toggle-btn" class="layer-toggle">レイヤー: 自分</button>
+      <button id="layer-toggle-btn" class="layer-toggle top-layer-btn">レイヤー: 自分</button>
     </div>
 
     <div id="canvas-container">
@@ -76,7 +88,11 @@
     <div id="text-list-panel" class="modal text-list-panel hidden">
       <div class="text-list-header">
         <span>テキスト一覧</span>
-        <button id="text-list-close-btn">閉じる</button>
+        <div class="text-list-actions">
+          <button id="text-list-copy-plain-btn">Copy</button>
+          <button id="text-list-copy-tagged-btn">Copy(タグ付き)</button>
+          <button id="text-list-close-btn">閉じる</button>
+        </div>
       </div>
       <div id="text-list-body" class="text-list-body"></div>
     </div>
