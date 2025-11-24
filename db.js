@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS draft_strokes (
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  name TEXT PRIMARY KEY,
+  favorite_color TEXT
+);
+
+CREATE TABLE IF NOT EXISTS board_users (
+  board_id TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  PRIMARY KEY (board_id, user_name),
+  FOREIGN KEY (user_name) REFERENCES users(name) ON DELETE CASCADE
+);
 `);
 
 // 既存テーブルへの列追加（存在しない場合だけ）
@@ -111,6 +123,35 @@ function getBoardTitle(boardId) {
   const stmt = db.prepare("SELECT title FROM board_meta WHERE board_id = ?");
   const row = stmt.get(boardId);
   return row ? row.title : null;
+}
+
+function addUser(name, favoriteColor = null) {
+  if (!name) return;
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO users (name, favorite_color)
+    VALUES (?, ?)
+  `);
+  stmt.run(name, favoriteColor || null);
+}
+
+function linkUserToBoard(boardId, name) {
+  if (!boardId || !name) return;
+  addUser(name);
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO board_users (board_id, user_name)
+    VALUES (?, ?)
+  `);
+  stmt.run(boardId, name);
+}
+
+function getBoardUsers(boardId) {
+  if (!boardId) return [];
+  const stmt = db.prepare(`
+    SELECT user_name FROM board_users
+    WHERE board_id = ?
+    ORDER BY user_name ASC
+  `);
+  return stmt.all(boardId).map((row) => row.user_name);
 }
 
 function setBoardTitle(boardId, title) {
@@ -317,4 +358,7 @@ module.exports = {
   saveDraftStroke,
   deleteDraftStroke,
   getDraftStrokes,
+  addUser,
+  linkUserToBoard,
+  getBoardUsers,
 };

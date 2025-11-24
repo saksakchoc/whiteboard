@@ -21,6 +21,9 @@ const {
   saveDraftStroke,
   deleteDraftStroke,
   getDraftStrokes,
+  addUser,
+  linkUserToBoard,
+  getBoardUsers,
 } = require("./db");
 
 const app = express();
@@ -110,6 +113,36 @@ app.get("/api/templates", (req, res) => {
   } catch (err) {
     console.error("Failed to read templates", err);
     res.status(500).json({ error: "failed to read templates" });
+  }
+});
+
+// ボードに紐づくユーザー一覧取得
+app.get("/api/boards/:boardId/users", (req, res) => {
+  const boardId = req.params.boardId;
+  if (!boardId) return res.status(400).json([]);
+  try {
+    const users = getBoardUsers(boardId) || [];
+    res.json(users);
+  } catch (err) {
+    console.error("Failed to fetch board users", err);
+    res.status(500).json([]);
+  }
+});
+
+// ボードにユーザーを紐づける（存在しなければ作成）
+app.post("/api/boards/:boardId/users", (req, res) => {
+  const boardId = req.params.boardId;
+  const name = (req.body?.name || "").trim();
+  if (!boardId || !name) {
+    return res.status(400).json({ error: "invalid params" });
+  }
+  try {
+    addUser(name);
+    linkUserToBoard(boardId, name);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to link user to board", err);
+    res.status(500).json({ error: "failed" });
   }
 });
 

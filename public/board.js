@@ -48,7 +48,9 @@
   const userStorageKey = `board-users-${boardId}`;
   let boardTitle = boardId;
   const favoriteStorageKey = `favorites-${boardId}`;
+  const userProfileStorageKey = "user-profiles-v1";
   let favoritesByUser = loadFavorites();
+  let userProfiles = loadUserProfiles();
 
   // --- 状態 ---
   // ペン用の現在色
@@ -57,6 +59,7 @@
   let currentTool = "pen"; // "pen" | "select" | "eraser"
   let currentUser = "";
   let knownUsers = [];
+  let boardUsersFromServer = [];
   let strokesDimmed = false;
   const DIM_ALPHA = 0.35;
   let attentionActive = false;
@@ -680,6 +683,38 @@
     }
   }
 
+  function loadUserProfiles() {
+    try {
+      const raw = localStorage.getItem(userProfileStorageKey);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === "object" ? obj : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveUserProfiles() {
+    try {
+      localStorage.setItem(userProfileStorageKey, JSON.stringify(userProfiles || {}));
+    } catch {
+      // ignore
+    }
+  }
+
+  function getProfileFavoriteColor(name) {
+    if (!name) return null;
+    return userProfiles?.[name]?.favoriteColor || null;
+  }
+
+  function setProfileFavoriteColor(name, color) {
+    if (!name || !color) return;
+    userProfiles = userProfiles || {};
+    const prev = userProfiles[name] || {};
+    userProfiles[name] = { ...prev, favoriteColor: color };
+    saveUserProfiles();
+  }
+
   function saveFavorites() {
     try {
       localStorage.setItem(favoriteStorageKey, JSON.stringify(favoritesByUser));
@@ -697,7 +732,9 @@
   }
 
   function collectKnownUsers() {
-    const set = new Set(loadStoredUsers());
+    const set = new Set();
+    loadStoredUsers().forEach((u) => set.add(u));
+    boardUsersFromServer.forEach((u) => set.add(u));
     if (currentUser) set.add(currentUser);
     strokes.forEach((s) => s.user && set.add(s.user));
     texts.forEach((t) => t.user && set.add(t.user));
@@ -728,7 +765,7 @@
   }
 
   function updateFavButtons() {
-    const favColor = favoritesByUser[currentUser];
+    const favColor = favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser);
     favButtons.forEach((btn) => {
       const c = btn.getAttribute("data-color");
       if (favColor && favColor === c) {
@@ -742,7 +779,7 @@
   }
 
   function getCurrentFavoriteColor() {
-    return favoritesByUser[currentUser] || "#ff3b30"; // デフォルト赤
+    return favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) || "#ff3b30"; // デフォルト赤
   }
 
   function sortTextsByCreated() {
@@ -976,6 +1013,40 @@
     document.title = `${boardTitle}`;
   }
 
+  async function loadBoardUsersFromServer() {
+    try {
+      const res = await fetch(`/api/boards/${boardId}/users`);
+      if (!res.ok) throw new Error("failed");
+      const list = await res.json();
+      if (Array.isArray(list)) {
+        boardUsersFromServer = list.filter((x) => typeof x === "string");
+        refreshUserDatalist();
+      }
+    } catch (err) {
+      console.warn("Failed to load board users", err);
+    }
+  }
+
+  async function linkUserToBoardServer(name) {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return;
+    try {
+      const res = await fetch(`/api/boards/${boardId}/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (res.ok) {
+        if (!boardUsersFromServer.includes(trimmed)) {
+          boardUsersFromServer.push(trimmed);
+          refreshUserDatalist();
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to link user to board", err);
+    }
+  }
+
   function setCurrentUser(name) {
     currentUser = name;
     if (name) {
@@ -986,6 +1057,12 @@
       } else if (activeLayer === "admin") {
         activeLayer = "user";
       }
+      const fav = getProfileFavoriteColor(name);
+      if (fav) {
+        favoritesByUser[name] = fav;
+        saveFavorites();
+      }
+      linkUserToBoardServer(name);
       updateToolButtons();
     }
     updateFavButtons();
@@ -1303,10 +1380,10 @@
 
   function openUserModal() {
     closeTextList();
+    loadBoardUsersFromServer();
     refreshUserDatalist();
-    const stored = loadStoredUsers();
-    if (stored && stored.length > 0 && !userNameInput.value) {
-      userNameInput.value = stored[stored.length - 1];
+    if (userNameInput) {
+      userNameInput.value = "";
     }
     userModal.classList.remove("hidden");
     setTimeout(() => userNameInput.focus(), 0);
@@ -3904,7 +3981,12 @@
 
   // --- ユーザーモーダル ---
   userJoinBtn.addEventListener("click", () => {
-    const name = userNameInput.value.trim() || "User";
+    const name = userNameInput.value.trim();
+    if (!name) {
+      window.alert("ユーザー名を入力してください。");
+      userNameInput.focus();
+      return;
+    }
     setCurrentUser(name);
     closeUserModal();
   });
@@ -3934,6 +4016,10 @@
         });
       }
       redraw();
+    }
+
+    if (currentUser) {
+      setProfileFavoriteColor(currentUser, newColor);
     }
 
     const isTextSelected = selected && selected.type === "text";
@@ -3979,8 +4065,10 @@
       const currentFav = favoritesByUser[currentUser];
       if (currentFav === c) {
         delete favoritesByUser[currentUser];
+        setProfileFavoriteColor(currentUser, null);
       } else {
         favoritesByUser[currentUser] = c;
+        setProfileFavoriteColor(currentUser, c);
       }
       saveFavorites();
       updateFavButtons();
@@ -4287,12 +4375,9 @@
   updateLayerToggleUI();
   refreshCompactMode();
   updateFooterByState();
-  const storedUsers = loadStoredUsers();
-  if (storedUsers && storedUsers.length > 0) {
-    setCurrentUser(storedUsers[storedUsers.length - 1]);
-  } else {
-    openUserModal();
-  }
+  loadBoardUsersFromServer();
+  // ブラウザ更新時は必ずユーザー名入力を促す
+  openUserModal();
   function getShapeTargetLayer() {
     if (activeLayer === "image") return currentUser === "Admin" ? "image" : "base";
     return activeLayer || "user";
