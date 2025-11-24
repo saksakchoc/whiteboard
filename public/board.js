@@ -276,9 +276,9 @@
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return true; // すべて表示
-    if (activeLayer === "user") return layer === "user" || layer === "base";
-    if (activeLayer === "base") return layer === "base";
-    if (activeLayer === "image") return false;
+    if (activeLayer === "user") return layer === "user" || layer === "base" || layer === "image";
+    if (activeLayer === "base") return layer === "base" || layer === "image";
+    if (activeLayer === "image") return layer === "image";
     return false;
   }
 
@@ -298,6 +298,7 @@
     if (activeLayer === "draft") return layer === "draft" && stroke.user === currentUser;
     if (activeLayer === "user") return layer === "user";
     if (activeLayer === "base") return layer === "base";
+    if (activeLayer === "image") return currentUser === "Admin" && layer === "image";
     return false;
   }
 
@@ -1789,6 +1790,16 @@
           items.push({ type: "image", index: idx });
         }
       });
+      if (currentUser === "Admin") {
+        strokes.forEach((s, idx) => {
+          if (!isStrokeVisible(s)) return;
+          if (!canInteractStroke(s)) return;
+          const bounds = getStrokeBoundsWorld(s);
+          if (bounds && rectsOverlap(bounds, rectWorld)) {
+            items.push({ type: "stroke", index: idx });
+          }
+        });
+      }
     } else {
       strokes.forEach((s, idx) => {
         if (!isStrokeVisible(s)) return;
@@ -1871,7 +1882,13 @@
   }
 
   function eraseAt(worldX, worldY) {
-    if (activeLayer !== "user" && activeLayer !== "admin" && activeLayer !== "base" && activeLayer !== "draft")
+    if (
+      activeLayer !== "user" &&
+      activeLayer !== "admin" &&
+      activeLayer !== "base" &&
+      activeLayer !== "draft" &&
+      !(activeLayer === "image" && currentUser === "Admin")
+    )
       return;
     let erased = false;
     const radiusWorld = 10 / scale;
@@ -2328,9 +2345,6 @@
   function addImageFile(file, worldX, worldY, layout = null) {
     const reader = new FileReader();
     reader.onload = () => {
-      if (currentUser === "Admin") {
-        setActiveLayer("image");
-      }
       const img = new Image();
       img.onload = () => {
         const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -2411,9 +2425,6 @@
 
   function addTemplateImage(src, worldX, worldY) {
     if (!src) return;
-    if (currentUser === "Admin") {
-      setActiveLayer("image");
-    }
     const img = new Image();
     img.onload = () => {
       const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -2787,7 +2798,13 @@
     if (currentTool === "eraser") {
       if (!requireUser()) return;
       ensureSnapshotForAction();
-      if (activeLayer !== "user" && activeLayer !== "admin" && activeLayer !== "draft") return;
+      if (
+        activeLayer !== "user" &&
+        activeLayer !== "admin" &&
+        activeLayer !== "draft" &&
+        !(activeLayer === "image" && currentUser === "Admin")
+      )
+        return;
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       selected = null;
       isErasing = true;
@@ -2816,7 +2833,13 @@
         isDrawing = true;
         isDrawingDraft = true;
       } else {
-        if (activeLayer !== "user" && activeLayer !== "admin" && activeLayer !== "base") return;
+        if (
+          activeLayer !== "user" &&
+          activeLayer !== "admin" &&
+          activeLayer !== "base" &&
+          !(activeLayer === "image" && currentUser === "Admin")
+        )
+          return;
         const stroke = {
           id: genId(),
           color: currentColor,
@@ -2828,6 +2851,8 @@
               ? "base"
               : activeLayer === "admin"
               ? "admin"
+              : activeLayer === "image"
+              ? "image"
               : "user",
           order: orderCounter++,
         };
@@ -3517,9 +3542,6 @@
     if (!files.length) return;
 
     (async () => {
-      if (currentUser === "Admin") {
-        setActiveLayer("image");
-      }
       const gapX = 6 / scale;
       const gapY = 16 / scale;
       const perRow = 4;
@@ -3699,6 +3721,13 @@
         target.tagName === "TEXTAREA" ||
         target.isContentEditable)
     ) {
+      return;
+    }
+
+    // Ctrl/Cmd + Z: Undo
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      undoLast();
       return;
     }
 
@@ -3964,9 +3993,6 @@
   });
 
   penToolBtn.addEventListener("click", () => {
-    if (activeLayer === "image") {
-      setActiveLayer(currentUser === "Admin" ? "admin" : "user");
-    }
     currentTool = "pen";
     lastUserLayerTool = "pen";
     selected = null;
@@ -4268,7 +4294,7 @@
     openUserModal();
   }
   function getShapeTargetLayer() {
-    if (activeLayer === "image") return "base"; // 画像レイヤー時はベースへ
+    if (activeLayer === "image") return currentUser === "Admin" ? "image" : "base";
     return activeLayer || "user";
   }
 
