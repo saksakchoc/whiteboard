@@ -750,6 +750,25 @@
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   }
 
+  function escapeHtml(str) {
+    return (str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function linkifyText(str) {
+    if (!str) return "";
+    const escaped = escapeHtml(str);
+    const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+    return escaped.replace(
+      urlRegex,
+      (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+    ).replace(/\n/g, "<br>");
+  }
+
   function openTextList() {
     textListOpen = true;
     textListPanel.classList.remove("hidden");
@@ -802,7 +821,7 @@
 
       const content = document.createElement("div");
       content.className = "text-list-content";
-      content.textContent = t.lines.join("\n");
+      content.innerHTML = linkifyText(t.lines.join("\n"));
 
       item.appendChild(labelRow);
       item.appendChild(content);
