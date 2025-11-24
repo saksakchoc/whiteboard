@@ -23,8 +23,8 @@
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
   const otherMenuBtn = document.getElementById("other-menu-btn");
   const otherMenu = document.getElementById("other-menu");
-  const textListBtnMenu = document.getElementById("text-list-btn-menu");
-  const strokeAlphaToggleBtnMenu = document.getElementById("stroke-alpha-toggle-btn-menu");
+  const tagOmoteBtn = document.getElementById("tag-omote-btn");
+  const tagUraBtn = document.getElementById("tag-ura-btn");
   const layerDisplay = document.getElementById("layer-display");
   const shapeLineBtn = document.getElementById("shape-line-btn");
   const shapeRectBtn = document.getElementById("shape-rect-btn");
@@ -314,8 +314,13 @@
     return false;
   }
 
-  function isImageVisible() {
-    return true; // 常に表示
+  function isImageVisible(imgObj) {
+    if (activeLayer === "admin") return true;
+    if (activeLayer === "draft") return true;
+    if (activeLayer === "image") return (imgObj?.layer || "image") === "image";
+    if (activeLayer === "base") return (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
+    if (activeLayer === "user") return (imgObj?.layer || "user") === "user" || (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
+    return false;
   }
 
   function canInteractImage(imgObj = null) {
@@ -782,6 +787,40 @@
     return favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) || "#ff3b30"; // デフォルト赤
   }
 
+  function createSideTag(type) {
+    const spec =
+      type === "omote"
+        ? {
+            body: "#fff8ce",
+            header: "#ffd966",
+            text: "表",
+            textColor: "#8a5b00",
+          }
+        : {
+            body: "#e6f3ff",
+            header: "#b7d5ff",
+            text: "裏",
+            textColor: "#0f4f9b",
+          };
+    const w = 360;
+    const h = 140;
+    const headerH = 32;
+    const canvasTag = document.createElement("canvas");
+    canvasTag.width = w;
+    canvasTag.height = h;
+    const c = canvasTag.getContext("2d");
+    c.fillStyle = spec.body;
+    c.fillRect(0, 0, w, h);
+    c.fillStyle = spec.header;
+    c.fillRect(0, 0, w, headerH);
+    c.fillStyle = spec.textColor;
+    c.font = "20px sans-serif";
+    c.textBaseline = "middle";
+    c.textAlign = "left";
+    c.fillText(spec.text, 14, headerH / 2);
+    return canvasTag.toDataURL("image/png");
+  }
+
   function sortTextsByCreated() {
     return texts
       .slice()
@@ -1174,6 +1213,143 @@
     if (textIds.length) refreshTextList();
     selected = null;
     multiSelection = null;
+    redraw();
+  }
+
+  function collectOrderableSelectionItems() {
+    const items = [];
+    const pushItem = (it) => {
+      if (!it) return;
+      if (it.type === "stroke-group") {
+        it.indices.forEach((idx) => items.push({ type: "stroke", index: idx }));
+      } else if (it.type === "stroke" || it.type === "text" || it.type === "image") {
+        items.push(it);
+      }
+    };
+    if (multiSelection && multiSelection.items) {
+      multiSelection.items.forEach(pushItem);
+    } else if (selected) {
+      pushItem(selected);
+    }
+    return items;
+  }
+
+  function getItemLayer(it) {
+    if (!it) return null;
+    if (it.type === "stroke") return (strokes[it.index]?.layer) || "user";
+    if (it.type === "text") return (texts[it.index]?.layer) || "user";
+    if (it.type === "image") return (images[it.index]?.layer) || "user";
+    return null;
+  }
+
+  function getItemOrder(it) {
+    if (!it) return 0;
+    if (it.type === "stroke") return strokes[it.index]?.order ?? 0;
+    if (it.type === "text") return texts[it.index]?.order ?? 0;
+    if (it.type === "image") return images[it.index]?.order ?? 0;
+    return 0;
+  }
+
+  function setItemOrder(it, newOrder) {
+    if (!it || typeof newOrder !== "number") return;
+    if (it.type === "stroke") {
+      const s = strokes[it.index];
+      if (!s) return;
+      s.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "stroke",
+          id: s.id,
+          patch: { order: newOrder },
+        });
+      }
+    } else if (it.type === "text") {
+      const t = texts[it.index];
+      if (!t) return;
+      t.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: t.id,
+          patch: { order: newOrder },
+        });
+      }
+    } else if (it.type === "image") {
+      const img = images[it.index];
+      if (!img) return;
+      img.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "image",
+          id: img.id,
+          patch: { order: newOrder },
+        });
+      }
+    }
+  }
+
+  function getLayerItemsForOrdering(layer) {
+    const all = [];
+    strokes.forEach((s, idx) => {
+      if (!s) return;
+      const l = s.layer || "user";
+      if (l !== layer) return;
+      all.push({ type: "stroke", index: idx, order: s.order ?? 0 });
+    });
+    texts.forEach((t, idx) => {
+      if (!t) return;
+      const l = t.layer || "user";
+      if (l !== layer) return;
+      all.push({ type: "text", index: idx, order: t.order ?? 0 });
+    });
+    images.forEach((img, idx) => {
+      if (!img) return;
+      const l = img.layer || "user";
+      if (l !== layer) return;
+      all.push({ type: "image", index: idx, order: img.order ?? 0 });
+    });
+    return all;
+  }
+
+  function moveSelectionOrder(direction = "front") {
+    const targets = collectOrderableSelectionItems();
+    if (!targets.length) return;
+
+    const byLayer = new Map();
+    targets.forEach((it) => {
+      const layer = getItemLayer(it);
+      if (!layer) return;
+      if (!byLayer.has(layer)) byLayer.set(layer, []);
+      byLayer.get(layer).push(it);
+    });
+
+    byLayer.forEach((items, layer) => {
+      const layerItems = getLayerItemsForOrdering(layer);
+      if (!layerItems.length) return;
+      const orderedTargets = items
+        .map((it) => ({ ...it, order: getItemOrder(it) }))
+        .sort((a, b) => a.order - b.order);
+
+      const orders = layerItems.map((x) => x.order ?? 0);
+      const maxOrder = Math.max(...orders);
+      const minOrder = Math.min(...orders);
+
+      if (direction === "front") {
+        orderedTargets.forEach((it, idx) => {
+          setItemOrder(it, maxOrder + idx + 1);
+        });
+      } else if (direction === "back") {
+        orderedTargets.forEach((it, idx) => {
+          setItemOrder(it, minOrder - (idx + 1));
+        });
+      }
+    });
     redraw();
   }
 
@@ -2061,43 +2237,79 @@
   function redraw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // 1. 画像（常に表示。操作は別途制御）
-    images.forEach((imgObj, i) => {
-      const imgEl = imgObj?.img;
-      if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
-        return;
-      }
-      const p = worldToScreen(imgObj.x, imgObj.y);
-      const w = imgObj.width * scale;
-      const h = imgObj.height * scale;
-      try {
-        ctx.drawImage(imgEl, p.x, p.y, w, h);
-      } catch (err) {
-        console.error("failed to draw image", imgObj?.id, err);
-        return;
-      }
-
-      if (selected && selected.type === "image" && selected.index === i) {
-        drawSelectionRect(p.x, p.y, w, h);
-      }
-    });
-
-    // 2. ペンとテキスト（同順位。order の後勝ち）
+    // 1. すべての描画オブジェクトを統合して並び替え
     const combined = [];
     strokes.forEach((s, idx) =>
-      combined.push({ type: "stroke", order: s.order ?? idx, index: idx })
+      combined.push({
+        type: "stroke",
+        order: s.order ?? idx,
+        index: idx,
+        layer: s.layer || "user",
+      })
     );
     draftStrokes.forEach((s, idx) =>
-      combined.push({ type: "draft-stroke", order: s.order ?? draftStrokes.length + idx, index: idx })
+      combined.push({
+        type: "draft-stroke",
+        order: s.order ?? draftStrokes.length + idx,
+        index: idx,
+        layer: "draft",
+      })
     );
+    images.forEach((img, idx) => {
+      if (!isImageVisible(img)) return;
+      combined.push({
+        type: "image",
+        order: img.order ?? orderCounter + idx,
+        index: idx,
+        layer: img.layer || "base",
+      });
+    });
     texts.forEach((t, idx) =>
-      combined.push({ type: "text", order: t.order ?? (strokes.length + idx), index: idx })
+      combined.push({
+        type: "text",
+        order: t.order ?? strokes.length + idx,
+        index: idx,
+        layer: t.layer || "user",
+      })
     );
-    combined.sort((a, b) => a.order - b.order);
+    combined.sort((a, b) => {
+      const layerPriority = (item) => {
+        const layer = item.layer || "user";
+        if (layer === "image") return 0; // 最下層
+        if (layer === "base") return 1;
+        if (layer === "user" || layer === "admin") return 2;
+        if (layer === "draft") return 3; // 最上層
+        return 4;
+      };
+      const lpA = layerPriority(a);
+      const lpB = layerPriority(b);
+      if (lpA !== lpB) return lpA - lpB;
+      const ordA = typeof a.order === "number" ? a.order : 0;
+      const ordB = typeof b.order === "number" ? b.order : 0;
+      return ordA - ordB;
+    });
 
     ctx.textBaseline = "top";
     for (const item of combined) {
-      if (item.type === "stroke") {
+      if (item.type === "image") {
+        const imgObj = images[item.index];
+        const imgEl = imgObj?.img;
+        if (!imgObj || !imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
+          continue;
+        }
+        const p = worldToScreen(imgObj.x, imgObj.y);
+        const w = imgObj.width * scale;
+        const h = imgObj.height * scale;
+        try {
+          ctx.drawImage(imgEl, p.x, p.y, w, h);
+        } catch (err) {
+          console.error("failed to draw image", imgObj?.id, err);
+          continue;
+        }
+        if (selected && selected.type === "image" && selected.index === item.index) {
+          drawSelectionRect(p.x, p.y, w, h);
+        }
+      } else if (item.type === "stroke") {
         const stroke = strokes[item.index];
         if (!stroke || !stroke.points || stroke.points.length === 0) continue;
         if (!isStrokeVisible(stroke)) {
@@ -2419,6 +2631,16 @@
   }
 
   // --- 画像追加 ---
+  function getImageTargetLayer() {
+    if (currentUser === "Admin") {
+      if (activeLayer === "image") return "image";
+      if (activeLayer === "base") return "base";
+      if (activeLayer === "admin") return "admin";
+      return "user";
+    }
+    return "user";
+  }
+
   function addImageFile(file, worldX, worldY, layout = null) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -2449,7 +2671,7 @@
           y: placeY,
           width: w,
           height: h,
-          layer: currentUser === "Admin" ? "base" : "user",
+          layer: getImageTargetLayer(),
           order: orderCounter++,
           user: currentUser,
         };
@@ -2520,7 +2742,7 @@
         y: worldY - h / 2,
         width: w,
         height: h,
-        layer: currentUser === "Admin" ? "base" : "user",
+        layer: getImageTargetLayer(),
         order: orderCounter++,
         user: currentUser,
       };
@@ -2534,6 +2756,42 @@
       redraw();
     };
     img.src = src;
+  }
+
+  function insertSideTag(type) {
+    ensureSnapshotForAction();
+    const dataUrl = createSideTag(type);
+    if (!dataUrl) return;
+    const center = getCanvasCenterWorld();
+    const img = new Image();
+    img.onload = () => {
+      const w = img.width / scale;
+      const h = img.height / scale;
+      // 既存の画像レイヤー内で最小の order よりさらに小さい値を付与して最背面に
+      const imageLayerOrders = images.filter((it) => (it.layer || "image") === "image").map((it) => it.order ?? 0);
+      const minOrder = imageLayerOrders.length ? Math.min(...imageLayerOrders) : 0;
+      const order = minOrder - 1;
+      const imgObj = {
+        id: genId(),
+        img,
+        src: dataUrl,
+        x: center.x - w / 2,
+        y: center.y - h / 2,
+        width: w,
+        height: h,
+        layer: "image",
+        order,
+        user: currentUser,
+      };
+      images.push(imgObj);
+      registerUser(currentUser);
+      emitImageAdd(imgObj);
+      currentTool = "select";
+      updateToolButtons();
+      selected = { type: "image", index: images.length - 1 };
+      redraw();
+    };
+    img.src = dataUrl;
   }
 
   function endAttention() {
@@ -3652,7 +3910,7 @@
           y: layout.y - h / 2,
           width: w,
           height: h,
-          layer: currentUser === "Admin" ? "base" : "user",
+          layer: getImageTargetLayer(),
           order: orderCounter++,
           user: currentUser,
         };
@@ -3726,15 +3984,36 @@
 
   function closeOtherMenu(delay = 0) {
     if (!otherMenu) return;
+    const doClose = () => otherMenu.classList.add("hidden");
     if (delay > 0) {
-      setTimeout(() => otherMenu.classList.add("hidden"), delay);
+      if (otherMenu._closeTimer) clearTimeout(otherMenu._closeTimer);
+      otherMenu._closeTimer = setTimeout(doClose, delay);
     } else {
-      otherMenu.classList.add("hidden");
+      if (otherMenu._closeTimer) {
+        clearTimeout(otherMenu._closeTimer);
+        otherMenu._closeTimer = null;
+      }
+      doClose();
     }
   }
 
   function openOtherMenu() {
-    if (otherMenu) otherMenu.classList.remove("hidden");
+    if (otherMenu) {
+      if (otherMenu._closeTimer) {
+        clearTimeout(otherMenu._closeTimer);
+        otherMenu._closeTimer = null;
+      }
+      otherMenu.classList.remove("hidden");
+    }
+  }
+
+  function toggleOtherMenu() {
+    if (!otherMenu) return;
+    if (otherMenu.classList.contains("hidden")) {
+      openOtherMenu();
+    } else {
+      closeOtherMenu();
+    }
   }
 
   canvas.addEventListener("mousedown", handlePointerDown);
@@ -3943,6 +4222,10 @@
     return getSelectionItems().some((it) => it.type === "image");
   }
 
+  function selectionHasOrderable() {
+    return collectOrderableSelectionItems().length > 0;
+  }
+
   function updateToolButtons() {
     const isPen = currentTool === "pen";
     const isEraser = currentTool === "eraser";
@@ -4116,10 +4399,6 @@
     closeTextList();
   });
 
-  if (textListBtnMenu) {
-    textListBtnMenu.addEventListener("click", toggleTextListPanelView);
-  }
-
   if (textListCopyTaggedBtn) {
     textListCopyTaggedBtn.addEventListener("click", () => {
       copyTextList(buildTextListTaggedText());
@@ -4152,15 +4431,20 @@
     const hasAny = getSelectionItems().length > 0;
     const hasMoveTarget = selectionHasStrokeOrText() && currentUser === "Admin";
     const hasMoveImageTarget = selectionHasImage() && currentUser === "Admin";
+    const hasOrderable = selectionHasOrderable();
 
     contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.remove("disabled"));
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
     const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
     const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
+    const frontBtn = contextMenu.querySelector('button[data-action="bring-front"]');
+    const backBtn = contextMenu.querySelector('button[data-action="send-back"]');
     if (applyBtn && !hasDraft) applyBtn.classList.add("disabled");
     if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
     if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
+    if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
+    if (backBtn && !hasOrderable) backBtn.classList.add("disabled");
     if (dupBtn && !hasAny) dupBtn.classList.add("disabled");
     if (!hasAny) return;
 
@@ -4184,6 +4468,10 @@
         moveSelectionToBase();
       } else if (action === "move-image") {
         moveSelectionToImage();
+      } else if (action === "bring-front") {
+        moveSelectionOrder("front");
+      } else if (action === "send-back") {
+        moveSelectionOrder("back");
       }
       hideContextMenu();
     });
@@ -4237,9 +4525,6 @@
     if (strokeAlphaToggleBtn) {
       strokeAlphaToggleBtn.textContent = "🧊";
     }
-    if (strokeAlphaToggleBtnMenu) {
-      strokeAlphaToggleBtnMenu.textContent = "🧊";
-    }
     redraw();
     showTransientFooterMessage(
       strokesDimmed ? "半透明：線を薄く表示中です。" : "半透明解除：線を通常の濃さで表示します。",
@@ -4250,9 +4535,15 @@
   strokeAlphaToggleBtn.addEventListener("click", () => {
     toggleStrokeAlpha();
   });
-  if (strokeAlphaToggleBtnMenu) {
-    strokeAlphaToggleBtnMenu.addEventListener("click", () => {
-      toggleStrokeAlpha();
+
+  if (tagOmoteBtn) {
+    tagOmoteBtn.addEventListener("click", () => {
+      insertSideTag("omote");
+    });
+  }
+  if (tagUraBtn) {
+    tagUraBtn.addEventListener("click", () => {
+      insertSideTag("ura");
     });
   }
 
@@ -4330,17 +4621,17 @@
 
   if (otherMenuBtn) {
     otherMenuBtn.addEventListener("mouseenter", () => openOtherMenu());
-    otherMenuBtn.addEventListener("mouseleave", () => closeOtherMenu(120));
+    otherMenuBtn.addEventListener("mouseleave", () => closeOtherMenu(800));
     otherMenuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openOtherMenu();
+      toggleOtherMenu();
     });
   }
   if (otherMenu) {
     otherMenu.addEventListener("mouseenter", () => openOtherMenu());
     otherMenu.addEventListener("mouseleave", () => {
       closeInsertMenu();
-      closeOtherMenu(120);
+      closeOtherMenu(800);
     });
   }
 
