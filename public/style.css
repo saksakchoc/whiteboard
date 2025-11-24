@@ -620,7 +620,7 @@ body.mobile-menu-open #toolbar {
 
 .text-label-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 8px;
 }

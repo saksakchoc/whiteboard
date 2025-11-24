@@ -779,12 +779,11 @@
       }
       item.dataset.id = t.id;
 
-      const meta = document.createElement("div");
-      meta.className = "text-list-meta";
-      meta.textContent = `#${idx + 1}`;
-
       const labelRow = document.createElement("div");
       labelRow.className = "text-label-row";
+      const meta = document.createElement("span");
+      meta.className = "text-list-meta";
+      meta.textContent = `#${idx + 1}`;
       const labelBadge = document.createElement("span");
       labelBadge.className = "text-label-badge";
       const firstLine = t.lines && t.lines.length > 0 ? t.lines[0] : "";
@@ -798,13 +797,13 @@
         setTextLabel(t.id, newLabel.trim());
       });
 
+      labelRow.appendChild(meta);
       labelRow.appendChild(labelBadge);
 
       const content = document.createElement("div");
       content.className = "text-list-content";
       content.textContent = t.lines.join("\n");
 
-      item.appendChild(meta);
       item.appendChild(labelRow);
       item.appendChild(content);
 
