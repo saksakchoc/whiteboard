@@ -178,6 +178,54 @@ body {
   touch-action: none;
 }
 
+.menu-toggle-btn {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid #c9d3df;
+  background: #ffffff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  cursor: pointer;
+  z-index: 2100;
+}
+
+.menu-toggle-btn.hidden {
+  display: none;
+}
+
+.menu-toggle-btn:active {
+  transform: translateY(1px);
+}
+
+.compact-mode #toolbar,
+.compact-mode #side-toolbar {
+  transition: transform 0.22s ease, opacity 0.2s ease;
+}
+
+.compact-mode.menu-hidden #toolbar {
+  transform: translateY(calc(-1 * var(--top-toolbar-height, 60px)));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.compact-mode.menu-hidden #side-toolbar {
+  transform: translateX(calc(-1 * var(--side-toolbar-width, 90px)));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.compact-mode.menu-hidden #canvas-container {
+  top: 0;
+  left: 0;
+}
+
 .footer-hint {
   position: fixed;
   bottom: 6px;

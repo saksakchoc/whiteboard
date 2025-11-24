@@ -35,6 +35,7 @@
   const footerHint = document.getElementById("footer-hint");
   const swatches = Array.from(document.querySelectorAll(".color-swatch"));
   const favButtons = Array.from(document.querySelectorAll(".color-fav"));
+  const menuToggleBtn = document.getElementById("menu-toggle-btn");
   const userModal = document.getElementById("user-modal");
   const userNameInput = document.getElementById("user-name-input");
   const userDatalist = document.getElementById("user-datalist");
@@ -128,6 +129,8 @@
   const historyStack = [];
   const MAX_HISTORY = 80;
   let actionSnapshotTaken = false;
+  let compactMode = false;
+  let menuVisible = true;
 
   // 選択中オブジェクト
   // selected = { type: "image"|"text", index: number } or null
@@ -311,8 +314,14 @@
     return true; // 常に表示
   }
 
-  function canInteractImage() {
-    return activeLayer === "image" || activeLayer === "admin";
+  function canInteractImage(imgObj = null) {
+    if (activeLayer === "image" || activeLayer === "admin") return true;
+    if (!imgObj) return false;
+    const layer = imgObj.layer || "user";
+    if (layer === "user" && activeLayer === "user" && imgObj.user === currentUser) {
+      return true;
+    }
+    return false;
   }
 
   function withAlpha(color, alpha = 0.6) {
@@ -381,6 +390,10 @@
   function setActiveLayer(layer) {
     if (layer !== "user" && layer !== "base" && layer !== "image" && layer !== "admin" && layer !== "draft") return;
     if (activeLayer === layer) return;
+    if (currentUser !== "Admin" && (layer === "base" || layer === "image")) {
+      showTransientFooterMessage("ベース/画像レイヤーは Admin のみ使用できます。", 4000);
+      return;
+    }
 
     if (layer === "image") {
       if (currentTool !== "select") {
@@ -434,9 +447,8 @@
       else if (activeLayer === "image") setActiveLayer("draft");
       else setActiveLayer("admin");
     } else {
-      if (activeLayer === "user") setActiveLayer("base");
-      else if (activeLayer === "base") setActiveLayer("image");
-      else if (activeLayer === "image") setActiveLayer("draft");
+      // Admin 以外は「通常」と「下書き」のみ
+      if (activeLayer === "user") setActiveLayer("draft");
       else setActiveLayer("user");
     }
   }
@@ -481,8 +493,55 @@
     canvas.height = rect.height;
     redraw();
   }
-  window.addEventListener("resize", resizeCanvas);
-  resizeCanvas();
+
+  function shouldUseCompactMode() {
+    return window.innerWidth <= 900;
+  }
+
+  function applyMenuVisibility() {
+    if (!shouldUseCompactMode()) {
+      compactMode = false;
+      menuVisible = true;
+      document.body.classList.remove("compact-mode", "menu-hidden");
+      if (menuToggleBtn) {
+        menuToggleBtn.classList.add("hidden");
+        menuToggleBtn.textContent = ">";
+        menuToggleBtn.setAttribute("aria-label", "メニューを表示");
+      }
+      resizeCanvas();
+      return;
+    }
+
+    compactMode = true;
+    document.body.classList.add("compact-mode");
+    document.body.classList.toggle("menu-hidden", !menuVisible);
+    if (menuToggleBtn) {
+      menuToggleBtn.classList.remove("hidden");
+      menuToggleBtn.textContent = menuVisible ? "×" : ">";
+      menuToggleBtn.setAttribute(
+        "aria-label",
+        menuVisible ? "メニューを隠す" : "メニューを表示"
+      );
+    }
+    resizeCanvas();
+  }
+
+  function refreshCompactMode() {
+    const nextCompact = shouldUseCompactMode();
+    if (nextCompact && !compactMode) {
+      menuVisible = false;
+    } else if (!nextCompact) {
+      menuVisible = true;
+    }
+    applyMenuVisibility();
+  }
+
+  function hideMenusIfCompact() {
+    if (compactMode && menuVisible) {
+      menuVisible = false;
+      applyMenuVisibility();
+    }
+  }
 
   // --- 座標変換 ---
   function screenToWorld(x, y) {
@@ -936,7 +995,10 @@
     ensureSnapshotForAction();
     const allowUserLayer =
       activeLayer === "user" || activeLayer === "admin" || activeLayer === "base" || activeLayer === "draft";
-    const allowImages = activeLayer === "image";
+    const allowImages =
+      activeLayer === "image" ||
+      activeLayer === "admin" ||
+      (activeLayer === "user" && !!currentUser);
     const strokeIds = [];
     const textIds = [];
     const imageIds = [];
@@ -958,7 +1020,7 @@
         if (t && canDeleteText(t) && isTextVisible(t)) textIds.push(t.id);
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (img) imageIds.push(img.id);
+        if (img && allowImages && canInteractImage(img)) imageIds.push(img.id);
       } else if (item.type === "draft") {
         const d = draftStrokes[item.index];
         if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
@@ -1029,6 +1091,10 @@
     if (!items.length) return;
 
     const offset = 18;
+    const allowImages =
+      activeLayer === "image" ||
+      activeLayer === "admin" ||
+      (activeLayer === "user" && !!currentUser);
 
     const isLayerMatch = (layer) => {
       const normalized = layer || "user";
@@ -1040,9 +1106,10 @@
     };
 
     items.forEach((item, idx) => {
-      if (item.type === "image" && activeLayer === "image") {
+      if (item.type === "image" && allowImages) {
         const imgObj = images[item.index];
         if (!imgObj) return;
+        if (!canInteractImage(imgObj)) return;
         const clone = {
           ...imgObj,
           id: genId(),
@@ -1135,6 +1202,10 @@
   }
 
   function moveSelectionToBase() {
+    if (currentUser !== "Admin") {
+      showTransientFooterMessage("ベースレイヤーへの移動は Admin のみ可能です。", 4000);
+      return;
+    }
     const items = [];
     if (multiSelection && multiSelection.items) {
       items.push(...multiSelection.items);
@@ -1173,6 +1244,42 @@
       }
     });
     redraw();
+  }
+
+  function moveSelectionToImage() {
+    if (currentUser !== "Admin") {
+      showTransientFooterMessage("画像レイヤーへの移動は Admin のみ可能です。", 4000);
+      return;
+    }
+    const items = [];
+    if (multiSelection && multiSelection.items) {
+      items.push(...multiSelection.items);
+    } else if (selected) {
+      items.push(selected);
+    }
+    if (!items.length) return;
+
+    let changed = false;
+    items.forEach((item) => {
+      if (item.type === "image") {
+        const img = images[item.index];
+        if (img && img.layer !== "image") {
+          img.layer = "image";
+          changed = true;
+          if (socketConnected) {
+            socket.emit("item:update", {
+              boardId,
+              type: "image",
+              id: img.id,
+              patch: { layer: "image" },
+            });
+          }
+        }
+      }
+    });
+    if (changed) {
+      redraw();
+    }
   }
 
   function openUserModal() {
@@ -1274,7 +1381,7 @@
       state.texts.forEach((t) => addTextFromNetwork(t, false));
     }
     if (state?.images) {
-      state.images.forEach((img) => addImageFromNetwork(img, false));
+      state.images.forEach((img) => addImageFromNetwork(img, true));
     }
     redraw();
   }
@@ -1313,10 +1420,15 @@
   function addImageFromNetwork(imgData, shouldRedraw = true) {
     if (findIndexById(images, imgData.id) >= 0) return;
     const img = new Image();
-    img.onload = () => {
+    const finish = () => {
       images.push({ ...imgData, img });
       bumpOrderCounter(imgData.order);
       registerUser(imgData.user);
+      if (shouldRedraw) redraw();
+    };
+    img.onload = finish;
+    img.onerror = () => {
+      console.error("failed to load image", imgData?.id);
       if (shouldRedraw) redraw();
     };
     img.src = imgData.src;
@@ -1557,9 +1669,9 @@
   }
 
   function hitTestImage(screenX, screenY) {
-    if (!canInteractImage()) return -1;
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
+      if (!canInteractImage(imgObj)) continue;
       const p = worldToScreen(imgObj.x, imgObj.y);
       const w = imgObj.width * scale;
       const h = imgObj.height * scale;
@@ -1576,9 +1688,9 @@
   }
 
   function hitTestImageResizeHandle(screenX, screenY, radius = 8) {
-    if (!canInteractImage()) return -1;
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
+      if (!canInteractImage(imgObj)) continue;
       const p = worldToScreen(imgObj.x, imgObj.y);
       const w = imgObj.width * scale;
       const h = imgObj.height * scale;
@@ -1683,6 +1795,13 @@
         const bounds = getTextBoundsWorld(t);
         if (bounds && rectsOverlap(bounds, rectWorld)) {
           items.push({ type: "text", index: idx });
+        }
+      });
+      images.forEach((img, idx) => {
+        if (!canInteractImage(img)) return;
+        const bounds = { x: img.x, y: img.y, width: img.width, height: img.height };
+        if (bounds && rectsOverlap(bounds, rectWorld)) {
+          items.push({ type: "image", index: idx });
         }
       });
       if (activeLayer === "draft") {
@@ -1832,10 +1951,19 @@
 
     // 1. 画像（常に表示。操作は別途制御）
     images.forEach((imgObj, i) => {
+      const imgEl = imgObj?.img;
+      if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
+        return;
+      }
       const p = worldToScreen(imgObj.x, imgObj.y);
       const w = imgObj.width * scale;
       const h = imgObj.height * scale;
-      ctx.drawImage(imgObj.img, p.x, p.y, w, h);
+      try {
+        ctx.drawImage(imgEl, p.x, p.y, w, h);
+      } catch (err) {
+        console.error("failed to draw image", imgObj?.id, err);
+        return;
+      }
 
       if (selected && selected.type === "image" && selected.index === i) {
         drawSelectionRect(p.x, p.y, w, h);
@@ -2182,7 +2310,9 @@
   function addImageFile(file, worldX, worldY, layout = null) {
     const reader = new FileReader();
     reader.onload = () => {
-      setActiveLayer("image");
+      if (currentUser === "Admin") {
+        setActiveLayer("image");
+      }
       const img = new Image();
       img.onload = () => {
         const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -2210,7 +2340,7 @@
           y: placeY,
           width: w,
           height: h,
-          layer: "base",
+          layer: currentUser === "Admin" ? "base" : "user",
           order: orderCounter++,
           user: currentUser,
         };
@@ -2263,7 +2393,9 @@
 
   function addTemplateImage(src, worldX, worldY) {
     if (!src) return;
-    setActiveLayer("image");
+    if (currentUser === "Admin") {
+      setActiveLayer("image");
+    }
     const img = new Image();
     img.onload = () => {
       const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -2282,7 +2414,7 @@
         y: worldY - h / 2,
         width: w,
         height: h,
-        layer: "base",
+        layer: currentUser === "Admin" ? "base" : "user",
         order: orderCounter++,
         user: currentUser,
       };
@@ -3367,7 +3499,9 @@
     if (!files.length) return;
 
     (async () => {
-      setActiveLayer("image");
+      if (currentUser === "Admin") {
+        setActiveLayer("image");
+      }
       const gapX = 6 / scale;
       const gapY = 16 / scale;
       const perRow = 4;
@@ -3397,14 +3531,14 @@
             id: genId(),
             img,
             src,
-            x: layout.currentX,
-            y: layout.y - h / 2,
-            width: w,
-            height: h,
-            layer: "base",
-            order: orderCounter++,
-            user: currentUser,
-          };
+          x: layout.currentX,
+          y: layout.y - h / 2,
+          width: w,
+          height: h,
+          layer: currentUser === "Admin" ? "base" : "user",
+          order: orderCounter++,
+          user: currentUser,
+        };
           images.push(imgObj);
           registerUser(currentUser);
           emitImageAdd(imgObj);
@@ -3459,6 +3593,7 @@
 
   // --- イベント登録 ---
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("click", () => hideMenusIfCompact());
 
   function isInsideToolbar(target) {
     if (!target) return false;
@@ -3680,6 +3815,10 @@
     return getSelectionItems().some((it) => it.type === "stroke" || it.type === "text");
   }
 
+  function selectionHasImage() {
+    return getSelectionItems().some((it) => it.type === "image");
+  }
+
   function updateToolButtons() {
     const isPen = currentTool === "pen";
     const isEraser = currentTool === "eraser";
@@ -3861,6 +4000,14 @@
     });
   }
 
+  if (menuToggleBtn) {
+    menuToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menuVisible = !menuVisible;
+      applyMenuVisibility();
+    });
+  }
+
   function hideContextMenu() {
     if (contextMenu) {
       contextMenu.classList.add("hidden");
@@ -3871,14 +4018,17 @@
     if (!contextMenu) return;
     const hasDraft = selectionHasDraft();
     const hasAny = getSelectionItems().length > 0;
-    const hasMoveTarget = selectionHasStrokeOrText();
+    const hasMoveTarget = selectionHasStrokeOrText() && currentUser === "Admin";
+    const hasMoveImageTarget = selectionHasImage() && currentUser === "Admin";
 
     contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.remove("disabled"));
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
     const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
+    const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
     if (applyBtn && !hasDraft) applyBtn.classList.add("disabled");
     if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
+    if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
     if (dupBtn && !hasAny) dupBtn.classList.add("disabled");
     if (!hasAny) return;
 
@@ -3900,6 +4050,8 @@
         duplicateSelectedImages();
       } else if (action === "move-base") {
         moveSelectionToBase();
+      } else if (action === "move-image") {
+        moveSelectionToImage();
       }
       hideContextMenu();
     });
@@ -3951,10 +4103,10 @@
   function toggleStrokeAlpha() {
     strokesDimmed = !strokesDimmed;
     if (strokeAlphaToggleBtn) {
-      strokeAlphaToggleBtn.textContent = "🌫️";
+      strokeAlphaToggleBtn.textContent = "🧊";
     }
     if (strokeAlphaToggleBtnMenu) {
-      strokeAlphaToggleBtnMenu.textContent = "🌫️";
+      strokeAlphaToggleBtnMenu.textContent = "🧊";
     }
     redraw();
     showTransientFooterMessage(
@@ -4075,6 +4227,7 @@
     if (!insideOther) closeOtherMenu();
   });
   window.addEventListener("resize", () => {
+    refreshCompactMode();
     positionTextListPanel();
     if (insertMenu && !insertMenu.classList.contains("hidden")) {
       positionInsertMenu();
@@ -4088,6 +4241,7 @@
   refreshUserDatalist();
   loadTemplates();
   updateLayerToggleUI();
+  refreshCompactMode();
   updateFooterByState();
   const storedUsers = loadStoredUsers();
   if (storedUsers && storedUsers.length > 0) {
