@@ -132,6 +132,11 @@
   const historyStack = [];
   const MAX_HISTORY = 80;
   let actionSnapshotTaken = false;
+  let framePlaceType = null; // "omote" | "ura" | "free" | null
+  let framePlaceStart = null;
+  let framePlacePreview = null;
+  let frameCounter = 1;
+  let isPlacingFrame = false;
   let compactMode = false;
   let menuVisible = true;
 
@@ -818,6 +823,49 @@
     c.textBaseline = "middle";
     c.textAlign = "left";
     c.fillText(spec.text, 14, headerH / 2);
+    return canvasTag.toDataURL("image/png");
+  }
+
+  function createFrameTag(type, width, height, label = "") {
+    const minW = 120;
+    const minH = 80;
+    const w = Math.max(minW, Math.abs(width));
+    const h = Math.max(minH, Math.abs(height));
+    const spec =
+      type === "omote"
+        ? {
+            body: "#fff8ce",
+            header: "#ffd966",
+            text: "表",
+            textColor: "#8a5b00",
+          }
+        : type === "ura"
+        ? {
+            body: "#e6f3ff",
+            header: "#b7d5ff",
+            text: "裏",
+            textColor: "#0f4f9b",
+          }
+        : {
+            body: lightenColor(currentColor, 0.35),
+            header: lightenColor(currentColor, 0.15),
+            text: label || "フレーム",
+            textColor: "#1c1c1c",
+          };
+    const headerH = Math.min(Math.max(24, h * 0.25), 40);
+    const canvasTag = document.createElement("canvas");
+    canvasTag.width = w;
+    canvasTag.height = h;
+    const c = canvasTag.getContext("2d");
+    c.fillStyle = spec.body;
+    c.fillRect(0, 0, w, h);
+    c.fillStyle = spec.header;
+    c.fillRect(0, 0, w, headerH);
+    c.fillStyle = spec.textColor;
+    c.font = "18px sans-serif";
+    c.textBaseline = "middle";
+    c.textAlign = "left";
+    c.fillText(spec.text, 12, headerH / 2);
     return canvasTag.toDataURL("image/png");
   }
 
@@ -1966,16 +2014,21 @@
       const p = worldToScreen(imgObj.x, imgObj.y);
       const w = imgObj.width * scale;
       const h = imgObj.height * scale;
-
-      const hx = p.x + w;
-      const hy = p.y + h;
-      const dx = screenX - hx;
-      const dy = screenY - hy;
-      if (dx * dx + dy * dy <= radius * radius) {
-        return i;
+      const handles = [
+        { id: "tl", x: p.x, y: p.y },
+        { id: "tr", x: p.x + w, y: p.y },
+        { id: "bl", x: p.x, y: p.y + h },
+        { id: "br", x: p.x + w, y: p.y + h },
+      ];
+      for (const hpos of handles) {
+        const dx = screenX - hpos.x;
+        const dy = screenY - hpos.y;
+        if (dx * dx + dy * dy <= radius * radius) {
+          return { index: i, handle: hpos.id };
+        }
       }
     }
-    return -1;
+    return null;
   }
 
   // --- テキストヒットテスト ---
@@ -2420,6 +2473,20 @@
       }
       ctx.restore();
     }
+    if (isPlacingFrame && framePlaceStart && framePlacePreview) {
+      const start = worldToScreen(framePlaceStart.x, framePlaceStart.y);
+      const end = worldToScreen(framePlacePreview.x, framePlacePreview.y);
+      const x = Math.min(start.x, end.x);
+      const y = Math.min(start.y, end.y);
+      const w = Math.abs(end.x - start.x);
+      const h = Math.abs(end.y - start.y);
+      ctx.save();
+      ctx.setLineDash([8, 6]);
+      ctx.strokeStyle = "#f5a623";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
 
     if (multiSelection && multiSelection.rectWorld) {
       const r = multiSelection.rectWorld;
@@ -2460,17 +2527,20 @@
     ctx.setLineDash([]);
 
     const handleSize = 8;
+    const handles = [
+      { x: x, y: y }, // tl
+      { x: x + w, y: y }, // tr
+      { x: x, y: y + h }, // bl
+      { x: x + w, y: y + h }, // br
+    ];
     ctx.fillStyle = "#ffffff";
     ctx.strokeStyle = "#0078d7";
-    ctx.beginPath();
-    ctx.rect(
-      x + w - handleSize / 2,
-      y + h - handleSize / 2,
-      handleSize,
-      handleSize
-    );
-    ctx.fill();
-    ctx.stroke();
+    handles.forEach((h) => {
+      ctx.beginPath();
+      ctx.rect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+      ctx.fill();
+      ctx.stroke();
+    });
     ctx.restore();
   }
 
@@ -3043,6 +3113,16 @@
       return;
     }
 
+    if (framePlaceType && e.button === 0) {
+      e.preventDefault();
+      ensureSnapshotForAction();
+      const canvasPos = getCanvasPointFromEvent(e);
+      framePlaceStart = screenToWorld(canvasPos.x, canvasPos.y);
+      framePlacePreview = null;
+      isPlacingFrame = true;
+      return;
+    }
+
     // テキストエディタ表示中に外側をクリック/タップしたら確定
     if (textEditor && e.target !== textEditor) {
       textEditor.blur();
@@ -3224,16 +3304,25 @@
     }
 
     // 画像のリサイズハンドル
-    const imgHandleIndex = hitTestImageResizeHandle(canvasPos.x, canvasPos.y);
-    if (imgHandleIndex >= 0) {
+    const imgHandle = hitTestImageResizeHandle(canvasPos.x, canvasPos.y);
+    if (imgHandle) {
       ensureSnapshotForAction();
-      selected = { type: "image", index: imgHandleIndex };
-      const imgObj = images[imgHandleIndex];
+      selected = { type: "image", index: imgHandle.index };
+      const imgObj = images[imgHandle.index];
+      const rect = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
+      const anchor =
+        imgHandle.handle === "tl"
+          ? { x: rect.x + rect.width, y: rect.y + rect.height }
+          : imgHandle.handle === "tr"
+          ? { x: rect.x, y: rect.y + rect.height }
+          : imgHandle.handle === "bl"
+          ? { x: rect.x + rect.width, y: rect.y }
+          : { x: rect.x, y: rect.y };
       resizeInfo = {
         type: "image",
-        index: imgHandleIndex,
-        originX: imgObj.x,
-        originY: imgObj.y,
+        index: imgHandle.index,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
         startW: imgObj.width,
         startH: imgObj.height,
       };
@@ -3350,6 +3439,12 @@
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
+
+    if (isPlacingFrame && framePlaceStart) {
+      framePlacePreview = screenToWorld(canvasPos.x, canvasPos.y);
+      redraw();
+      return;
+    }
 
     if (isDrawingShape && shapeMode && shapeStart) {
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
@@ -3504,16 +3599,29 @@
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       const dx = worldPos.x - resizeInfo.originX;
       const dy = worldPos.y - resizeInfo.originY;
-      const base = Math.max(dx, dy, 10);
       if (resizeInfo.type === "image") {
-        const factor =
-          base / Math.max(resizeInfo.startW, resizeInfo.startH, 1);
         const imgObj = images[resizeInfo.index];
-        imgObj.width = resizeInfo.startW * factor;
-        imgObj.height = resizeInfo.startH * factor;
+        const anchorX = resizeInfo.anchorX ?? imgObj.x;
+        const anchorY = resizeInfo.anchorY ?? imgObj.y;
+        const newX = Math.min(anchorX, worldPos.x);
+        const newY = Math.min(anchorY, worldPos.y);
+        const newW = Math.max(Math.abs(worldPos.x - anchorX), 10);
+        const newH = Math.max(Math.abs(worldPos.y - anchorY), 10);
+        imgObj.x = newX;
+        imgObj.y = newY;
+        imgObj.width = newW;
+        imgObj.height = newH;
+      } else if (resizeInfo.type === "frame") {
+        const fr = frames[resizeInfo.index];
+        const anchorX = resizeInfo.anchorX ?? fr.x;
+        const anchorY = resizeInfo.anchorY ?? fr.y;
+        fr.x = Math.min(anchorX, worldPos.x);
+        fr.y = Math.min(anchorY, worldPos.y);
+        fr.width = Math.max(Math.abs(worldPos.x - anchorX), 10);
+        fr.height = Math.max(Math.abs(worldPos.y - anchorY), 10);
       } else if (resizeInfo.type === "text") {
         const factor =
-          base / Math.max(resizeInfo.startW, resizeInfo.startH, 1);
+          Math.max(dx, dy, 10) / Math.max(resizeInfo.startW, resizeInfo.startH, 1);
         const t = texts[resizeInfo.index];
         t.fontSize = resizeInfo.fontSize * factor;
       }
@@ -3816,6 +3924,55 @@
       shapeGridCols = 0;
       shapeTargetLayer = null;
       redraw();
+    }
+
+    if (isPlacingFrame && framePlaceStart) {
+      const upPos = getCanvasPointFromEvent(e);
+      const worldPos = screenToWorld(upPos.x, upPos.y);
+      const x0 = framePlaceStart.x;
+      const y0 = framePlaceStart.y;
+      const x1 = worldPos.x;
+      const y1 = worldPos.y;
+      const width = Math.max(Math.abs(x1 - x0), 16);
+      const height = Math.max(Math.abs(y1 - y0), 16);
+      const placeX = Math.min(x0, x1);
+      const placeY = Math.min(y0, y1);
+      const label =
+        framePlaceType === "free" ? `フレーム${frameCounter}` : framePlaceType === "omote" ? "表" : "裏";
+      if (framePlaceType === "free") {
+        frameCounter += 1;
+      }
+      const dataUrl = createFrameTag(framePlaceType || "free", width * scale, height * scale, label);
+      const img = new Image();
+      img.onload = () => {
+        const imgObj = {
+          id: genId(),
+          img,
+          src: dataUrl,
+          x: placeX,
+          y: placeY,
+          width,
+          height,
+          layer: "image",
+          order: orderCounter++,
+          user: currentUser,
+          tagType: framePlaceType || "frame",
+          tagLabel: label,
+        };
+        images.push(imgObj);
+        registerUser(currentUser);
+        emitImageAdd(imgObj);
+        currentTool = "select";
+        updateToolButtons();
+        selected = { type: "image", index: images.length - 1 };
+        redraw();
+      };
+      img.src = dataUrl;
+
+      isPlacingFrame = false;
+      framePlaceType = null;
+      framePlaceStart = null;
+      framePlacePreview = null;
     }
   }
 
@@ -4130,6 +4287,25 @@
     const textIndex = hitTestText(canvasPos.x, canvasPos.y);
     if (textIndex >= 0) {
       editTextAt(textIndex);
+      return;
+    }
+    const frameIndex = hitTestFrame(canvasPos.x, canvasPos.y);
+    if (frameIndex >= 0) {
+      const fr = frames[frameIndex];
+      const current = fr.label || "";
+      const next = window.prompt("フレーム名を入力", current);
+      if (next === null) return;
+      const trimmed = next.trim();
+      fr.label = trimmed;
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "frame",
+          id: fr.id,
+          patch: { label: fr.label },
+        });
+      }
+      redraw();
     }
   });
 
@@ -4169,9 +4345,9 @@
       return true;
     }
     // 画像リサイズ
-    const imgHandleIndex = hitTestImageResizeHandle(canvasPos.x, canvasPos.y);
-    if (imgHandleIndex >= 0) {
-      selected = { type: "image", index: imgHandleIndex };
+    const imgHandle = hitTestImageResizeHandle(canvasPos.x, canvasPos.y);
+    if (imgHandle) {
+      selected = { type: "image", index: imgHandle.index };
       redraw();
       return true;
     }
@@ -4742,6 +4918,15 @@
     addTemplateImage(src, center.x, center.y);
   }
 
+  function startFramePlacement(type) {
+    if (!requireUser()) return;
+    framePlaceType = type; // "omote" | "ura" | "free"
+    framePlaceStart = null;
+    framePlacePreview = null;
+    showTransientFooterMessage("ドラッグしてフレームの大きさを指定してください。", 4000);
+    closeInsertMenu();
+  }
+
   function renderInsertMenu() {
     if (!insertMenu) return;
     insertMenu.innerHTML = "";
@@ -4771,6 +4956,17 @@
       { label: "直線", onClick: () => startShapeMode("line") },
       { label: "四角", onClick: () => startShapeMode("rect") },
       { label: "マス目 (n×n)", onClick: () => startShapeMode("grid") },
+    ]);
+
+    addSection("フレーム", [
+      { label: "表", onClick: () => startFramePlacement("omote") },
+      { label: "裏", onClick: () => startFramePlacement("ura") },
+      {
+        label: `フレーム${frameCounter}`,
+        onClick: () => {
+          startFramePlacement("free");
+        },
+      },
     ]);
 
     if (templates && templates.length > 0) {
