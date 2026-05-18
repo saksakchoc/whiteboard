@@ -14,12 +14,14 @@
     <div id="side-toolbar">
       <div class="side-stack">
         <button id="pen-tool-btn" class="side-button" title="ペン">✏️</button>
+        <button id="fill-tool-btn" class="side-button" title="塗りつぶし">🪣</button>
         <button id="eraser-tool-btn" class="side-button" title="消しゴム">🩹</button>
         <button id="select-tool-btn" class="side-button" title="選択">🖱️</button>
         <button id="shape-line-btn" class="side-button" title="直線">／</button>
         <button id="shape-rect-btn" class="side-button" title="四角">▢</button>
         <button id="shape-grid-btn" class="side-button" title="マス目">田</button>
         <button id="text-list-btn" class="side-button" title="テキスト一覧">📝</button>
+        <button id="image-list-btn" class="side-button" title="画像一覧">🖼️</button>
         <button id="stroke-alpha-toggle-btn" class="side-button" title="半透明">🧊</button>
         <button id="undo-btn" class="side-button" title="一手戻す">⟲</button>
         <div class="side-others">
@@ -27,8 +29,7 @@
           <div id="other-menu" class="side-menu hidden">
           <button id="insert-menu-btn">挿入</button>
           <div id="insert-menu" class="insert-menu hidden"></div>
-          <button id="tag-omote-btn">表</button>
-          <button id="tag-ura-btn">裏</button>
+          <button id="change-user-btn">ユーザー名変更</button>
         </div>
       </div>
     </div>
@@ -84,6 +85,7 @@
     <div id="canvas-container">
       <canvas id="board-canvas"></canvas>
     </div>
+    <input id="image-file-input" type="file" accept="image/*" multiple hidden />
     <div id="footer-hint" class="footer-hint"></div>
 
     <div id="text-list-panel" class="modal text-list-panel hidden">
@@ -96,6 +98,16 @@
         </div>
       </div>
       <div id="text-list-body" class="text-list-body"></div>
+    </div>
+
+    <div id="image-list-panel" class="modal text-list-panel image-list-panel hidden">
+      <div class="text-list-header">
+        <span>画像一覧</span>
+        <div class="text-list-actions">
+          <button id="image-list-close-btn">閉じる</button>
+        </div>
+      </div>
+      <div id="image-list-body" class="text-list-body image-list-body"></div>
     </div>
 
     <div id="user-modal" class="modal-backdrop hidden">
@@ -116,8 +128,12 @@
       <button data-action="apply-draft">下書きを通常レイヤーに反映</button>
       <button data-action="move-base">ベースレイヤー（共用）に移動</button>
       <button data-action="move-image">画像レイヤーに移動（Adminのみ）</button>
+      <button data-action="rename-image">画像名を設定</button>
       <button data-action="bring-front">最前面に移動</button>
       <button data-action="send-back">最背面に移動</button>
+      <button data-action="rotate-right">右に90度回転(Ctrl+クリック)</button>
+      <button data-action="rotate-left">左に90度回転(右Ctrl+クリック)</button>
+      <button data-action="copy-draft">下書きレイヤーにコピー</button>
       <button data-action="duplicate">複製</button>
       <button data-action="delete">削除</button>
     </div>

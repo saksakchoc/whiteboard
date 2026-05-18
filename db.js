@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS strokes_v2 (
   points TEXT NOT NULL,
   layer TEXT NOT NULL,
   "order" INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  fill INTEGER NOT NULL DEFAULT 0,
+  group_id TEXT,
+  fill_source_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS texts_v2 (
@@ -48,7 +51,8 @@ CREATE TABLE IF NOT EXISTS texts_v2 (
   layer TEXT NOT NULL,
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  label TEXT
+  label TEXT,
+  rotation REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS images_v2 (
@@ -62,7 +66,12 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   height REAL NOT NULL,
   layer TEXT NOT NULL,
   "order" INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  rotation REAL NOT NULL DEFAULT 0,
+  tag_type TEXT,
+  tag_label TEXT,
+  image_name TEXT,
+  image_list_order REAL
 );
 
 CREATE TABLE IF NOT EXISTS draft_strokes (
@@ -73,7 +82,9 @@ CREATE TABLE IF NOT EXISTS draft_strokes (
   size INTEGER NOT NULL,
   points TEXT NOT NULL,
   "order" INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  fill INTEGER NOT NULL DEFAULT 0,
+  group_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -102,6 +113,61 @@ try {
 }
 try {
   db.exec("ALTER TABLE texts_v2 ADD COLUMN layer TEXT NOT NULL DEFAULT 'user'");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE texts_v2 ADD COLUMN rotation REAL NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN rotation REAL NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE strokes_v2 ADD COLUMN fill INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE strokes_v2 ADD COLUMN group_id TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE draft_strokes ADD COLUMN fill INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE draft_strokes ADD COLUMN group_id TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE draft_strokes ADD COLUMN fill_source_id TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN tag_type TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN tag_label TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN image_name TEXT");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN image_list_order REAL");
 } catch (e) {
   // ignore
 }
@@ -166,8 +232,8 @@ function setBoardTitle(boardId, title) {
 // --- strokes_v2 ---
 function saveStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -178,7 +244,9 @@ function saveStroke(stroke) {
     JSON.stringify(stroke.points),
     stroke.layer || "user",
     stroke.order || 0,
-    Date.now()
+    Date.now(),
+    stroke.fill ? 1 : 0,
+    stroke.groupId || null
   );
 }
 
@@ -190,8 +258,8 @@ function deleteStroke(boardId, id) {
 // --- draft_strokes ---
 function saveDraftStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -201,7 +269,10 @@ function saveDraftStroke(stroke) {
     stroke.size,
     JSON.stringify(stroke.points),
     stroke.order || 0,
-    stroke.createdAt || Date.now()
+    stroke.createdAt || Date.now(),
+    stroke.fill ? 1 : 0,
+    stroke.groupId || null,
+    stroke.fillSourceId || null
   );
 }
 
@@ -214,7 +285,7 @@ function deleteDraftStroke(boardId, id, user) {
 
 function getDraftStrokes(boardId, user) {
   const stmt = db.prepare(`
-    SELECT id, color, size, points, "order", created_at
+    SELECT id, color, size, points, "order", created_at, fill, group_id, fill_source_id
     FROM draft_strokes
     WHERE board_id = ? AND user = ?
     ORDER BY "order" ASC
@@ -226,14 +297,17 @@ function getDraftStrokes(boardId, user) {
     points: JSON.parse(row.points),
     order: row.order,
     createdAt: row.created_at,
+    fill: !!row.fill,
+    groupId: row.group_id || null,
+    fillSourceId: row.fill_source_id || null,
   }));
 }
 
 // --- texts_v2 ---
 function saveText(text) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     text.id,
@@ -247,7 +321,8 @@ function saveText(text) {
     text.layer || "user",
     text.order || 0,
     text.createdAt || Date.now(),
-    text.label || null
+    text.label || null,
+    text.rotation || 0
   );
 }
 
@@ -259,8 +334,8 @@ function deleteText(boardId, id) {
 // --- images_v2 ---
 function saveImage(img) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, tag_type, tag_label, image_name, image_list_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     img.id,
@@ -273,7 +348,12 @@ function saveImage(img) {
     img.height,
     img.layer,
     img.order || 0,
-    Date.now()
+    Date.now(),
+    img.rotation || 0,
+    img.tagType || null,
+    img.tagLabel || null,
+    img.imageName || null,
+    typeof img.imageListOrder === "number" ? img.imageListOrder : null
   );
 }
 
@@ -285,19 +365,19 @@ function deleteImage(boardId, id) {
 // --- state ---
 function getBoardState(boardId) {
   const strokesStmt = db.prepare(`
-    SELECT id, user, color, size, points, "order"
+    SELECT id, user, color, size, points, layer, "order", fill, group_id
     FROM strokes_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
   `);
   const textsStmt = db.prepare(`
-    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label
+    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation
     FROM texts_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
   `);
   const imagesStmt = db.prepare(`
-    SELECT id, user, src, x, y, width, height, layer, "order"
+    SELECT id, user, src, x, y, width, height, layer, "order", rotation, tag_type, tag_label, image_name, image_list_order
     FROM images_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -312,6 +392,8 @@ function getBoardState(boardId) {
     points: JSON.parse(row.points),
     layer: row.layer || "user",
     order: row.order,
+    fill: !!row.fill,
+    groupId: row.group_id || null,
   }));
 
   const texts = textsStmt.all(boardId).map((row) => ({
@@ -325,6 +407,7 @@ function getBoardState(boardId) {
     layer: row.layer || "user",
     order: row.order,
     label: row.label || "",
+    rotation: row.rotation || 0,
     createdAt: row.created_at,
   }));
 
@@ -338,6 +421,11 @@ function getBoardState(boardId) {
     height: row.height,
     layer: row.layer,
     order: row.order,
+    rotation: row.rotation || 0,
+    tagType: row.tag_type || null,
+    tagLabel: row.tag_label || "",
+    imageName: row.image_name || "",
+    imageListOrder: typeof row.image_list_order === "number" ? row.image_list_order : null,
   }));
 
   return { title, strokes, texts, images };

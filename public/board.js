@@ -9,6 +9,7 @@
   const sizeRange = document.getElementById("size-range");
   const sizeLabel = document.getElementById("size-label");
   const penToolBtn = document.getElementById("pen-tool-btn");
+  const fillToolBtn = document.getElementById("fill-tool-btn");
   const eraserToolBtn = document.getElementById("eraser-tool-btn");
   const selectToolBtn = document.getElementById("select-tool-btn");
   const strokeAlphaToggleBtn = document.getElementById("stroke-alpha-toggle-btn");
@@ -16,15 +17,18 @@
   const insertMenuBtn = document.getElementById("insert-menu-btn");
   const insertMenu = document.getElementById("insert-menu");
   const textListBtn = document.getElementById("text-list-btn");
+  const imageListBtn = document.getElementById("image-list-btn");
   const textListPanel = document.getElementById("text-list-panel");
   const textListBody = document.getElementById("text-list-body");
   const textListCloseBtn = document.getElementById("text-list-close-btn");
   const textListCopyTaggedBtn = document.getElementById("text-list-copy-tagged-btn");
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
+  const imageListPanel = document.getElementById("image-list-panel");
+  const imageListBody = document.getElementById("image-list-body");
+  const imageListCloseBtn = document.getElementById("image-list-close-btn");
   const otherMenuBtn = document.getElementById("other-menu-btn");
   const otherMenu = document.getElementById("other-menu");
-  const tagOmoteBtn = document.getElementById("tag-omote-btn");
-  const tagUraBtn = document.getElementById("tag-ura-btn");
+  const changeUserBtn = document.getElementById("change-user-btn");
   const layerDisplay = document.getElementById("layer-display");
   const shapeLineBtn = document.getElementById("shape-line-btn");
   const shapeRectBtn = document.getElementById("shape-rect-btn");
@@ -33,6 +37,7 @@
   const contextMenu = document.getElementById("context-menu");
   const layerToggleBtn = document.getElementById("layer-toggle-btn");
   const footerHint = document.getElementById("footer-hint");
+  const imageFileInput = document.getElementById("image-file-input");
   const swatches = Array.from(document.querySelectorAll(".color-swatch"));
   const favButtons = Array.from(document.querySelectorAll(".color-fav"));
   const menuToggleBtn = document.getElementById("menu-toggle-btn");
@@ -46,17 +51,21 @@
   // --- ボードID表示 ---
   const boardId = window.location.pathname.split("/").pop();
   const userStorageKey = `board-users-${boardId}`;
+  const lastUserStorageKey = `last-user-${boardId}`;
   let boardTitle = boardId;
   const favoriteStorageKey = `favorites-${boardId}`;
+  const paletteStorageKey = `palette-${boardId}`;
   const userProfileStorageKey = "user-profiles-v1";
   let favoritesByUser = loadFavorites();
+  let paletteColors = loadPalette();
   let userProfiles = loadUserProfiles();
 
   // --- 状態 ---
   // ペン用の現在色
   let currentColor = "#000000";
+  let activeColorSwatch = null;
   let currentSize = parseInt(sizeRange.value, 10);
-  let currentTool = "pen"; // "pen" | "select" | "eraser"
+  let currentTool = "pen"; // "pen" | "fill" | "select" | "eraser"
   let currentUser = "";
   let knownUsers = [];
   let boardUsersFromServer = [];
@@ -90,6 +99,72 @@
   let shapeGridCols = 0;
   let shapeTargetLayer = null;
   let insertMenuHideTimer = null;
+  let ignoreNextDblClick = false;
+  let activeCtrlSide = null; // "left" | "right" | null
+  let pendingImageInsertLayer = null;
+
+  function getSquareBoundsFromDrag(start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const side = Math.min(Math.abs(dx), Math.abs(dy));
+    const x1 = start.x + (dx < 0 ? -side : side);
+    const y1 = start.y + (dy < 0 ? -side : side);
+    return {
+      x0: Math.min(start.x, x1),
+      y0: Math.min(start.y, y1),
+      x1: Math.max(start.x, x1),
+      y1: Math.max(start.y, y1),
+      side,
+    };
+  }
+
+  function normalizeRotation(rotation = 0) {
+    return ((rotation % 360) + 360) % 360;
+  }
+
+  function getRectCenter(rect) {
+    return {
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+    };
+  }
+
+  function rotatePointAround(point, center, direction) {
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    if (direction === "cw") {
+      return { x: center.x + dy, y: center.y - dx };
+    }
+    return { x: center.x - dy, y: center.y + dx };
+  }
+
+  function rotatePointByDegrees(point, center, degrees) {
+    const rad = (degrees * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    return {
+      x: center.x + dx * cos - dy * sin,
+      y: center.y + dx * sin + dy * cos,
+    };
+  }
+
+  function pointInRotatedRectWorld(point, rect, rotation = 0) {
+    const center = getRectCenter(rect);
+    const local = rotatePointByDegrees(point, center, -normalizeRotation(rotation));
+    return pointInRectWorld(rect, local);
+  }
+
+  function getRotatedRectCornersWorld(rect, rotation = 0) {
+    const center = getRectCenter(rect);
+    return [
+      { x: rect.x, y: rect.y },
+      { x: rect.x + rect.width, y: rect.y },
+      { x: rect.x + rect.width, y: rect.y + rect.height },
+      { x: rect.x, y: rect.y + rect.height },
+    ].map((p) => rotatePointByDegrees(p, center, normalizeRotation(rotation)));
+  }
 
   // テキストの「デフォルト色＆サイズ」（最後に使った文字の色と大きさを記憶）
   let textDefaultColor = "#000000";
@@ -101,6 +176,8 @@
   const texts = [];   // { id, lines:[string], x, y, fontSize, color, user, order, createdAt, label }
   const draftStrokes = []; // { id, color, size, points, user, order, createdAt }
   let textListOpen = false;
+  let imageListOpen = false;
+  let imageListOrderCounter = 0;
 
   // ズーム・パン
   let scale = 1.0;
@@ -132,7 +209,7 @@
   const historyStack = [];
   const MAX_HISTORY = 80;
   let actionSnapshotTaken = false;
-  let framePlaceType = null; // "omote" | "ura" | "free" | null
+  let framePlaceType = null; // "omoteura" | "free" | null
   let framePlaceStart = null;
   let framePlacePreview = null;
   let frameCounter = 1;
@@ -306,7 +383,7 @@
     if (activeLayer === "draft") return layer === "draft" && stroke.user === currentUser;
     if (activeLayer === "user") return layer === "user";
     if (activeLayer === "base") return layer === "base";
-    if (activeLayer === "image") return currentUser === "Admin" && layer === "image";
+    if (activeLayer === "image") return isAdminUser() && layer === "image";
     return false;
   }
 
@@ -367,7 +444,7 @@
   }
 
   function layerUserLabel() {
-    if (currentUser === "Admin") return "Admin";
+    if (isAdminUser()) return "Admin通常";
     return currentUser || "自分";
   }
 
@@ -404,8 +481,8 @@
   function setActiveLayer(layer) {
     if (layer !== "user" && layer !== "base" && layer !== "image" && layer !== "admin" && layer !== "draft") return;
     if (activeLayer === layer) return;
-    if (currentUser !== "Admin" && (layer === "base" || layer === "image")) {
-      showTransientFooterMessage("ベース/画像レイヤーは Admin のみ使用できます。", 4000);
+    if (!isAdminUser() && (layer === "base" || layer === "image" || layer === "admin")) {
+      showTransientFooterMessage("ベース/画像/Adminレイヤーは Admin のみ使用できます。", 4000);
       return;
     }
 
@@ -454,12 +531,22 @@
     redraw();
   }
 
+  function toggleHiddenSharedLayer() {
+    const nextLayer = activeLayer === "base" ? "image" : activeLayer === "image" ? "user" : "base";
+    const prevUser = currentUser;
+    if (!isAdminUser()) currentUser = "Admin";
+    setActiveLayer(nextLayer);
+    currentUser = prevUser;
+    updateLayerToggleUI();
+  }
+
   function toggleActiveLayer() {
-    if (currentUser === "Admin") {
-      if (activeLayer === "admin") setActiveLayer("base");
+    if (isAdminUser()) {
+      if (activeLayer === "user") setActiveLayer("admin");
+      else if (activeLayer === "admin") setActiveLayer("base");
       else if (activeLayer === "base") setActiveLayer("image");
       else if (activeLayer === "image") setActiveLayer("draft");
-      else setActiveLayer("admin");
+      else setActiveLayer("user");
     } else {
       // Admin 以外は「通常」と「下書き」のみ
       if (activeLayer === "user") setActiveLayer("draft");
@@ -490,6 +577,15 @@
       draftOrderCounter += 1;
     }
     return draftOrderCounter;
+  }
+
+  function bumpImageListOrderCounter(orderValue) {
+    if (typeof orderValue === "number") {
+      imageListOrderCounter = Math.max(imageListOrderCounter, orderValue + 1);
+    } else {
+      imageListOrderCounter += 1;
+    }
+    return imageListOrderCounter;
   }
 
   // --- レイアウト計測 ---
@@ -693,6 +789,25 @@
     }
   }
 
+  function loadPalette() {
+    try {
+      const raw = localStorage.getItem(paletteStorageKey);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.filter((c) => typeof c === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function savePalette() {
+    try {
+      localStorage.setItem(paletteStorageKey, JSON.stringify(paletteColors));
+    } catch {
+      // ignore
+    }
+  }
+
   function loadUserProfiles() {
     try {
       const raw = localStorage.getItem(userProfileStorageKey);
@@ -736,6 +851,23 @@
   function saveStoredUsers(users) {
     try {
       localStorage.setItem(userStorageKey, JSON.stringify(users));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function loadLastUser() {
+    try {
+      return localStorage.getItem(lastUserStorageKey) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function saveLastUser(name) {
+    if (!name) return;
+    try {
+      localStorage.setItem(lastUserStorageKey, name);
     } catch {
       // ignore storage errors
     }
@@ -788,6 +920,41 @@
     });
   }
 
+  function setPaletteItemColor(swatch, color) {
+    if (!swatch || !color) return;
+    const normalized = normalizeHexColor(color);
+    const oldColor = swatch.getAttribute("data-color");
+    const item = swatch.closest(".color-item");
+    const favBtn = item?.querySelector(".color-fav");
+    const index = swatches.indexOf(swatch);
+
+    swatch.setAttribute("data-color", normalized);
+    swatch.style.backgroundColor = normalized;
+    swatch.title = normalized;
+
+    if (favBtn) {
+      favBtn.setAttribute("data-color", normalized);
+      favBtn.title = "お気に入り";
+    }
+
+    if (index >= 0) {
+      paletteColors[index] = normalized;
+      savePalette();
+    }
+
+    const currentFav = currentUser ? favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) : null;
+    if (currentUser && oldColor && currentFav === oldColor) {
+      favoritesByUser[currentUser] = normalized;
+      setProfileFavoriteColor(currentUser, normalized);
+      saveFavorites();
+    }
+    updateFavButtons();
+  }
+
+  function getActiveColorSwatch() {
+    return activeColorSwatch || swatches.find((btn) => btn.classList.contains("selected")) || swatches[0] || null;
+  }
+
   function getCurrentFavoriteColor() {
     return favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) || "#ff3b30"; // デフォルト赤
   }
@@ -826,31 +993,34 @@
     return canvasTag.toDataURL("image/png");
   }
 
-  function createFrameTag(type, width, height, label = "") {
+  function createFrameTag(type, width, height, label = "", colors = null) {
     const minW = 120;
     const minH = 80;
     const w = Math.max(minW, Math.abs(width));
     const h = Math.max(minH, Math.abs(height));
+    if (type === "omoteura") {
+      return createOmoteUraFrameTag(w, h);
+    }
     const spec =
       type === "omote"
         ? {
             body: "#fff8ce",
             header: "#ffd966",
-            text: "表",
+            text: label || "表",
             textColor: "#8a5b00",
           }
         : type === "ura"
         ? {
             body: "#e6f3ff",
             header: "#b7d5ff",
-            text: "裏",
+            text: label || "裏",
             textColor: "#0f4f9b",
           }
         : {
-            body: lightenColor(currentColor, 0.35),
-            header: lightenColor(currentColor, 0.15),
+            body: colors?.body || lightenColor(currentColor, 0.35),
+            header: colors?.header || lightenColor(currentColor, 0.15),
             text: label || "フレーム",
-            textColor: "#1c1c1c",
+            textColor: colors?.text || "#1c1c1c",
           };
     const headerH = Math.min(Math.max(24, h * 0.25), 40);
     const canvasTag = document.createElement("canvas");
@@ -865,8 +1035,258 @@
     c.font = "18px sans-serif";
     c.textBaseline = "middle";
     c.textAlign = "left";
-    c.fillText(spec.text, 12, headerH / 2);
+    drawFittedText(c, spec.text, 12, headerH / 2, w - 24);
     return canvasTag.toDataURL("image/png");
+  }
+
+  function getOmoteUraFrameColors() {
+    return {
+      omoteBody: "#fff0e7",
+      omoteBar: "#e85d2a",
+      uraBody: "#e5f7ff",
+      uraBar: "#0896c7",
+      border: "#24313a",
+      text: "#17232b",
+    };
+  }
+
+  function createOmoteUraFrameTag(width, height) {
+    const w = Math.max(120, Math.abs(width));
+    const h = Math.max(80, Math.abs(height));
+    const colors = getOmoteUraFrameColors();
+    const barW = Math.min(28, Math.max(18, w * 0.1));
+    const midY = h / 2;
+    const canvasTag = document.createElement("canvas");
+    canvasTag.width = w;
+    canvasTag.height = h;
+    const c = canvasTag.getContext("2d");
+
+    c.fillStyle = colors.omoteBody;
+    c.fillRect(0, 0, w, midY);
+    c.fillStyle = colors.uraBody;
+    c.fillRect(0, midY, w, h - midY);
+    c.fillStyle = colors.omoteBar;
+    c.fillRect(0, 0, barW, midY);
+    c.fillStyle = colors.uraBar;
+    c.fillRect(0, midY, barW, h - midY);
+    c.strokeStyle = colors.border;
+    c.lineWidth = 2;
+    c.strokeRect(1, 1, w - 2, h - 2);
+
+    c.fillStyle = colors.text;
+    c.font = "18px sans-serif";
+    c.textBaseline = "middle";
+    c.textAlign = "center";
+    c.fillText("表", barW / 2, midY / 2);
+    c.fillText("裏", barW / 2, midY + (h - midY) / 2);
+    return canvasTag.toDataURL("image/png");
+  }
+
+  function getFrameHeaderHeightWorld(imgObj) {
+    const worldH = Math.max(1, Math.abs(imgObj?.height || 0));
+    return Math.min(Math.max(24, worldH * 0.25), 40);
+  }
+
+  function getFrameTagColors(imgObj) {
+    if (imgObj?.tagColors) return imgObj.tagColors;
+    if (imgObj?.tagType === "omoteura") return getOmoteUraFrameColors();
+    const fallback =
+      imgObj?.tagType === "omote"
+        ? { body: "#fff8ce", header: "#ffd966", text: "#8a5b00" }
+        : imgObj?.tagType === "ura"
+        ? { body: "#e6f3ff", header: "#b7d5ff", text: "#0f4f9b" }
+        : {
+            body: lightenColor(currentColor, 0.35),
+            header: lightenColor(currentColor, 0.15),
+            text: "#1c1c1c",
+          };
+    const imgEl = imgObj?.img;
+    if (!imgEl || !imgEl.complete || !imgEl.naturalWidth || !imgEl.naturalHeight) return fallback;
+
+    try {
+      const sample = document.createElement("canvas");
+      sample.width = imgEl.naturalWidth;
+      sample.height = imgEl.naturalHeight;
+      const sampleCtx = sample.getContext("2d");
+      sampleCtx.drawImage(imgEl, 0, 0);
+      const sourceHeaderH = Math.min(Math.max(24, imgEl.naturalHeight * 0.25), 40);
+      const toRgb = (data) => `rgb(${data[0]}, ${data[1]}, ${data[2]})`;
+      const header = sampleCtx.getImageData(1, 1, 1, 1).data;
+      const bodyY = Math.min(imgEl.naturalHeight - 1, Math.ceil(sourceHeaderH) + 1);
+      const body = sampleCtx.getImageData(1, bodyY, 1, 1).data;
+      imgObj.tagColors = { ...fallback, body: toRgb(body), header: toRgb(header) };
+      return imgObj.tagColors;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function drawFrameTagImage(ctx, imgObj, _p, _w, _h, rotation) {
+    if (imgObj.tagType === "omoteura") {
+      drawOmoteUraFrameImage(ctx, imgObj, rotation);
+      return;
+    }
+    const colors = getFrameTagColors(imgObj);
+    const worldW = imgObj.width;
+    const worldH = imgObj.height;
+    const headerH = Math.min(getFrameHeaderHeightWorld(imgObj), worldH);
+    const label =
+      imgObj.tagLabel || (imgObj.tagType === "omote" ? "表" : imgObj.tagType === "ura" ? "裏" : "フレーム");
+
+    ctx.save();
+    const screenPos = worldToScreen(imgObj.x, imgObj.y);
+    ctx.translate(screenPos.x, screenPos.y);
+    ctx.scale(scale, scale);
+    if (rotation) {
+      ctx.translate(worldW / 2, worldH / 2);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.translate(-worldW / 2, -worldH / 2);
+    }
+    ctx.fillStyle = colors.body;
+    ctx.fillRect(0, 0, worldW, worldH);
+    ctx.fillStyle = colors.header;
+    ctx.fillRect(0, 0, worldW, headerH);
+    ctx.fillStyle = colors.text;
+    ctx.font = "18px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    drawFittedText(ctx, label, 12, headerH / 2, Math.max(0, worldW - 24));
+    ctx.restore();
+  }
+
+  function drawOmoteUraFrameImage(ctx, imgObj, rotation) {
+    const colors = getOmoteUraFrameColors();
+    const worldW = imgObj.width;
+    const worldH = imgObj.height;
+    const barW = Math.min(28, Math.max(18, worldW * 0.1));
+    const midY = worldH / 2;
+
+    ctx.save();
+    const screenPos = worldToScreen(imgObj.x, imgObj.y);
+    ctx.translate(screenPos.x, screenPos.y);
+    ctx.scale(scale, scale);
+    if (rotation) {
+      ctx.translate(worldW / 2, worldH / 2);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.translate(-worldW / 2, -worldH / 2);
+    }
+
+    ctx.fillStyle = colors.omoteBody;
+    ctx.fillRect(0, 0, worldW, midY);
+    ctx.fillStyle = colors.uraBody;
+    ctx.fillRect(0, midY, worldW, worldH - midY);
+    ctx.fillStyle = colors.omoteBar;
+    ctx.fillRect(0, 0, barW, midY);
+    ctx.fillStyle = colors.uraBar;
+    ctx.fillRect(0, midY, barW, worldH - midY);
+    ctx.strokeStyle = colors.border;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, Math.max(0, worldW - 2), Math.max(0, worldH - 2));
+
+    ctx.fillStyle = colors.text;
+    ctx.font = "18px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    ctx.fillText("表", barW / 2, midY / 2);
+    ctx.fillText("裏", barW / 2, midY + (worldH - midY) / 2);
+    ctx.restore();
+  }
+
+  function drawFittedText(ctx, text, x, y, maxWidth) {
+    const value = String(text || "");
+    if (ctx.measureText(value).width <= maxWidth) {
+      ctx.fillText(value, x, y);
+      return;
+    }
+
+    const ellipsis = "...";
+    let fitted = value;
+    while (fitted.length > 0 && ctx.measureText(`${fitted}${ellipsis}`).width > maxWidth) {
+      fitted = fitted.slice(0, -1);
+    }
+    ctx.fillText(fitted ? `${fitted}${ellipsis}` : ellipsis, x, y);
+  }
+
+  function getFrameHeaderBoundsWorld(imgObj) {
+    if (!imgObj || !imgObj.tagType) return null;
+    return {
+      x: imgObj.x,
+      y: imgObj.y,
+      width: imgObj.width,
+      height: Math.min(imgObj.height, getFrameHeaderHeightWorld(imgObj)),
+    };
+  }
+
+  function canEditFrameLabel(imgObj) {
+    if (!imgObj?.tagType) return false;
+    if (imgObj.tagType === "omoteura") return false;
+    if (activeLayer === "image" || activeLayer === "admin") return true;
+    return false;
+  }
+
+  function hitTestFrameLabel(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
+    for (let i = images.length - 1; i >= 0; i--) {
+      const imgObj = images[i];
+      if (!canEditFrameLabel(imgObj)) continue;
+      const header = getFrameHeaderBoundsWorld(imgObj);
+      if (!header) continue;
+      if (pointInRotatedRectWorld(worldPoint, header, imgObj.rotation || 0)) return i;
+    }
+    return -1;
+  }
+
+  function editFrameLabelAt(index) {
+    const imgObj = images[index];
+    if (!imgObj || !imgObj.tagType) return false;
+    if (imgObj.tagType === "omoteura") return false;
+    const current = imgObj.tagLabel || (imgObj.tagType === "omote" ? "表" : imgObj.tagType === "ura" ? "裏" : "フレーム");
+    const next = window.prompt("フレーム名を入力", current);
+    if (next === null) return true;
+    const label = next.trim() || current;
+    imgObj.tagLabel = label;
+    refreshFrameImageForCurrentSize(imgObj, { emit: true });
+    return true;
+  }
+
+  function refreshFrameImageForCurrentSize(imgObj, { emit = false } = {}) {
+    if (!imgObj?.tagType) return false;
+    const label =
+      imgObj.tagLabel ||
+      (imgObj.tagType === "omoteura"
+        ? "表裏"
+        : imgObj.tagType === "omote"
+        ? "表"
+        : imgObj.tagType === "ura"
+        ? "裏"
+        : "フレーム");
+    const pixelW = Math.max(120, Math.round(Math.abs(imgObj.width) * scale));
+    const pixelH = Math.max(80, Math.round(Math.abs(imgObj.height) * scale));
+    const colors = getFrameTagColors(imgObj);
+    const dataUrl = createFrameTag(imgObj.tagType || "free", pixelW, pixelH, label, colors);
+    const img = new Image();
+    img.onload = () => {
+      imgObj.img = img;
+      imgObj.src = dataUrl;
+      imgObj.tagLabel = label;
+      if (emit && socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "image",
+          id: imgObj.id,
+          patch: {
+            src: imgObj.src,
+            width: imgObj.width,
+            height: imgObj.height,
+            tagLabel: imgObj.tagLabel,
+            tagType: imgObj.tagType,
+          },
+        });
+      }
+      redraw();
+    };
+    img.src = dataUrl;
+    return true;
   }
 
   function sortTextsByCreated() {
@@ -1039,6 +1459,149 @@
     }
   }
 
+  function sortImagesForList() {
+    return images
+      .map((img, index) => ({ img, index }))
+      .filter(({ img }) => !img.tagType)
+      .sort((a, b) => {
+        const ao = typeof a.img.imageListOrder === "number" ? a.img.imageListOrder : a.img.order ?? a.index;
+        const bo = typeof b.img.imageListOrder === "number" ? b.img.imageListOrder : b.img.order ?? b.index;
+        return ao - bo;
+      });
+  }
+
+  function openImageList() {
+    imageListOpen = true;
+    imageListPanel.classList.remove("hidden");
+    positionImageListPanel();
+    renderImageList();
+  }
+
+  function closeImageList() {
+    imageListOpen = false;
+    imageListPanel.classList.add("hidden");
+    imageListPanel.style.maxHeight = "";
+    if (imageListBody) imageListBody.style.maxHeight = "";
+    imageListPanel.style.top = "";
+    imageListPanel.style.bottom = "";
+  }
+
+  function refreshImageList() {
+    if (imageListOpen) {
+      renderImageList();
+    }
+  }
+
+  function renderImageList() {
+    if (!imageListOpen || !imageListBody) return;
+    imageListBody.innerHTML = "";
+    sortImagesForList().forEach(({ img, index }, listIndex) => {
+      const item = document.createElement("div");
+      item.className = "image-list-item";
+      item.draggable = true;
+      item.dataset.id = img.id;
+
+      const meta = document.createElement("span");
+      meta.className = "text-list-meta image-list-number";
+      meta.textContent = `#${listIndex + 1}`;
+
+      const thumb = document.createElement("img");
+      thumb.className = "image-list-thumb";
+      thumb.src = img.src;
+      thumb.alt = "";
+
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "image-list-name";
+      name.textContent = img.imageName || "(画像名なし)";
+      name.title = img.imageName || "";
+      name.addEventListener("click", (e) => {
+        e.stopPropagation();
+        focusImageFromList(img.id);
+      });
+      name.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const next = window.prompt("画像名を入力", img.imageName || "");
+        if (next === null) return;
+        const imageName = next.trim();
+        img.imageName = imageName;
+        emitItemPatch("image", img, { imageName });
+        refreshImageList();
+      });
+
+      item.appendChild(meta);
+      item.appendChild(thumb);
+      item.appendChild(name);
+
+      item.addEventListener("click", () => {
+        focusImageFromList(img.id);
+      });
+
+      item.addEventListener("dragstart", (e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", img.id);
+        item.classList.add("dragging");
+      });
+      item.addEventListener("dragend", () => {
+        item.classList.remove("dragging");
+      });
+      item.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        item.classList.add("drag-over");
+      });
+      item.addEventListener("dragleave", () => {
+        item.classList.remove("drag-over");
+      });
+      item.addEventListener("drop", (e) => {
+        e.preventDefault();
+        item.classList.remove("drag-over");
+        const sourceId = e.dataTransfer.getData("text/plain");
+        if (!sourceId || sourceId === img.id) return;
+        reorderImageList(sourceId, img.id);
+      });
+
+      imageListBody.appendChild(item);
+    });
+    positionImageListPanel();
+  }
+
+  function focusImageFromList(imageId) {
+    const targetIdx = findIndexById(images, imageId);
+    if (targetIdx < 0) return;
+    const target = images[targetIdx];
+    offsetX = canvas.width / 2 - (target.x + target.width / 2) * scale;
+    offsetY = canvas.height / 2 - (target.y + target.height / 2) * scale;
+    selected = { type: "image", index: targetIdx };
+    currentTool = "select";
+    updateToolButtons();
+    redraw();
+  }
+
+  function reorderImageList(sourceId, targetId) {
+    const ordered = sortImagesForList().map((entry) => entry.img);
+    const from = ordered.findIndex((img) => img.id === sourceId);
+    const to = ordered.findIndex((img) => img.id === targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    const [moved] = ordered.splice(from, 1);
+    ordered.splice(to, 0, moved);
+    ordered.forEach((img, idx) => {
+      img.imageListOrder = idx + 1;
+      emitItemPatch("image", img, { imageListOrder: img.imageListOrder });
+    });
+    imageListOrderCounter = ordered.length + 1;
+    renderImageList();
+  }
+
+  function toggleImageListPanelView() {
+    if (imageListOpen) {
+      closeImageList();
+    } else {
+      openImageList();
+    }
+  }
+
   function toggleTextListPanelView() {
     if (textListOpen) {
       closeTextList();
@@ -1066,6 +1629,28 @@
       const headerH = header ? header.getBoundingClientRect().height : 44;
       const bodyMax = Math.max(180, maxH - headerH);
       textListBody.style.maxHeight = `${bodyMax}px`;
+    }
+  }
+
+  function positionImageListPanel() {
+    if (!imageListPanel || imageListPanel.classList.contains("hidden")) return;
+    const margin = 12;
+    const footerSpace = getFooterSpace() + margin;
+    const toolbarBottom = toolbarEl
+      ? toolbarEl.getBoundingClientRect().bottom + margin
+      : 60;
+    const top = Math.max(margin, toolbarBottom);
+    imageListPanel.style.top = `${top}px`;
+    imageListPanel.style.bottom = "auto";
+
+    const available = window.innerHeight - top - footerSpace - margin;
+    const maxH = Math.max(260, available);
+    imageListPanel.style.maxHeight = `${maxH}px`;
+    if (imageListBody) {
+      const header = imageListPanel.querySelector(".text-list-header");
+      const headerH = header ? header.getBoundingClientRect().height : 44;
+      const bodyMax = Math.max(180, maxH - headerH);
+      imageListBody.style.maxHeight = `${bodyMax}px`;
     }
   }
 
@@ -1137,10 +1722,11 @@
   function setCurrentUser(name) {
     currentUser = name;
     if (name) {
+      saveLastUser(name);
       registerUser(name);
       currentTool = "pen";
-      if (name === "Admin") {
-        activeLayer = "admin";
+      if (isAdminUser(name)) {
+        activeLayer = "user";
       } else if (activeLayer === "admin") {
         activeLayer = "user";
       }
@@ -1163,6 +1749,10 @@
     return false;
   }
 
+  function isAdminUser(name = currentUser) {
+    return name === "Admin";
+  }
+
   // --- 選択削除/複製 ---
   function deleteSelectedImage() {
     if (!selected || selected.type !== "image") return;
@@ -1170,6 +1760,7 @@
     if (removed && socketConnected) {
       socket.emit("item:remove", { boardId, type: "image", id: removed.id });
     }
+    refreshImageList();
     selected = null;
     redraw();
   }
@@ -1207,6 +1798,11 @@
       } else if (item.type === "draft") {
         const d = draftStrokes[item.index];
         if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
+      } else if (item.type === "draft-group") {
+        item.indices.forEach((idx) => {
+          const d = draftStrokes[idx];
+          if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
+        });
       }
     };
 
@@ -1259,9 +1855,120 @@
     });
 
     if (textIds.length) refreshTextList();
+    if (imageIds.length) refreshImageList();
     selected = null;
     multiSelection = null;
     redraw();
+  }
+
+  function getSelectionWorldBounds(items) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const addBounds = (bounds) => {
+      if (!bounds) return;
+      minX = Math.min(minX, bounds.x);
+      minY = Math.min(minY, bounds.y);
+      maxX = Math.max(maxX, bounds.x + bounds.width);
+      maxY = Math.max(maxY, bounds.y + bounds.height);
+    };
+
+    items.forEach((item) => {
+      if (item.type === "stroke") {
+        addBounds(getStrokeBoundsWorld(strokes[item.index]));
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach((idx) => addBounds(getStrokeBoundsWorld(strokes[idx])));
+      } else if (item.type === "draft") {
+        addBounds(getStrokeBoundsWorld(draftStrokes[item.index]));
+      } else if (item.type === "draft-group") {
+        item.indices.forEach((idx) => addBounds(getStrokeBoundsWorld(draftStrokes[idx])));
+      } else if (item.type === "text") {
+        addBounds(getTextBoundsWorld(texts[item.index]));
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (img) addBounds({ x: img.x, y: img.y, width: img.width, height: img.height });
+      }
+    });
+
+    if (!Number.isFinite(minX)) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function emitItemPatch(type, item, patch) {
+    if (!socketConnected || !item) return;
+    socket.emit("item:update", {
+      boardId,
+      type,
+      id: item.id,
+      patch,
+    });
+  }
+
+  function rotateSelection(direction) {
+    const items = getSelectionItems();
+    if (!items.length) return false;
+    const bounds = getSelectionWorldBounds(items);
+    if (!bounds) return false;
+    const center = getRectCenter(bounds);
+    const rotatedStrokeIds = new Set();
+
+    ensureSnapshotForAction();
+    items.forEach((item) => {
+      if (item.type === "stroke") {
+        const stroke = strokes[item.index];
+        if (!stroke || rotatedStrokeIds.has(stroke.id)) return;
+        stroke.points = stroke.points.map((p) => rotatePointAround(p, center, direction));
+        rotatedStrokeIds.add(stroke.id);
+        emitItemPatch("stroke", stroke, { points: stroke.points.map((p) => ({ x: p.x, y: p.y })) });
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach((idx) => {
+          const stroke = strokes[idx];
+          if (!stroke || rotatedStrokeIds.has(stroke.id)) return;
+          stroke.points = stroke.points.map((p) => rotatePointAround(p, center, direction));
+          rotatedStrokeIds.add(stroke.id);
+          emitItemPatch("stroke", stroke, { points: stroke.points.map((p) => ({ x: p.x, y: p.y })) });
+        });
+      } else if (item.type === "draft") {
+        const stroke = draftStrokes[item.index];
+        if (!stroke) return;
+        stroke.points = stroke.points.map((p) => rotatePointAround(p, center, direction));
+        if (socketConnected) {
+          socket.emit("draft:stroke:add", { boardId, stroke });
+        }
+      } else if (item.type === "draft-group") {
+        item.indices.forEach((idx) => {
+          const stroke = draftStrokes[idx];
+          if (!stroke) return;
+          stroke.points = stroke.points.map((p) => rotatePointAround(p, center, direction));
+          if (socketConnected) {
+            socket.emit("draft:stroke:add", { boardId, stroke });
+          }
+        });
+      } else if (item.type === "text") {
+        const text = texts[item.index];
+        if (!text) return;
+        const textBounds = getTextBoundsWorld(text);
+        const oldCenter = getRectCenter(textBounds);
+        const newCenter = rotatePointAround(oldCenter, center, direction);
+        text.x += newCenter.x - oldCenter.x;
+        text.y += newCenter.y - oldCenter.y;
+        text.rotation = normalizeRotation((text.rotation || 0) + (direction === "cw" ? 90 : -90));
+        emitItemPatch("text", text, { x: text.x, y: text.y, rotation: text.rotation });
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (!img) return;
+        const oldCenter = getRectCenter({ x: img.x, y: img.y, width: img.width, height: img.height });
+        const newCenter = rotatePointAround(oldCenter, center, direction);
+        img.x += newCenter.x - oldCenter.x;
+        img.y += newCenter.y - oldCenter.y;
+        img.rotation = normalizeRotation((img.rotation || 0) + (direction === "cw" ? 90 : -90));
+        emitItemPatch("image", img, { x: img.x, y: img.y, rotation: img.rotation });
+      }
+    });
+    refreshTextList();
+    redraw();
+    return true;
   }
 
   function collectOrderableSelectionItems() {
@@ -1424,6 +2131,31 @@
       if (activeLayer === "admin") return normalized === "admin";
       return false;
     };
+    const clonedStrokeIds = new Set();
+    const clonedGroupIds = new Map();
+    const getCloneGroupId = (groupId) => {
+      if (!groupId) return null;
+      if (!clonedGroupIds.has(groupId)) clonedGroupIds.set(groupId, genId());
+      return clonedGroupIds.get(groupId);
+    };
+    const cloneStroke = (s, idxOffset = 1) => {
+      if (!s || clonedStrokeIds.has(s.id)) return;
+      if (!isLayerMatch(s.layer)) return;
+      if (s.layer === "draft" && s.user !== currentUser) return;
+      const clone = {
+        ...s,
+        id: genId(),
+        groupId: getCloneGroupId(s.groupId),
+        points: s.points.map((p) => ({ x: p.x + offset * idxOffset, y: p.y + offset * idxOffset })),
+        order: orderCounter++,
+        user: currentUser,
+      };
+      strokes.push(clone);
+      clonedStrokeIds.add(s.id);
+      if (socketConnected) {
+        socket.emit("stroke:add", { boardId, stroke: clone });
+      }
+    };
 
     items.forEach((item, idx) => {
       if (item.type === "image" && allowImages) {
@@ -1436,26 +2168,16 @@
           x: imgObj.x + offset * (idx + 1) * 0.5,
           y: imgObj.y + offset * (idx + 1) * 0.5,
           order: orderCounter++,
+          imageListOrder: bumpImageListOrderCounter(),
           user: currentUser,
         };
         images.push(clone);
+        refreshImageList();
         emitImageAdd(clone);
       } else if (item.type === "stroke" && activeLayer !== "image") {
-        const s = strokes[item.index];
-        if (!s) return;
-        if (!isLayerMatch(s.layer)) return;
-        if (s.layer === "draft" && s.user !== currentUser) return;
-        const clone = {
-          ...s,
-          id: genId(),
-          points: s.points.map((p) => ({ x: p.x + offset, y: p.y + offset })),
-          order: orderCounter++,
-          user: currentUser,
-        };
-        strokes.push(clone);
-        if (socketConnected) {
-          socket.emit("stroke:add", { boardId, stroke: clone });
-        }
+        cloneStroke(strokes[item.index], idx + 1);
+      } else if (item.type === "stroke-group" && activeLayer !== "image") {
+        item.indices.forEach((strokeIndex) => cloneStroke(strokes[strokeIndex], idx + 1));
       } else if (item.type === "text" && activeLayer !== "image") {
         const t = texts[item.index];
         if (!t) return;
@@ -1479,12 +2201,170 @@
     redraw();
   }
 
+  function fillClosedStrokeAt(worldPoint) {
+    if (!requireUser()) return false;
+    if (activeLayer === "image") {
+      showTransientFooterMessage("塗りつぶしは通常/Admin/ベースレイヤーで使えます。", 3000);
+      return false;
+    }
+
+    let target = null;
+    const sourceList = activeLayer === "draft" ? draftStrokes : strokes;
+    for (let i = sourceList.length - 1; i >= 0; i--) {
+      const stroke = sourceList[i];
+      if (!stroke || stroke.fill) continue;
+      if (activeLayer === "draft") {
+        if (stroke.user !== currentUser) continue;
+      } else {
+        if (!isStrokeVisible(stroke)) continue;
+        if (!canInteractStroke(stroke)) continue;
+      }
+      const bounds = getStrokeBoundsWorld(stroke);
+      if (!bounds || !pointInRectWorld(bounds, worldPoint)) continue;
+      if (!pointInPolygon(worldPoint, stroke.points)) continue;
+      const area = polygonArea(stroke.points);
+      if (area <= 1) continue;
+      if (!target || area < target.area) {
+        target = { stroke, area };
+      }
+    }
+
+    if (!target) {
+      showTransientFooterMessage("閉じた線の内側をクリックしてください。", 3000);
+      return false;
+    }
+
+    ensureSnapshotForAction();
+    const source = target.stroke;
+    const existingFill = sourceList.some((stroke) => {
+      if (!stroke?.fill) return false;
+      if (source.groupId && stroke.groupId === source.groupId) return true;
+      return stroke.fillSourceId === source.id;
+    });
+    if (existingFill) {
+      showTransientFooterMessage("このオブジェクトはすでに塗りつぶされています。", 3000);
+      return false;
+    }
+    const groupId = source.groupId || genId();
+    if (!source.groupId) {
+      source.groupId = groupId;
+      if (activeLayer === "draft") {
+        if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: source });
+      } else {
+        emitItemPatch("stroke", source, { groupId });
+      }
+    }
+    const fillStroke = {
+      id: genId(),
+      color: withAlpha(currentColor, 0.38),
+      size: 1,
+      points: source.points.map((p) => ({ x: p.x, y: p.y })),
+      user: currentUser,
+      layer: activeLayer === "draft" ? "draft" : getShapeTargetLayer(),
+      order: activeLayer === "draft" ? (source.order ?? draftOrderCounter++) - 0.1 : (source.order ?? orderCounter++) - 0.1,
+      createdAt: Date.now(),
+      fill: true,
+      groupId,
+      fillSourceId: source.id,
+    };
+    if (activeLayer === "draft") {
+      draftStrokes.push(fillStroke);
+    } else {
+      strokes.push(fillStroke);
+    }
+    registerUser(currentUser);
+    if (socketConnected) {
+      if (activeLayer === "draft") {
+        socket.emit("draft:stroke:add", { boardId, stroke: fillStroke });
+      } else {
+        socket.emit("stroke:add", { boardId, stroke: fillStroke });
+      }
+    }
+    redraw();
+    return true;
+  }
+
+  function copySelectionToDraft() {
+    if (!requireUser()) return;
+    const items = getSelectionItems();
+    if (!items.length) return;
+    ensureSnapshotForAction();
+
+    const copiedStrokeIds = new Set();
+    const copiedGroupIds = new Map();
+    const offset = 18 / scale;
+    const getDraftGroupId = (groupId) => {
+      if (!groupId) return null;
+      if (!copiedGroupIds.has(groupId)) copiedGroupIds.set(groupId, genId());
+      return copiedGroupIds.get(groupId);
+    };
+    const copyStrokeToDraft = (s) => {
+      if (!s || copiedStrokeIds.has(s.id)) return false;
+      const draftGroupId = getDraftGroupId(s.groupId);
+      const draft = {
+        id: genId(),
+        color: s.fill ? s.color : withAlpha(s.color || currentColor, 0.55),
+        size: s.size || currentSize,
+        points: (s.points || []).map((p) => ({ x: p.x + offset, y: p.y + offset })),
+        user: currentUser,
+        order: draftOrderCounter++,
+        createdAt: Date.now(),
+        fill: !!s.fill,
+        groupId: draftGroupId,
+      };
+      draftStrokes.push(draft);
+      copiedStrokeIds.add(s.id);
+      if (socketConnected) {
+        socket.emit("draft:stroke:add", { boardId, stroke: draft });
+      }
+      return true;
+    };
+    let copied = false;
+    items.forEach((item) => {
+      if (item.type === "stroke") {
+        copied = copyStrokeToDraft(strokes[item.index]) || copied;
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach((idx) => {
+          copied = copyStrokeToDraft(strokes[idx]) || copied;
+        });
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (!t) return;
+        const clone = {
+          ...t,
+          id: genId(),
+          lines: t.lines ? [...t.lines] : [],
+          x: t.x + offset,
+          y: t.y + offset,
+          layer: "draft",
+          user: currentUser,
+          order: orderCounter++,
+          createdAt: Date.now(),
+        };
+        texts.push(clone);
+        copied = true;
+        refreshTextList();
+        if (socketConnected) {
+          socket.emit("text:add", { boardId, text: clone });
+        }
+      }
+    });
+
+    if (copied) {
+      showTransientFooterMessage("選択内容を下書きレイヤーにコピーしました。", 3000);
+      redraw();
+    }
+  }
+
   function applyDraftSelectionToPublic() {
     if (activeLayer !== "draft") return;
     if (activeLayer === "image") return;
     const targets = getSelectionItems()
-      .filter((it) => it.type === "draft")
-      .map((it) => it.index);
+      .flatMap((it) => {
+        if (it.type === "draft") return [it.index];
+        if (it.type === "draft-group") return it.indices;
+        return [];
+      });
     const unique = Array.from(new Set(targets))
       .map((idx) => draftStrokes[idx])
       .filter(Boolean);
@@ -1501,6 +2381,8 @@
         user: currentUser,
         layer: targetLayer,
         order: orderCounter++,
+        fill: !!draft.fill,
+        groupId: draft.groupId || null,
       };
       strokes.push(stroke);
       registerUser(currentUser);
@@ -1522,7 +2404,7 @@
   }
 
   function moveSelectionToBase() {
-    if (currentUser !== "Admin") {
+    if (!isAdminUser()) {
       showTransientFooterMessage("ベースレイヤーへの移動は Admin のみ可能です。", 4000);
       return;
     }
@@ -1548,6 +2430,21 @@
             });
           }
         }
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach((idx) => {
+          const st = strokes[idx];
+          if (st && st.layer !== "base") {
+            st.layer = "base";
+            if (socketConnected) {
+              socket.emit("item:update", {
+                boardId,
+                type: "stroke",
+                id: st.id,
+                patch: { layer: "base" },
+              });
+            }
+          }
+        });
       } else if (item.type === "text") {
         const t = texts[item.index];
         if (t && t.layer !== "base") {
@@ -1567,7 +2464,7 @@
   }
 
   function moveSelectionToImage() {
-    if (currentUser !== "Admin") {
+    if (!isAdminUser()) {
       showTransientFooterMessage("画像レイヤーへの移動は Admin のみ可能です。", 4000);
       return;
     }
@@ -1661,14 +2558,14 @@
   }
 
   function canDeleteText(t) {
-    if (currentUser === "Admin" || activeLayer === "admin") return true;
-    if ((t.layer || "user") === "base") return true;
+    if ((t.layer || "user") === "base") return activeLayer === "base";
+    if (isAdminUser() || activeLayer === "admin") return true;
     return !t.user || t.user === currentUser;
   }
 
   function canDeleteStroke(stroke) {
-    if (currentUser === "Admin" || activeLayer === "admin") return true;
-    if ((stroke.layer || "user") === "base") return true;
+    if ((stroke.layer || "user") === "base") return activeLayer === "base";
+    if (isAdminUser() || activeLayer === "admin") return true;
     return !stroke.user || stroke.user === currentUser;
   }
 
@@ -1729,6 +2626,7 @@
       createdAt: text.createdAt || Date.now(),
       label: text.label || "",
       layer: text.layer || "user",
+      rotation: text.rotation || 0,
     };
     texts.push(withCreated);
     bumpOrderCounter(text.order);
@@ -1741,9 +2639,19 @@
     if (findIndexById(images, imgData.id) >= 0) return;
     const img = new Image();
     const finish = () => {
-      images.push({ ...imgData, img });
+      const imageListOrder =
+        typeof imgData.imageListOrder === "number" ? imgData.imageListOrder : bumpImageListOrderCounter();
+      images.push({
+        ...imgData,
+        rotation: imgData.rotation || 0,
+        imageName: imgData.imageName || "",
+        imageListOrder,
+        img,
+      });
+      bumpImageListOrderCounter(imageListOrder);
       bumpOrderCounter(imgData.order);
       registerUser(imgData.user);
+      refreshImageList();
       if (shouldRedraw) redraw();
     };
     img.onload = finish;
@@ -1827,10 +2735,11 @@
     } else if (type === "text") {
       const idx = findIndexById(texts, id);
       if (idx >= 0) texts.splice(idx, 1);
-    } else if (type === "image") {
-      const idx = findIndexById(images, id);
-      if (idx >= 0) images.splice(idx, 1);
-    }
+      } else if (type === "image") {
+        const idx = findIndexById(images, id);
+        if (idx >= 0) images.splice(idx, 1);
+        refreshImageList();
+      }
     refreshTextList();
     redraw();
     updateFooterByState();
@@ -1846,12 +2755,23 @@
     const idx = findIndexById(list, id);
     if (idx >= 0) {
       if (type === "image") {
-        list[idx] = { ...list[idx], ...patch };
+        const currentImgEl = list[idx].img;
+        list[idx] = { ...list[idx], ...patch, img: currentImgEl };
+        if (patch.src && patch.src !== currentImgEl?.src) {
+          const img = new Image();
+          img.onload = () => {
+            list[idx].img = img;
+            redraw();
+          };
+          img.src = patch.src;
+        }
       } else {
         list[idx] = { ...list[idx], ...patch };
       }
       if (type === "text") {
         refreshTextList();
+      } else if (type === "image") {
+        refreshImageList();
       }
       redraw();
       updateFooterByState();
@@ -1921,6 +2841,65 @@
     return false;
   }
 
+  function isClosedStroke(stroke) {
+    const pts = stroke?.points || [];
+    if (pts.length < 3) return false;
+    const first = pts[0];
+    const last = pts[pts.length - 1];
+    const closeTol = Math.max(12 / scale, (stroke.size || 1) * 2);
+    return Math.hypot(first.x - last.x, first.y - last.y) <= closeTol;
+  }
+
+  function pointInPolygon(point, points) {
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const pi = points[i];
+      const pj = points[j];
+      const intersects =
+        pi.y > point.y !== pj.y > point.y &&
+        point.x < ((pj.x - pi.x) * (point.y - pi.y)) / ((pj.y - pi.y) || 1e-9) + pi.x;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function polygonArea(points) {
+    if (!points || points.length < 3) return 0;
+    let sum = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      sum += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(sum) / 2;
+  }
+
+  function getStrokeGroupSelection(strokeIndex) {
+    const stroke = strokes[strokeIndex];
+    if (!stroke) return null;
+    if (!stroke.groupId) return { type: "stroke", index: strokeIndex };
+    const indices = [];
+    strokes.forEach((st, i) => {
+      if (st.groupId === stroke.groupId) indices.push(i);
+    });
+    return indices.length > 1
+      ? { type: "stroke-group", groupId: stroke.groupId, indices }
+      : { type: "stroke", index: strokeIndex };
+  }
+
+  function getDraftGroupSelection(draftIndex) {
+    const stroke = draftStrokes[draftIndex];
+    if (!stroke) return null;
+    if (!stroke.groupId) return { type: "draft", index: draftIndex };
+    const indices = [];
+    draftStrokes.forEach((st, i) => {
+      if (st.groupId === stroke.groupId && st.user === currentUser) indices.push(i);
+    });
+    return indices.length > 1
+      ? { type: "draft-group", groupId: stroke.groupId, indices }
+      : { type: "draft", index: draftIndex };
+  }
+
   function hitTestStroke(screenX, screenY, targetLayerCheck = (s) => true) {
     const worldPoint = screenToWorld(screenX, screenY);
     const tolWorld = 6 / scale;
@@ -1935,6 +2914,7 @@
         worldPoint.y >= bounds.y &&
         worldPoint.y <= bounds.y + bounds.height
       ) {
+        if (s.fill && pointInPolygon(worldPoint, s.points)) return i;
         const tol = Math.max(tolWorld, (s.size || 1) / scale / 2);
         if (isPointNearStroke(s, worldPoint, tol)) return i;
       }
@@ -1957,6 +2937,7 @@
         worldPoint.y >= bounds.y &&
         worldPoint.y <= bounds.y + bounds.height
       ) {
+        if (s.fill && pointInPolygon(worldPoint, s.points)) return i;
         const tol = Math.max(tolWorld, (s.size || 1) / scale / 2);
         if (isPointNearStroke(s, worldPoint, tol)) return i;
       }
@@ -1989,36 +2970,45 @@
   }
 
   function hitTestImage(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      const p = worldToScreen(imgObj.x, imgObj.y);
-      const w = imgObj.width * scale;
-      const h = imgObj.height * scale;
-      if (
-        screenX >= p.x &&
-        screenX <= p.x + w &&
-        screenY >= p.y &&
-        screenY <= p.y + h
-      ) {
+      const bounds = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
+      if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
         return i;
       }
     }
     return -1;
   }
 
+  function findImageNameAtScreenPoint(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
+    for (let i = images.length - 1; i >= 0; i--) {
+      const imgObj = images[i];
+      if (!imgObj || imgObj.tagType || !imgObj.imageName) continue;
+      if (!isImageVisible(imgObj)) continue;
+      const bounds = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
+      if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
+        return imgObj.imageName;
+      }
+    }
+    return "";
+  }
+
   function hitTestImageResizeHandle(screenX, screenY, radius = 8) {
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      const p = worldToScreen(imgObj.x, imgObj.y);
-      const w = imgObj.width * scale;
-      const h = imgObj.height * scale;
+      const corners = getRotatedRectCornersWorld(
+        { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+        imgObj.rotation || 0
+      ).map((p) => worldToScreen(p.x, p.y));
       const handles = [
-        { id: "tl", x: p.x, y: p.y },
-        { id: "tr", x: p.x + w, y: p.y },
-        { id: "bl", x: p.x, y: p.y + h },
-        { id: "br", x: p.x + w, y: p.y + h },
+        { id: "tl", ...corners[0] },
+        { id: "tr", ...corners[1] },
+        { id: "br", ...corners[2] },
+        { id: "bl", ...corners[3] },
       ];
       for (const hpos of handles) {
         const dx = screenX - hpos.x;
@@ -2033,20 +3023,13 @@
 
   // --- テキストヒットテスト ---
   function hitTestText(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
     for (let i = texts.length - 1; i >= 0; i--) {
       const t = texts[i];
       if (!isTextVisible(t)) continue;
       if (!canInteractText(t)) continue;
       const b = getTextBoundsWorld(t);
-      const p = worldToScreen(b.x, b.y);
-      const w = b.width * scale;
-      const h = b.height * scale;
-      if (
-        screenX >= p.x &&
-        screenX <= p.x + w &&
-        screenY >= p.y &&
-        screenY <= p.y + h
-      ) {
+      if (pointInRotatedRectWorld(worldPoint, b, t.rotation || 0)) {
         return i;
       }
     }
@@ -2059,11 +3042,10 @@
       if (!isTextVisible(t)) continue;
       if (!canInteractText(t)) continue;
       const b = getTextBoundsWorld(t);
-      const p = worldToScreen(b.x, b.y);
-      const w = b.width * scale;
-      const h = b.height * scale;
-      const hx = p.x + w;
-      const hy = p.y + h;
+      const corners = getRotatedRectCornersWorld(b, t.rotation || 0);
+      const handle = worldToScreen(corners[2].x, corners[2].y);
+      const hx = handle.x;
+      const hy = handle.y;
       const dx = screenX - hx;
       const dy = screenY - hy;
       if (dx * dx + dy * dy <= radius * radius) {
@@ -2096,7 +3078,7 @@
           items.push({ type: "image", index: idx });
         }
       });
-      if (currentUser === "Admin") {
+      if (isAdminUser()) {
         strokes.forEach((s, idx) => {
           if (!isStrokeVisible(s)) return;
           if (!canInteractStroke(s)) return;
@@ -2193,7 +3175,7 @@
       activeLayer !== "admin" &&
       activeLayer !== "base" &&
       activeLayer !== "draft" &&
-      !(activeLayer === "image" && currentUser === "Admin")
+      !(activeLayer === "image" && isAdminUser())
     )
       return;
     let erased = false;
@@ -2261,6 +3243,7 @@
         worldY >= bounds.y &&
         worldY <= bounds.y + bounds.height
       ) {
+        if (stroke.fill && !pointInPolygon({ x: worldX, y: worldY }, stroke.points)) continue;
         // グリッドなどグループはまとめて削除
         const targetGroup = stroke.groupId || null;
         for (let j = strokes.length - 1; j >= 0; j--) {
@@ -2353,19 +3336,54 @@
         const p = worldToScreen(imgObj.x, imgObj.y);
         const w = imgObj.width * scale;
         const h = imgObj.height * scale;
+        const rotation = normalizeRotation(imgObj.rotation || 0);
         try {
-          ctx.drawImage(imgEl, p.x, p.y, w, h);
+          if (imgObj.tagType) {
+            drawFrameTagImage(ctx, imgObj, p, w, h, rotation);
+          } else {
+            ctx.save();
+            try {
+              if (rotation) {
+                ctx.translate(p.x + w / 2, p.y + h / 2);
+                ctx.rotate((rotation * Math.PI) / 180);
+                ctx.drawImage(imgEl, -w / 2, -h / 2, w, h);
+              } else {
+                ctx.drawImage(imgEl, p.x, p.y, w, h);
+              }
+            } finally {
+              ctx.restore();
+            }
+          }
         } catch (err) {
           console.error("failed to draw image", imgObj?.id, err);
           continue;
         }
         if (selected && selected.type === "image" && selected.index === item.index) {
-          drawSelectionRect(p.x, p.y, w, h);
+          drawSelectionBoundsWorld(
+            { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+            rotation
+          );
         }
       } else if (item.type === "stroke") {
         const stroke = strokes[item.index];
         if (!stroke || !stroke.points || stroke.points.length === 0) continue;
         if (!isStrokeVisible(stroke)) {
+          continue;
+        }
+        if (stroke.fill) {
+          if (stroke.points.length < 3) continue;
+          ctx.save();
+          ctx.fillStyle = stroke.color || withAlpha(currentColor, 0.38);
+          ctx.beginPath();
+          const first = worldToScreen(stroke.points[0].x, stroke.points[0].y);
+          ctx.moveTo(first.x, first.y);
+          for (let i = 1; i < stroke.points.length; i++) {
+            const p = worldToScreen(stroke.points[i].x, stroke.points[i].y);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
           continue;
         }
         ctx.save();
@@ -2389,6 +3407,22 @@
         if (!stroke || !stroke.points || stroke.points.length === 0) continue;
         if (activeLayer !== "draft") continue;
         if (stroke.user !== currentUser) continue;
+        if (stroke.fill) {
+          if (stroke.points.length < 3) continue;
+          ctx.save();
+          ctx.fillStyle = stroke.color || withAlpha(currentColor, 0.38);
+          ctx.beginPath();
+          const first = worldToScreen(stroke.points[0].x, stroke.points[0].y);
+          ctx.moveTo(first.x, first.y);
+          for (let i = 1; i < stroke.points.length; i++) {
+            const p = worldToScreen(stroke.points[i].x, stroke.points[i].y);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          continue;
+        }
         ctx.save();
         const glowColor = getCurrentFavoriteColor();
         const baseStrokeColor = stroke.color || withAlpha(currentColor, 0.55);
@@ -2417,6 +3451,9 @@
           if (activeLayer !== "draft") continue;
         }
         const base = worldToScreen(t.x, t.y);
+        const bounds = getTextBoundsWorld(t);
+        const center = worldToScreen(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        const rotation = normalizeRotation(t.rotation || 0);
         const fontSizePx = (t.fontSize || 16) * scale;
         const lineHeight = fontSizePx * 1.2;
         const baseColor = normalizeHexColor(t.color || "#000000");
@@ -2424,6 +3461,11 @@
         const { outer: strokeWidth } = getTextStrokeWidths(fontSizePx);
 
         ctx.save();
+        if (rotation) {
+          ctx.translate(center.x, center.y);
+          ctx.rotate((rotation * Math.PI) / 180);
+          ctx.translate(-center.x, -center.y);
+        }
         ctx.font = `${fontSizePx}px sans-serif`;
         ctx.textBaseline = "top";
         ctx.lineJoin = "round";
@@ -2442,11 +3484,7 @@
         ctx.restore();
 
         if (selected && selected.type === "text" && selected.index === item.index) {
-          const b = getTextBoundsWorld(t);
-          const p = worldToScreen(b.x, b.y);
-          const w = b.width * scale;
-          const h = b.height * scale;
-          drawSelectionRect(p.x, p.y, w, h);
+          drawSelectionBoundsWorld(bounds, rotation);
         }
       }
     }
@@ -2464,12 +3502,34 @@
         ctx.moveTo(start.x, start.y);
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
-      } else if (shapeMode === "rect" || shapeMode === "grid") {
+      } else if (shapeMode === "rect") {
         const x = Math.min(start.x, end.x);
         const y = Math.min(start.y, end.y);
         const w = Math.abs(end.x - start.x);
         const h = Math.abs(end.y - start.y);
         ctx.strokeRect(x, y, w, h);
+      } else if (shapeMode === "grid") {
+        const bounds = getSquareBoundsFromDrag(shapeStart, shapePreview);
+        const topLeft = worldToScreen(bounds.x0, bounds.y0);
+        const bottomRight = worldToScreen(bounds.x1, bounds.y1);
+        const x = topLeft.x;
+        const y = topLeft.y;
+        const w = bottomRight.x - topLeft.x;
+        const h = bottomRight.y - topLeft.y;
+        const n = Math.max(2, shapeGridRows || shapeGridCols || 2);
+        ctx.strokeRect(x, y, w, h);
+        if (bounds.side > 0) {
+          for (let i = 1; i < n; i++) {
+            const lineX = x + (w * i) / n;
+            const lineY = y + (h * i) / n;
+            ctx.beginPath();
+            ctx.moveTo(lineX, y);
+            ctx.lineTo(lineX, y + h);
+            ctx.moveTo(x, lineY);
+            ctx.lineTo(x + w, lineY);
+            ctx.stroke();
+          }
+        }
       }
       ctx.restore();
     }
@@ -2538,6 +3598,42 @@
     handles.forEach((h) => {
       ctx.beginPath();
       ctx.rect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+      ctx.fill();
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function drawSelectionBoundsWorld(bounds, rotation = 0) {
+    const normalizedRotation = normalizeRotation(rotation);
+    if (!normalizedRotation) {
+      const p = worldToScreen(bounds.x, bounds.y);
+      drawSelectionRect(p.x, p.y, bounds.width * scale, bounds.height * scale);
+      return;
+    }
+
+    const corners = getRotatedRectCornersWorld(bounds, normalizedRotation).map((p) =>
+      worldToScreen(p.x, p.y)
+    );
+    ctx.save();
+    ctx.strokeStyle = "#0078d7";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 2]);
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < corners.length; i++) {
+      ctx.lineTo(corners[i].x, corners[i].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const handleSize = 8;
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#0078d7";
+    corners.forEach((corner) => {
+      ctx.beginPath();
+      ctx.rect(corner.x - handleSize / 2, corner.y - handleSize / 2, handleSize, handleSize);
       ctx.fill();
       ctx.stroke();
     });
@@ -2702,16 +3798,13 @@
 
   // --- 画像追加 ---
   function getImageTargetLayer() {
-    if (currentUser === "Admin") {
-      if (activeLayer === "image") return "image";
-      if (activeLayer === "base") return "base";
-      if (activeLayer === "admin") return "admin";
-      return "user";
-    }
+    if (activeLayer === "image") return "image";
+    if (activeLayer === "base") return "base";
+    if (activeLayer === "admin" && isAdminUser()) return "admin";
     return "user";
   }
 
-  function addImageFile(file, worldX, worldY, layout = null) {
+  function addImageFile(file, worldX, worldY, layout = null, targetLayer = getImageTargetLayer()) {
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
@@ -2741,12 +3834,16 @@
           y: placeY,
           width: w,
           height: h,
-          layer: getImageTargetLayer(),
+          layer: targetLayer,
           order: orderCounter++,
           user: currentUser,
+          rotation: 0,
+          imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
+          imageListOrder: bumpImageListOrderCounter(),
         };
         images.push(imgObj);
         registerUser(currentUser);
+        refreshImageList();
         emitImageAdd(imgObj);
 
         // 貼り付け直後は選択ツールに切り替えて、その画像を選択
@@ -2758,6 +3855,74 @@
       img.src = reader.result;
     };
     reader.readAsDataURL(file);
+  }
+
+  async function addImageFilesAt(files, worldX, worldY, targetLayer = getImageTargetLayer()) {
+    const imageFiles = Array.from(files || []).filter((file) => file.type && file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+
+    const gapX = 6 / scale;
+    const gapY = 16 / scale;
+    const perRow = 4;
+    const layout = {
+      startX: worldX,
+      currentX: worldX,
+      y: worldY,
+      gapX,
+      gapY,
+      count: 0,
+      perRow,
+      lastRowHeight: 0,
+    };
+
+    for (const file of imageFiles) {
+      try {
+        const { img, src } = await loadImageFromFile(file);
+        const maxWorldWidth = (canvas.width / scale) * 0.6;
+        const maxWorldHeight = (canvas.height / scale) * 0.6;
+        let w = img.width;
+        let h = img.height;
+        const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
+        w *= r;
+        h *= r;
+
+        const imgObj = {
+          id: genId(),
+          img,
+          src,
+          x: layout.currentX,
+          y: layout.y - h / 2,
+          width: w,
+          height: h,
+          layer: targetLayer,
+          order: orderCounter++,
+          user: currentUser,
+          rotation: 0,
+          imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
+          imageListOrder: bumpImageListOrderCounter(),
+        };
+        images.push(imgObj);
+        registerUser(currentUser);
+        refreshImageList();
+        emitImageAdd(imgObj);
+
+        selected = { type: "image", index: images.length - 1 };
+        layout.currentX += w + gapX;
+        layout.lastRowHeight = Math.max(layout.lastRowHeight, h);
+        layout.count += 1;
+        if (layout.count % perRow === 0) {
+          layout.currentX = layout.startX;
+          layout.y += layout.lastRowHeight + gapY;
+          layout.lastRowHeight = 0;
+        }
+      } catch (err) {
+        console.error("failed to load image", err);
+      }
+    }
+
+    currentTool = "select";
+    updateToolButtons();
+    redraw();
   }
 
   function loadImageFromFile(file) {
@@ -2788,11 +3953,17 @@
         layer: imgObj.layer,
         order: imgObj.order,
         user: imgObj.user,
+        rotation: imgObj.rotation || 0,
+        tagType: imgObj.tagType || null,
+        tagLabel: imgObj.tagLabel || "",
+        imageName: imgObj.imageName || "",
+        imageListOrder:
+          typeof imgObj.imageListOrder === "number" ? imgObj.imageListOrder : imgObj.order || 0,
       },
     });
   }
 
-  function addTemplateImage(src, worldX, worldY) {
+  function addTemplateImage(src, worldX, worldY, targetLayer = getImageTargetLayer(), imageName = "") {
     if (!src) return;
     const img = new Image();
     img.onload = () => {
@@ -2812,12 +3983,16 @@
         y: worldY - h / 2,
         width: w,
         height: h,
-        layer: getImageTargetLayer(),
+        layer: targetLayer,
         order: orderCounter++,
         user: currentUser,
+        rotation: 0,
+        imageName,
+        imageListOrder: bumpImageListOrderCounter(),
       };
       images.push(imgObj);
       registerUser(currentUser);
+      refreshImageList();
       emitImageAdd(imgObj);
 
       currentTool = "select";
@@ -2852,9 +4027,13 @@
         layer: "image",
         order,
         user: currentUser,
+        rotation: 0,
+        imageName: type === "omote" ? "表" : "裏",
+        imageListOrder: bumpImageListOrderCounter(),
       };
       images.push(imgObj);
       registerUser(currentUser);
+      refreshImageList();
       emitImageAdd(imgObj);
       currentTool = "select";
       updateToolButtons();
@@ -2893,15 +4072,22 @@
         layer: imgObj.layer,
         order: imgObj.order,
         user: imgObj.user,
+        rotation: imgObj.rotation || 0,
+        tagType: imgObj.tagType || null,
+        tagLabel: imgObj.tagLabel || "",
+        imageName: imgObj.imageName || "",
+        imageListOrder:
+          typeof imgObj.imageListOrder === "number" ? imgObj.imageListOrder : imgObj.order || 0,
       },
     });
   }
 
-  // --- テキスト入力（選択ツールで空白をクリックしたとき） ---
+  // --- テキスト入力 ---
   function createTextEditorAt(screenX, screenY, initialValue = "") {
     if (!requireUser()) return;
     if (activeLayer === "image") return;
     pendingTextPos = null;
+    const presetLabel = findImageNameAtScreenPoint(screenX, screenY);
 
     if (textEditor) {
       textEditor.remove();
@@ -2929,16 +4115,19 @@
     const len = textarea.value.length;
     textarea.setSelectionRange(len, len);
 
+    let finished = false;
     const finish = () => {
-      if (!textEditor) return;
-      const value = textEditor.value;
-      const rect = textEditor.getBoundingClientRect();
+      if (finished) return;
+      finished = true;
+      if (textEditor !== textarea) return;
+      const value = textarea.value;
+      const rect = textarea.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
       const sx = rect.left - containerRect.left;
       const sy = rect.top - containerRect.top;
       const worldPos = screenToWorld(sx, sy);
 
-      textEditor.remove();
+      textarea.remove();
       textEditor = null;
 
       if (value.trim()) {
@@ -2962,7 +4151,8 @@
           : "user",
       order: orderCounter++,
       createdAt: Date.now(),
-      label: "",
+      label: presetLabel,
+      rotation: 0,
     };
         texts.push(t);
         registerUser(currentUser);
@@ -3019,10 +4209,13 @@
     textEditor = textarea;
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
+    let finished = false;
     const finish = () => {
-      if (!textEditor) return;
-      const value = textEditor.value;
-      textEditor.remove();
+      if (finished) return;
+      finished = true;
+      if (textEditor !== textarea) return;
+      const value = textarea.value;
+      textarea.remove();
       textEditor = null;
       const trimmed = value.trim();
       if (!trimmed) {
@@ -3085,6 +4278,7 @@
       order: orderCounter++,
       createdAt: Date.now(),
       label: "",
+      rotation: 0,
     };
     texts.push(t);
     registerUser(currentUser);
@@ -3149,6 +4343,33 @@
     pendingTextPos = null;
     const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
     const isRightButton = e.button === 2;
+
+    if (e.button === 0 && e.ctrlKey) {
+      e.preventDefault();
+      const wasSelected = selectAtPoint(canvasPos);
+      if (wasSelected) {
+        rotateSelection(activeCtrlSide === "right" ? "ccw" : "cw");
+        return;
+      }
+    }
+
+    if (e.button === 0 && e.detail >= 2) {
+      ignoreNextDblClick = true;
+      const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
+      if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
+        return;
+      }
+      const textIndex = hitTestText(canvasPos.x, canvasPos.y);
+      if (textIndex >= 0) {
+        editTextAt(textIndex);
+        return;
+      }
+      if (activeLayer !== "image" && requireUser()) {
+        createTextEditorAt(canvasPos.x, canvasPos.y);
+      }
+      return;
+    }
+
     if (isRightButton) {
       rightButtonDown = true;
       rightButtonStart = { x: e.clientX, y: e.clientY, canvas: canvasPos };
@@ -3203,9 +4424,22 @@
           } else if (it.type === "draft") {
             const s = draftStrokes[it.index];
             return { type: "draft", index: it.index, points: s ? s.points.map((p) => ({ ...p })) : [] };
+          } else if (it.type === "draft-group") {
+            const pts = {};
+            it.indices.forEach((idx) => {
+              const s = draftStrokes[idx];
+              if (s) pts[idx] = s.points.map((p) => ({ ...p }));
+            });
+            return { type: "draft-group", indices: it.indices.slice(), points: pts };
           }
           return null;
         }) || [];
+      return;
+    }
+
+    if (currentTool === "fill") {
+      if (!requireUser()) return;
+      fillClosedStrokeAt(worldPos);
       return;
     }
 
@@ -3217,7 +4451,7 @@
         activeLayer !== "user" &&
         activeLayer !== "admin" &&
         activeLayer !== "draft" &&
-        !(activeLayer === "image" && currentUser === "Admin")
+        !(activeLayer === "image" && isAdminUser())
       )
         return;
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
@@ -3252,7 +4486,7 @@
           activeLayer !== "user" &&
           activeLayer !== "admin" &&
           activeLayer !== "base" &&
-          !(activeLayer === "image" && currentUser === "Admin")
+          !(activeLayer === "image" && isAdminUser())
         )
           return;
         const stroke = {
@@ -3367,16 +4601,7 @@
     const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
     if (strokeIndex >= 0) {
       ensureSnapshotForAction();
-      const gs = strokes[strokeIndex];
-      if (gs && gs.groupId) {
-        const indices = [];
-        strokes.forEach((st, i) => st.groupId === gs.groupId && indices.push(i));
-        if (indices.length > 0) {
-          selected = { type: "stroke-group", groupId: gs.groupId, indices };
-        }
-      } else {
-        selected = { type: "stroke", index: strokeIndex };
-      }
+      selected = getStrokeGroupSelection(strokeIndex);
       const s = strokes[strokeIndex];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
@@ -3393,8 +4618,11 @@
       const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
       if (draftIndex >= 0) {
         ensureSnapshotForAction();
-        selected = { type: "draft", index: draftIndex };
-        const s = draftStrokes[draftIndex];
+        selected = getDraftGroupSelection(draftIndex);
+        const s =
+          selected?.type === "draft-group"
+            ? draftStrokes[selected.indices[0]]
+            : draftStrokes[draftIndex];
         const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
         dragOffsetWorld = {
           x: worldPos.x - (s.points[0]?.x || worldPos.x),
@@ -3406,17 +4634,14 @@
       }
     }
 
-    // 何もない場所 → テキスト入力座標を記憶（キー入力で開始）
+    // 何もない場所 → 範囲選択の開始点として扱う
     selectionDragActive = true;
     isSelectingArea = false;
     selectionDragStart = canvasPos;
     selectionDragCurrent = canvasPos;
     selected = null;
-    if (activeLayer !== "image") {
-      pendingTextPos = { x: canvasPos.x, y: canvasPos.y };
-    } else {
-      pendingTextPos = null;
-    }
+    multiSelection = null;
+    pendingTextPos = null;
     redraw();
     updateFooterByState();
   }
@@ -3512,6 +4737,13 @@
           const s = draftStrokes[it.index];
           if (!s || !it.points) return;
           s.points = it.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        } else if (it.type === "draft-group") {
+          it.indices.forEach((idx) => {
+            const s = draftStrokes[idx];
+            const base = it.points?.[idx];
+            if (!s || !base) return;
+            s.points = base.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+          });
         }
       });
       redraw();
@@ -3580,6 +4812,17 @@
         const diffX = dx - s.points[0].x;
         const diffY = dy - s.points[0].y;
         s.points = s.points.map((p) => ({ x: p.x + diffX, y: p.y + diffY }));
+      } else if (selected.type === "draft-group") {
+        const ref = draftStrokes[selected.indices[0]];
+        const dx = worldPos.x - dragOffsetWorld.x;
+        const dy = worldPos.y - dragOffsetWorld.y;
+        const diffX = dx - ref.points[0].x;
+        const diffY = dy - ref.points[0].y;
+        selected.indices.forEach((idx) => {
+          const st = draftStrokes[idx];
+          if (!st) return;
+          st.points = st.points.map((p) => ({ x: p.x + diffX, y: p.y + diffY }));
+        });
       } else if (selected.type === "stroke-group") {
         const ref = strokes[selected.indices[0]];
         const dx = worldPos.x - dragOffsetWorld.x;
@@ -3683,6 +4926,11 @@
           height: selectionDragCurrent.y - selectionDragStart.y,
         };
         applyLassoSelection(rectScreen);
+      } else {
+        selected = null;
+        multiSelection = null;
+        redraw();
+        updateFooterByState();
       }
       selectionDragActive = false;
       isSelectingArea = false;
@@ -3696,6 +4944,13 @@
         const t = texts[selected.index];
         textDefaultFontSizeWorld = t.fontSize;
       }
+    }
+
+    const resizedFrameImage =
+      isResizingObject && selected?.type === "image" ? images[selected.index] : null;
+    const frameResizeHandled = !!resizedFrameImage?.tagType;
+    if (frameResizeHandled) {
+      refreshFrameImageForCurrentSize(resizedFrameImage, { emit: socketConnected });
     }
 
     // 移動・リサイズを共有
@@ -3738,17 +4993,31 @@
               patch,
             });
           });
+        } else if (selected.type === "draft") {
+          const s = draftStrokes[selected.index];
+          if (s) {
+            socket.emit("draft:stroke:add", { boardId, stroke: s });
+          }
+        } else if (selected.type === "draft-group") {
+          selected.indices.forEach((idx) => {
+            const s = draftStrokes[idx];
+            if (s) {
+              socket.emit("draft:stroke:add", { boardId, stroke: s });
+            }
+          });
         }
       }
       if (isResizingObject) {
         if (selected.type === "image") {
           const imgObj = images[selected.index];
-          socket.emit("item:update", {
-            boardId,
-            type: "image",
-            id: imgObj.id,
-            patch: { width: imgObj.width, height: imgObj.height },
-          });
+          if (!frameResizeHandled) {
+            socket.emit("item:update", {
+              boardId,
+              type: "image",
+              id: imgObj.id,
+              patch: { width: imgObj.width, height: imgObj.height },
+            });
+          }
         } else if (selected.type === "text") {
           const t = texts[selected.index];
           socket.emit("item:update", {
@@ -3813,12 +5082,15 @@
           } else if (it.type === "draft") {
             const s = draftStrokes[it.index];
             if (s) {
-              socket.emit("draft:stroke:update", {
-                boardId,
-                id: s.id,
-                patch: { points: s.points.map((p) => ({ x: p.x, y: p.y })) },
-              });
+              socket.emit("draft:stroke:add", { boardId, stroke: s });
             }
+          } else if (it.type === "draft-group") {
+            it.indices.forEach((idx) => {
+              const s = draftStrokes[idx];
+              if (s) {
+                socket.emit("draft:stroke:add", { boardId, stroke: s });
+              }
+            });
           }
         });
       }
@@ -3883,19 +5155,12 @@
           layer
         );
       } else if (shapeMode === "grid") {
-        const x0 = Math.min(shapeStart.x, worldPos.x);
-        const x1 = Math.max(shapeStart.x, worldPos.x);
-        const y0 = Math.min(shapeStart.y, worldPos.y);
-        const y1 = Math.max(shapeStart.y, worldPos.y);
-        const w = x1 - x0;
-        const h = y1 - y0;
-        const cols = Math.max(2, shapeGridCols || 2);
-        const rows = Math.max(2, shapeGridRows || 2);
-        const stepX = w / cols;
-        const stepY = h / rows;
+        const { x0, y0, x1, y1, side } = getSquareBoundsFromDrag(shapeStart, worldPos);
+        const n = Math.max(2, shapeGridRows || shapeGridCols || 2);
+        const step = side / n;
         const groupId = genId();
-        for (let i = 0; i <= rows; i++) {
-          const y = y0 + stepY * i;
+        for (let i = 0; i <= n; i++) {
+          const y = y0 + step * i;
           createStroke(
             [
               { x: x0, y },
@@ -3905,8 +5170,8 @@
             { groupId }
           );
         }
-        for (let j = 0; j <= cols; j++) {
-          const x = x0 + stepX * j;
+        for (let j = 0; j <= n; j++) {
+          const x = x0 + step * j;
           createStroke(
             [
               { x, y: y0 },
@@ -3937,12 +5202,19 @@
       const height = Math.max(Math.abs(y1 - y0), 16);
       const placeX = Math.min(x0, x1);
       const placeY = Math.min(y0, y1);
+      const placedFrameType = framePlaceType || "free";
       const label =
-        framePlaceType === "free" ? `フレーム${frameCounter}` : framePlaceType === "omote" ? "表" : "裏";
-      if (framePlaceType === "free") {
+        placedFrameType === "free"
+          ? `フレーム${frameCounter}`
+          : placedFrameType === "omoteura"
+          ? "表裏"
+          : placedFrameType === "omote"
+          ? "表"
+          : "裏";
+      if (placedFrameType === "free") {
         frameCounter += 1;
       }
-      const dataUrl = createFrameTag(framePlaceType || "free", width * scale, height * scale, label);
+      const dataUrl = createFrameTag(placedFrameType, width * scale, height * scale, label);
       const img = new Image();
       img.onload = () => {
         const imgObj = {
@@ -3956,11 +5228,15 @@
           layer: "image",
           order: orderCounter++,
           user: currentUser,
-          tagType: framePlaceType || "frame",
+          rotation: 0,
+          tagType: placedFrameType,
           tagLabel: label,
+          imageName: label,
+          imageListOrder: bumpImageListOrderCounter(),
         };
         images.push(imgObj);
         registerUser(currentUser);
+        refreshImageList();
         emitImageAdd(imgObj);
         currentTool = "select";
         updateToolButtons();
@@ -3994,101 +5270,46 @@
     updateFooterByState();
   });
 
-  // --- ドラッグ＆ドロップ（画像） ---
-  canvas.addEventListener("dragover", (e) => {
+  function getImageFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    if (dataTransfer.files && dataTransfer.files.length > 0) {
+      return Array.from(dataTransfer.files).filter((file) => file.type && file.type.startsWith("image/"));
+    }
+    if (dataTransfer.items && dataTransfer.items.length > 0) {
+      return Array.from(dataTransfer.items)
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter((file) => file && file.type && file.type.startsWith("image/"));
+    }
+    return [];
+  }
+
+  function handleImageDrag(e) {
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = "copy";
     }
-  });
+  }
 
-  canvas.addEventListener("dragenter", (e) => {
+  function handleImageDrop(e) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = "copy";
-    }
-  });
-
-  canvas.addEventListener("drop", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
+    const files = getImageFilesFromDataTransfer(e.dataTransfer);
+    if (!files.length) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const worldPos = screenToWorld(x, y);
-    if (!e.dataTransfer) return;
+    addImageFilesAt(files, worldPos.x, worldPos.y, getImageTargetLayer());
+  }
 
-    let files = [];
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      files = Array.from(e.dataTransfer.files);
-    } else if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-      files = Array.from(e.dataTransfer.items)
-        .filter((item) => item.kind === "file")
-        .map((item) => item.getAsFile())
-        .filter(Boolean);
-    }
-
-    files = files.filter((file) => file.type && file.type.startsWith("image/"));
-    if (!files.length) return;
-
-    (async () => {
-      const gapX = 6 / scale;
-      const gapY = 16 / scale;
-      const perRow = 4;
-      const layout = {
-        startX: worldPos.x,
-        currentX: worldPos.x,
-        y: worldPos.y,
-        gapX,
-        gapY,
-        count: 0,
-        perRow,
-        lastRowHeight: 0,
-      };
-
-      for (const file of files) {
-        try {
-          const { img, src } = await loadImageFromFile(file);
-          const maxWorldWidth = (canvas.width / scale) * 0.6;
-          const maxWorldHeight = (canvas.height / scale) * 0.6;
-          let w = img.width;
-          let h = img.height;
-          const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
-          w *= r;
-          h *= r;
-
-          const imgObj = {
-            id: genId(),
-            img,
-            src,
-          x: layout.currentX,
-          y: layout.y - h / 2,
-          width: w,
-          height: h,
-          layer: getImageTargetLayer(),
-          order: orderCounter++,
-          user: currentUser,
-        };
-          images.push(imgObj);
-          registerUser(currentUser);
-          emitImageAdd(imgObj);
-
-          layout.currentX += w + gapX;
-          layout.lastRowHeight = Math.max(layout.lastRowHeight, h);
-          layout.count += 1;
-          if (layout.count % perRow === 0) {
-            layout.currentX = layout.startX;
-            layout.y += layout.lastRowHeight + gapY;
-            layout.lastRowHeight = 0;
-          }
-        } catch (err) {
-          console.error("failed to load dropped image", err);
-        }
-      }
-      redraw();
-    })();
+  // --- ドラッグ＆ドロップ（画像） ---
+  [canvas, container].forEach((target) => {
+    if (!target) return;
+    target.addEventListener("dragover", handleImageDrag);
+    target.addEventListener("dragenter", handleImageDrag);
+    target.addEventListener("drop", handleImageDrop);
   });
 
   // --- クリップボード貼り付け ---
@@ -4109,7 +5330,7 @@
       const file = imageItem.getAsFile();
       if (file) {
         e.preventDefault();
-        addImageFile(file, worldPos.x, worldPos.y);
+        addImageFile(file, worldPos.x, worldPos.y, null, getImageTargetLayer());
       }
       return;
     }
@@ -4198,6 +5419,9 @@
   });
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Control") {
+      activeCtrlSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
+    }
     updateFooterByState();
     // 注目（レーザーポインター）開始
     if (e.ctrlKey && e.altKey && e.shiftKey && !attentionActive) {
@@ -4237,6 +5461,19 @@
       return;
     }
 
+    if (
+      e.key === "Control" &&
+      !e.repeat &&
+      !e.altKey &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      getSelectionItems().length > 0
+    ) {
+      e.preventDefault();
+      rotateSelection(activeCtrlSide === "right" ? "ccw" : "cw");
+      return;
+    }
+
     // Ctrl/Cmd + Z: Undo
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
@@ -4258,64 +5495,45 @@
       return;
     }
 
-    const isPrintable =
-      e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-    const isEnter = e.key === "Enter";
-    if (!isPrintable && !isEnter) return;
-
-    // 選択モード → クリックした座標を待つ。ペンモード → マウス位置から開始。
-    let pos = pendingTextPos;
-    if (!pos && currentTool === "pen") {
-      const rect = canvas.getBoundingClientRect();
-      const x = lastMouseScreen.x || rect.width / 2;
-      const y = lastMouseScreen.y || rect.height / 2;
-      pos = { x, y };
-    }
-    if (!pos) return;
-    if (activeLayer === "image") return;
-    if (!requireUser()) return;
-
-    const initialChar = isPrintable ? e.key : "";
-    e.preventDefault();
-    createTextEditorAt(pos.x, pos.y, initialChar);
     pendingTextPos = null;
   });
 
   canvas.addEventListener("dblclick", (e) => {
+    if (ignoreNextDblClick) {
+      ignoreNextDblClick = false;
+      e.preventDefault();
+      return;
+    }
     if (textEditor) return;
+    e.preventDefault();
     const canvasPos = getCanvasPointFromEvent(e);
+    const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
+    if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
+      return;
+    }
     const textIndex = hitTestText(canvasPos.x, canvasPos.y);
     if (textIndex >= 0) {
       editTextAt(textIndex);
       return;
     }
-    const frameIndex = hitTestFrame(canvasPos.x, canvasPos.y);
-    if (frameIndex >= 0) {
-      const fr = frames[frameIndex];
-      const current = fr.label || "";
-      const next = window.prompt("フレーム名を入力", current);
-      if (next === null) return;
-      const trimmed = next.trim();
-      fr.label = trimmed;
-      if (socketConnected) {
-        socket.emit("item:update", {
-          boardId,
-          type: "frame",
-          id: fr.id,
-          patch: { label: fr.label },
-        });
-      }
-      redraw();
-    }
+    if (activeLayer === "image") return;
+    if (!requireUser()) return;
+    e.preventDefault();
+    createTextEditorAt(canvasPos.x, canvasPos.y);
   });
 
   window.addEventListener("keyup", (e) => {
+    if (e.key === "Control") {
+      const releasedSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
+      if (activeCtrlSide === releasedSide) activeCtrlSide = null;
+    }
     if (attentionActive && !(e.ctrlKey && e.altKey && e.shiftKey)) {
       endAttention();
     }
   });
 
   window.addEventListener("blur", () => {
+    activeCtrlSide = null;
     if (attentionActive) {
       // 少し猶予をもって終了
       clearTimeout(attentionTimeout);
@@ -4369,7 +5587,7 @@
     // ストローク本体
     const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
     if (strokeIndex >= 0) {
-      selected = { type: "stroke", index: strokeIndex };
+      selected = getStrokeGroupSelection(strokeIndex);
       redraw();
       return true;
     }
@@ -4378,7 +5596,7 @@
     if (activeLayer === "draft") {
       const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
       if (draftIndex >= 0) {
-        selected = { type: "draft", index: draftIndex };
+        selected = getDraftGroupSelection(draftIndex);
         redraw();
         return true;
       }
@@ -4387,23 +5605,56 @@
   }
 
   function selectionHasDraft() {
-    return getSelectionItems().some((it) => it.type === "draft");
+    return getSelectionItems().some((it) => it.type === "draft" || it.type === "draft-group");
   }
 
   function selectionHasStrokeOrText() {
-    return getSelectionItems().some((it) => it.type === "stroke" || it.type === "text");
+    return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "text");
   }
 
   function selectionHasImage() {
     return getSelectionItems().some((it) => it.type === "image");
   }
 
+  function getSelectedImages() {
+    return getSelectionItems()
+      .filter((it) => it.type === "image")
+      .map((it) => images[it.index])
+      .filter(Boolean);
+  }
+
+  function setSelectedImageName() {
+    const targets = getSelectedImages();
+    if (!targets.length) return;
+    const current = targets.length === 1 ? targets[0].imageName || "" : "";
+    const next = window.prompt(
+      targets.length === 1 ? "画像名を入力" : "選択中の画像名をまとめて入力",
+      current
+    );
+    if (next === null) return;
+    const imageName = next.trim();
+    targets.forEach((imgObj) => {
+      imgObj.imageName = imageName;
+      emitItemPatch("image", imgObj, { imageName });
+    });
+    refreshImageList();
+  }
+
   function selectionHasOrderable() {
     return collectOrderableSelectionItems().length > 0;
   }
 
+  function selectionHasRotatable() {
+    return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "draft" || it.type === "draft-group" || it.type === "text" || it.type === "image");
+  }
+
+  function selectionHasDraftCopyTarget() {
+    return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "text");
+  }
+
   function updateToolButtons() {
     const isPen = currentTool === "pen";
+    const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
     const isSelect = currentTool === "select" && !shapeMode;
     const isShapeLine = shapeMode === "line";
@@ -4412,6 +5663,10 @@
     if (penToolBtn) {
       penToolBtn.disabled = isPen;
       penToolBtn.classList.toggle("active", isPen);
+    }
+    if (fillToolBtn) {
+      fillToolBtn.disabled = isFill;
+      fillToolBtn.classList.toggle("active", isFill);
     }
     if (eraserToolBtn) {
       eraserToolBtn.disabled = isEraser;
@@ -4430,7 +5685,7 @@
     if (shapeGridBtn) {
       shapeGridBtn.classList.toggle("active", isShapeGrid);
     }
-    if (currentTool === "pen" || currentTool === "eraser") {
+    if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill") {
       canvas.style.cursor = "crosshair";
     } else {
       canvas.style.cursor = "default";
@@ -4500,27 +5755,41 @@
 
   colorPicker.addEventListener("input", () => {
     const c = colorPicker.value;
-    swatches.forEach((btn) => btn.classList.remove("selected"));
+    const swatch = getActiveColorSwatch();
+    if (swatch) {
+      swatches.forEach((btn) => btn.classList.remove("selected"));
+      swatch.classList.add("selected");
+      activeColorSwatch = swatch;
+      setPaletteItemColor(swatch, c);
+    }
     applyNewColor(c);
   });
 
-  swatches.forEach((btn) => {
-    const c = btn.getAttribute("data-color");
+  swatches.forEach((btn, index) => {
+    const c = paletteColors[index] || btn.getAttribute("data-color");
+    setPaletteItemColor(btn, c);
     btn.style.backgroundColor = c;
     btn.addEventListener("click", () => {
+      const c = btn.getAttribute("data-color");
       colorPicker.value = c;
       swatches.forEach((b) => b.classList.remove("selected"));
       btn.classList.add("selected");
+      activeColorSwatch = btn;
       applyNewColor(c);
     });
   });
   // デフォルトカラーにチェック
-  swatches[0].classList.add("selected");
+  if (swatches[0]) {
+    swatches[0].classList.add("selected");
+    activeColorSwatch = swatches[0];
+    currentColor = swatches[0].getAttribute("data-color") || currentColor;
+    colorPicker.value = currentColor;
+  }
 
   favButtons.forEach((btn) => {
-    const c = btn.getAttribute("data-color");
     btn.addEventListener("click", () => {
       if (!requireUser()) return;
+      const c = btn.getAttribute("data-color");
       const currentFav = favoritesByUser[currentUser];
       if (currentFav === c) {
         delete favoritesByUser[currentUser];
@@ -4549,10 +5818,26 @@
     resetShapeMode();
   });
 
+  if (fillToolBtn) {
+    fillToolBtn.addEventListener("click", () => {
+      if (!requireUser()) return;
+      if (activeLayer === "image") {
+        setActiveLayer(isAdminUser() ? "admin" : "user");
+      }
+      currentTool = "fill";
+      lastUserLayerTool = "fill";
+      selected = null;
+      updateToolButtons();
+      redraw();
+      showTransientFooterMessage("塗りつぶし：閉じた線の内側をクリックしてください。", 5000);
+      resetShapeMode();
+    });
+  }
+
   eraserToolBtn.addEventListener("click", () => {
     if (!requireUser()) return;
     if (activeLayer === "image") {
-      setActiveLayer(currentUser === "Admin" ? "admin" : "user");
+      setActiveLayer(isAdminUser() ? "admin" : "user");
     }
     currentTool = "eraser";
     lastUserLayerTool = "eraser";
@@ -4571,9 +5856,19 @@
 
   textListBtn.addEventListener("click", toggleTextListPanelView);
 
+  if (imageListBtn) {
+    imageListBtn.addEventListener("click", toggleImageListPanelView);
+  }
+
   textListCloseBtn.addEventListener("click", () => {
     closeTextList();
   });
+
+  if (imageListCloseBtn) {
+    imageListCloseBtn.addEventListener("click", () => {
+      closeImageList();
+    });
+  }
 
   if (textListCopyTaggedBtn) {
     textListCopyTaggedBtn.addEventListener("click", () => {
@@ -4584,6 +5879,17 @@
   if (textListCopyPlainBtn) {
     textListCopyPlainBtn.addEventListener("click", () => {
       copyTextList(buildTextListPlainText());
+    });
+  }
+
+  if (imageFileInput) {
+    imageFileInput.addEventListener("change", () => {
+      const files = Array.from(imageFileInput.files || []);
+      if (!files.length) return;
+      const center = getCanvasCenterWorld();
+      const targetLayer = pendingImageInsertLayer || getImageTargetLayer();
+      pendingImageInsertLayer = null;
+      addImageFilesAt(files, center.x, center.y, targetLayer);
     });
   }
 
@@ -4605,22 +5911,33 @@
     if (!contextMenu) return;
     const hasDraft = selectionHasDraft();
     const hasAny = getSelectionItems().length > 0;
-    const hasMoveTarget = selectionHasStrokeOrText() && currentUser === "Admin";
-    const hasMoveImageTarget = selectionHasImage() && currentUser === "Admin";
+    const hasImage = selectionHasImage();
+    const hasMoveTarget = selectionHasStrokeOrText() && isAdminUser();
+    const hasMoveImageTarget = hasImage && isAdminUser();
     const hasOrderable = selectionHasOrderable();
+    const hasRotatable = selectionHasRotatable();
+    const hasDraftCopyTarget = selectionHasDraftCopyTarget();
 
     contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.remove("disabled"));
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
     const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
     const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
+    const renameImageBtn = contextMenu.querySelector('button[data-action="rename-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
     const frontBtn = contextMenu.querySelector('button[data-action="bring-front"]');
     const backBtn = contextMenu.querySelector('button[data-action="send-back"]');
+    const rotateRightBtn = contextMenu.querySelector('button[data-action="rotate-right"]');
+    const rotateLeftBtn = contextMenu.querySelector('button[data-action="rotate-left"]');
+    const copyDraftBtn = contextMenu.querySelector('button[data-action="copy-draft"]');
     if (applyBtn && !hasDraft) applyBtn.classList.add("disabled");
     if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
     if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
+    if (renameImageBtn && !hasImage) renameImageBtn.classList.add("disabled");
     if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
     if (backBtn && !hasOrderable) backBtn.classList.add("disabled");
+    if (rotateRightBtn && !hasRotatable) rotateRightBtn.classList.add("disabled");
+    if (rotateLeftBtn && !hasRotatable) rotateLeftBtn.classList.add("disabled");
+    if (copyDraftBtn && !hasDraftCopyTarget) copyDraftBtn.classList.add("disabled");
     if (dupBtn && !hasAny) dupBtn.classList.add("disabled");
     if (!hasAny) return;
 
@@ -4644,10 +5961,18 @@
         moveSelectionToBase();
       } else if (action === "move-image") {
         moveSelectionToImage();
+      } else if (action === "rename-image") {
+        setSelectedImageName();
       } else if (action === "bring-front") {
         moveSelectionOrder("front");
       } else if (action === "send-back") {
         moveSelectionOrder("back");
+      } else if (action === "rotate-right") {
+        rotateSelection("cw");
+      } else if (action === "rotate-left") {
+        rotateSelection("ccw");
+      } else if (action === "copy-draft") {
+        copySelectionToDraft();
       }
       hideContextMenu();
     });
@@ -4692,6 +6017,11 @@
       return;
     }
 
+    if (currentTool === "fill") {
+      setFooterMessage("塗りつぶし：閉じた線の内側をクリックしてください。");
+      return;
+    }
+
     // デフォルト
     setFooterMessage("Ctrl + Alt + Shift でレーザーポインタを表示できます。（全員に見えます）");
   }
@@ -4712,14 +6042,10 @@
     toggleStrokeAlpha();
   });
 
-  if (tagOmoteBtn) {
-    tagOmoteBtn.addEventListener("click", () => {
-      insertSideTag("omote");
-    });
-  }
-  if (tagUraBtn) {
-    tagUraBtn.addEventListener("click", () => {
-      insertSideTag("ura");
+  if (changeUserBtn) {
+    changeUserBtn.addEventListener("click", () => {
+      closeOtherMenu();
+      openUserModal();
     });
   }
 
@@ -4735,9 +6061,14 @@
     }
   });
   if (layerToggleBtn) {
-    layerToggleBtn.addEventListener("click", () => {
+    layerToggleBtn.addEventListener("click", (e) => {
       if (!currentUser && activeLayer === "user") {
         openUserModal();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        toggleHiddenSharedLayer();
         return;
       }
       toggleActiveLayer();
@@ -4831,6 +6162,7 @@
     if (insertMenu && !insertMenu.classList.contains("hidden")) {
       positionInsertMenu();
     }
+    positionImageListPanel();
   });
   // Undo（最後に追加したテキスト/ペン/画像を取り消し）
   undoBtn.addEventListener("click", undoLast);
@@ -4843,10 +6175,14 @@
   refreshCompactMode();
   updateFooterByState();
   loadBoardUsersFromServer();
-  // ブラウザ更新時は必ずユーザー名入力を促す
-  openUserModal();
+  const lastUser = loadLastUser().trim();
+  if (lastUser) {
+    setCurrentUser(lastUser);
+  } else {
+    openUserModal();
+  }
   function getShapeTargetLayer() {
-    if (activeLayer === "image") return currentUser === "Admin" ? "image" : "base";
+    if (activeLayer === "image") return isAdminUser() ? "image" : "base";
     return activeLayer || "user";
   }
 
@@ -4888,24 +6224,16 @@
     shapeGridCols = 0;
     shapeTargetLayer = null;
     if (kind === "grid") {
-      let rows = window.prompt("行数 n を入力してください", "5");
-      if (rows === null) {
+      let n = window.prompt("マス目の数 n を入力してください", "5");
+      if (n === null) {
         shapeMode = null;
         return;
       }
-      let cols = window.prompt("列数 m を入力してください", rows);
-      if (cols === null) {
-        shapeMode = null;
-        return;
-      }
-      rows = parseInt(rows, 10);
-      cols = parseInt(cols, 10);
-      if (!Number.isFinite(rows) || rows < 2) rows = 2;
-      if (!Number.isFinite(cols) || cols < 2) cols = 2;
-      if (rows > 30) rows = 30;
-      if (cols > 30) cols = 30;
-      shapeGridRows = rows;
-      shapeGridCols = cols;
+      n = parseInt(n, 10);
+      if (!Number.isFinite(n) || n < 2) n = 2;
+      if (n > 30) n = 30;
+      shapeGridRows = n;
+      shapeGridCols = n;
     }
     closeInsertMenu();
     showTransientFooterMessage("ドラッグして形を配置できます。", 4000);
@@ -4915,12 +6243,21 @@
     if (!src) return;
     if (!requireUser()) return;
     const center = getCanvasCenterWorld();
-    addTemplateImage(src, center.x, center.y);
+    const name = src.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+    addTemplateImage(src, center.x, center.y, getImageTargetLayer(), decodeURIComponent(name));
+  }
+
+  function chooseImageFiles() {
+    if (!requireUser()) return;
+    if (!imageFileInput) return;
+    pendingImageInsertLayer = getImageTargetLayer();
+    imageFileInput.value = "";
+    imageFileInput.click();
   }
 
   function startFramePlacement(type) {
     if (!requireUser()) return;
-    framePlaceType = type; // "omote" | "ura" | "free"
+    framePlaceType = type; // "omoteura" | "free"
     framePlaceStart = null;
     framePlacePreview = null;
     showTransientFooterMessage("ドラッグしてフレームの大きさを指定してください。", 4000);
@@ -4958,9 +6295,12 @@
       { label: "マス目 (n×n)", onClick: () => startShapeMode("grid") },
     ]);
 
+    addSection("画像", [
+      { label: "画像ファイル", onClick: () => chooseImageFiles() },
+    ]);
+
     addSection("フレーム", [
-      { label: "表", onClick: () => startFramePlacement("omote") },
-      { label: "裏", onClick: () => startFramePlacement("ura") },
+      { label: "表裏", onClick: () => startFramePlacement("omoteura") },
       {
         label: `フレーム${frameCounter}`,
         onClick: () => {
