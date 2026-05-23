@@ -33,6 +33,8 @@
   const shapeLineBtn = document.getElementById("shape-line-btn");
   const shapeRectBtn = document.getElementById("shape-rect-btn");
   const shapeGridBtn = document.getElementById("shape-grid-btn");
+  const textToolBtn = document.getElementById("text-tool-btn");
+  const textToolMenu = document.getElementById("text-tool-menu");
   const undoBtn = document.getElementById("undo-btn");
   const contextMenu = document.getElementById("context-menu");
   const layerToggleBtn = document.getElementById("layer-toggle-btn");
@@ -194,6 +196,7 @@
   let isResizingObject = false;
   let isErasing = false;
   let pendingTextPos = null;
+  let pendingTextMode = null; // "normal" | "grid" | null
   let activeStrokeId = null;
   let activeDraftId = null;
 
@@ -221,6 +224,7 @@
   // selected = { type: "image"|"text", index: number } or null
   let selected = null;
   let dragOffsetWorld = { x: 0, y: 0 };
+  let frameDragOffsets = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
 
   // テキスト入力用（HTMLの textarea オーバーレイ）
@@ -406,11 +410,12 @@
   }
 
   function canInteractImage(imgObj = null) {
-    if (activeLayer === "admin") return true;
     if (!imgObj) return false;
+    if (imgObj.tagType) return isImageVisible(imgObj);
+    if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
     if (activeLayer === "draft") return layer === "draft" && imgObj.user === currentUser;
-    if (activeLayer === "user") return layer === "user" && (!imgObj.user || imgObj.user === currentUser);
+    if (activeLayer === "user") return layer === "user";
     if (activeLayer === "base") return layer === "base";
     if (activeLayer === "image") return layer === "image";
     return false;
@@ -449,13 +454,62 @@
     return currentUser || "自分";
   }
 
+  function isCreationLockedLayer() {
+    return activeLayer === "image" || (activeLayer === "base" && !isAdminUser());
+  }
+
+  function isBaseCreationLocked() {
+    return activeLayer === "base" && !isAdminUser();
+  }
+
+  function isBackgroundCreationLocked() {
+    return activeLayer === "image";
+  }
+
+  function showCreationLockedMessage() {
+    const layerName = isBackgroundCreationLocked() ? "背景レイヤー" : "ベースレイヤー";
+    const subject = isBackgroundCreationLocked() ? "このレイヤー" : "一般ユーザー";
+    showTransientFooterMessage(
+      `${layerName}では、${subject}は移動・編集・削除のみできます。新規作成は通常レイヤーで行ってください。`,
+      5000
+    );
+  }
+
+  function stopCreationLockedLayerModes() {
+    if (!isCreationLockedLayer()) return;
+    if (currentTool !== "select" && currentTool !== "eraser") {
+      currentTool = "select";
+    }
+    pendingTextMode = null;
+    shapeMode = null;
+    shapeStart = null;
+    shapePreview = null;
+    shapeTargetLayer = null;
+    framePlaceType = null;
+    framePlaceStart = null;
+    framePlacePreview = null;
+    isDrawingShape = false;
+    isPlacingFrame = false;
+    isDrawing = false;
+    activeStrokeId = null;
+    closeInsertMenu();
+  }
+
+  function canCreateOnCurrentLayer() {
+    if (!isCreationLockedLayer()) return true;
+    stopCreationLockedLayerModes();
+    updateToolButtons();
+    showCreationLockedMessage();
+    return false;
+  }
+
   function updateLayerToggleUI() {
     const hasBtn = !!layerToggleBtn;
     const isImage = activeLayer === "image";
     const isAdmin = activeLayer === "admin";
     const labelText = (() => {
       if (isAdmin) return "Admin";
-      if (isImage) return "画像(共用)";
+      if (isImage) return "背景(共用)";
       if (activeLayer === "base") return "ベース(共用)";
       if (activeLayer === "draft") return "下書き";
       return layerUserLabel();
@@ -464,7 +518,7 @@
       if (isAdmin) {
         layerToggleBtn.textContent = "レイヤー: Admin";
       } else if (isImage) {
-        layerToggleBtn.textContent = "レイヤー: 画像(共用)";
+        layerToggleBtn.textContent = "レイヤー: 背景(共用)";
       } else if (activeLayer === "base") {
         layerToggleBtn.textContent = "レイヤー: ベースレイヤー(共用)";
       } else if (activeLayer === "draft") {
@@ -472,6 +526,9 @@
       } else {
         layerToggleBtn.textContent = `レイヤー: ${layerUserLabel()}`;
       }
+      layerToggleBtn.title = isAdminUser()
+        ? "クリックでレイヤー切り替え"
+        : "クリックで通常/下書き切り替え。Ctrl+クリックで共有レイヤー表示";
       layerToggleBtn.classList.toggle("is-image", isImage && !isAdmin);
     }
     if (layerDisplay) {
@@ -479,11 +536,12 @@
     }
   }
 
-  function setActiveLayer(layer) {
+  function setActiveLayer(layer, opts = {}) {
     if (layer !== "user" && layer !== "base" && layer !== "image" && layer !== "admin" && layer !== "draft") return;
     if (activeLayer === layer) return;
-    if (!isAdminUser() && (layer === "base" || layer === "image" || layer === "admin")) {
-      showTransientFooterMessage("ベース/画像/Adminレイヤーは Admin のみ使用できます。", 4000);
+    const allowSharedView = !!opts.allowSharedView;
+    if (!isAdminUser() && (layer === "admin" || (layer === "image" && !allowSharedView))) {
+      showTransientFooterMessage("背景/Adminレイヤーは Admin のみ使用できます。", 4000);
       return;
     }
 
@@ -519,11 +577,15 @@
     }
 
     activeLayer = layer;
+    stopCreationLockedLayerModes();
     updateLayerToggleUI();
+    updateToolButtons();
     const layerHints = {
       user: "通常レイヤー：描いたものは全員に見えます。",
-      base: "ベースレイヤー(共用)：背景として共有されます。",
-      image: "画像レイヤー：画像のみ操作できます。",
+      base: isAdminUser()
+        ? "ベースレイヤー(共用)：背景として共有されます。"
+        : "ベースレイヤー(共用)：一般ユーザーは移動・編集・削除のみできます。",
+      image: "背景レイヤー：背景画像のみ操作できます。",
       draft: "下書きレイヤー：自分にだけ見えます。",
       admin: "Admin：全レイヤーを操作できます。",
     };
@@ -533,11 +595,14 @@
   }
 
   function toggleHiddenSharedLayer() {
+    if (!isAdminUser()) {
+      const nextLayer =
+        activeLayer === "user" ? "base" : activeLayer === "base" ? "image" : "user";
+      setActiveLayer(nextLayer, { allowSharedView: true });
+      return;
+    }
     const nextLayer = activeLayer === "base" ? "image" : activeLayer === "image" ? "user" : "base";
-    const prevUser = currentUser;
-    if (!isAdminUser()) currentUser = "Admin";
     setActiveLayer(nextLayer);
-    currentUser = prevUser;
     updateLayerToggleUI();
   }
 
@@ -549,7 +614,7 @@
       else if (activeLayer === "image") setActiveLayer("draft");
       else setActiveLayer("user");
     } else {
-      // Admin 以外は「通常」と「下書き」のみ
+      // Admin 以外の通常切り替えは「通常」と「下書き」のみ
       if (activeLayer === "user") setActiveLayer("draft");
       else setActiveLayer("user");
     }
@@ -1143,16 +1208,82 @@
       ctx.rotate((rotation * Math.PI) / 180);
       ctx.translate(-worldW / 2, -worldH / 2);
     }
-    ctx.fillStyle = colors.body;
-    ctx.fillRect(0, 0, worldW, worldH);
-    ctx.fillStyle = colors.header;
+    const { radius } = drawModernFrameBase(ctx, worldW, worldH, colors.body, colors.header);
+    ctx.save();
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    ctx.clip();
+    const headerGradient = ctx.createLinearGradient(0, 0, 0, headerH);
+    headerGradient.addColorStop(0, lightenColor(colors.header, 0.28));
+    headerGradient.addColorStop(1, colors.header);
+    ctx.fillStyle = headerGradient;
     ctx.fillRect(0, 0, worldW, headerH);
+    ctx.fillStyle = "rgba(255,255,255,0.42)";
+    ctx.fillRect(0, 0, worldW, Math.max(1, headerH * 0.18));
+    ctx.fillStyle = "rgba(15,23,42,0.16)";
+    ctx.fillRect(0, Math.max(0, headerH - 1), worldW, 1);
+    ctx.restore();
     ctx.fillStyle = colors.text;
     ctx.font = "18px sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     drawFittedText(ctx, label, 12, headerH / 2, Math.max(0, worldW - 24));
     ctx.restore();
+  }
+
+  function roundedRectPath(ctx, x, y, w, h, r) {
+    const radius = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  function drawModernFrameBase(ctx, worldW, worldH, bodyColor, headerColor) {
+    const radius = Math.min(10, Math.max(4, Math.min(worldW, worldH) * 0.04));
+    ctx.save();
+    ctx.shadowColor = "rgba(15, 23, 42, 0.22)";
+    ctx.shadowBlur = Math.max(4, Math.min(16, Math.min(worldW, worldH) * 0.05));
+    ctx.shadowOffsetY = Math.max(2, Math.min(8, worldH * 0.025));
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    ctx.fillStyle = bodyColor;
+    ctx.fill();
+    ctx.restore();
+
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    const bodyGradient = ctx.createLinearGradient(0, 0, 0, worldH);
+    bodyGradient.addColorStop(0, lightenColor(bodyColor, 0.34));
+    bodyGradient.addColorStop(0.55, bodyColor);
+    bodyGradient.addColorStop(1, lightenColor(bodyColor, 0.12));
+    ctx.fillStyle = bodyGradient;
+    ctx.fill();
+
+    ctx.save();
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    ctx.clip();
+    const shine = ctx.createLinearGradient(0, 0, worldW, worldH);
+    shine.addColorStop(0, "rgba(255,255,255,0.34)");
+    shine.addColorStop(0.34, "rgba(255,255,255,0.08)");
+    shine.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = shine;
+    ctx.fillRect(0, 0, worldW, worldH);
+    ctx.restore();
+
+    const border = ctx.createLinearGradient(0, 0, 0, worldH);
+    border.addColorStop(0, "rgba(255,255,255,0.72)");
+    border.addColorStop(1, "rgba(15,23,42,0.3)");
+    roundedRectPath(ctx, 0.5, 0.5, Math.max(0, worldW - 1), Math.max(0, worldH - 1), radius);
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    return { radius, headerColor };
   }
 
   function drawOmoteUraFrameImage(ctx, imgObj, rotation) {
@@ -1172,17 +1303,44 @@
       ctx.translate(-worldW / 2, -worldH / 2);
     }
 
-    ctx.fillStyle = colors.omoteBody;
+    const { radius } = drawModernFrameBase(ctx, worldW, worldH, colors.uraBody, colors.uraBar);
+    ctx.save();
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    ctx.clip();
+
+    const omoteGradient = ctx.createLinearGradient(0, 0, worldW, midY);
+    omoteGradient.addColorStop(0, lightenColor(colors.omoteBody, 0.3));
+    omoteGradient.addColorStop(1, colors.omoteBody);
+    ctx.fillStyle = omoteGradient;
     ctx.fillRect(0, 0, worldW, midY);
-    ctx.fillStyle = colors.uraBody;
+
+    const uraGradient = ctx.createLinearGradient(0, midY, worldW, worldH);
+    uraGradient.addColorStop(0, lightenColor(colors.uraBody, 0.28));
+    uraGradient.addColorStop(1, colors.uraBody);
+    ctx.fillStyle = uraGradient;
     ctx.fillRect(0, midY, worldW, worldH - midY);
-    ctx.fillStyle = colors.omoteBar;
+
+    const omoteBarGradient = ctx.createLinearGradient(0, 0, barW, 0);
+    omoteBarGradient.addColorStop(0, lightenColor(colors.omoteBar, 0.18));
+    omoteBarGradient.addColorStop(1, colors.omoteBar);
+    ctx.fillStyle = omoteBarGradient;
     ctx.fillRect(0, 0, barW, midY);
-    ctx.fillStyle = colors.uraBar;
+
+    const uraBarGradient = ctx.createLinearGradient(0, midY, barW, midY);
+    uraBarGradient.addColorStop(0, lightenColor(colors.uraBar, 0.18));
+    uraBarGradient.addColorStop(1, colors.uraBar);
+    ctx.fillStyle = uraBarGradient;
     ctx.fillRect(0, midY, barW, worldH - midY);
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, Math.max(0, worldW - 2), Math.max(0, worldH - 2));
+
+    ctx.fillStyle = "rgba(255,255,255,0.38)";
+    ctx.fillRect(0, 0, worldW, Math.max(1, worldH * 0.035));
+    ctx.strokeStyle = "rgba(15,23,42,0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, midY);
+    ctx.lineTo(worldW, midY);
+    ctx.stroke();
+    ctx.restore();
 
     ctx.fillStyle = colors.text;
     ctx.font = "18px sans-serif";
@@ -1221,8 +1379,7 @@
   function canEditFrameLabel(imgObj) {
     if (!imgObj?.tagType) return false;
     if (imgObj.tagType === "omoteura") return false;
-    if (activeLayer === "image" || activeLayer === "admin") return true;
-    return false;
+    return isImageVisible(imgObj);
   }
 
   function hitTestFrameLabel(screenX, screenY) {
@@ -1781,7 +1938,7 @@
 
     const collect = (item) => {
       if (!allowUserLayer && item.type !== "image") return;
-      if (!allowImages && item.type === "image") return;
+      if (!allowImages && item.type === "image" && !images[item.index]?.tagType) return;
       if (item.type === "stroke") {
         const st = strokes[item.index];
         if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.push(st.id);
@@ -1795,7 +1952,7 @@
         if (t && canDeleteText(t) && isTextVisible(t)) textIds.push(t.id);
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (img && allowImages && canInteractImage(img)) imageIds.push(img.id);
+        if (img && (allowImages || img.tagType) && canInteractImage(img)) imageIds.push(img.id);
       } else if (item.type === "draft") {
         const d = draftStrokes[item.index];
         if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
@@ -1906,6 +2063,34 @@
     });
   }
 
+  function getSelectedTextItems() {
+    return getSelectionItems()
+      .filter((item) => item.type === "text")
+      .map((item) => ({ item, text: texts[item.index] }))
+      .filter(({ text }) => !!text);
+  }
+
+  function toggleTextWritingModeSelection() {
+    const items = getSelectionItems();
+    if (!items.length || items.some((item) => item.type !== "text")) return false;
+    const textItems = getSelectedTextItems();
+    if (!textItems.length) return false;
+    ensureSnapshotForAction();
+    textItems.forEach(({ text }) => {
+      text.vertical = !text.vertical;
+      text.rotation = 0;
+      emitItemPatch("text", text, { vertical: text.vertical, rotation: text.rotation });
+    });
+    refreshTextList();
+    redraw();
+    return true;
+  }
+
+  function handleAltSelectionAction(direction) {
+    if (toggleTextWritingModeSelection()) return true;
+    return rotateSelection(direction);
+  }
+
   function rotateSelection(direction) {
     const items = getSelectionItems();
     if (!items.length) return false;
@@ -2004,6 +2189,24 @@
     if (it.type === "text") return texts[it.index]?.order ?? 0;
     if (it.type === "image") return images[it.index]?.order ?? 0;
     return 0;
+  }
+
+  function getObjectOrderValue(type, obj, fallback = 0) {
+    if (!obj) return fallback;
+    return typeof obj.order === "number" ? obj.order : fallback;
+  }
+
+  function getFrameOrder(frameImg) {
+    return getObjectOrderValue("image", frameImg, 0);
+  }
+
+  function getMaxGlobalOrder() {
+    const orders = [];
+    strokes.forEach((s) => s && orders.push(getObjectOrderValue("stroke", s, 0)));
+    texts.forEach((t) => t && orders.push(getObjectOrderValue("text", t, 0)));
+    images.forEach((img) => img && orders.push(getObjectOrderValue("image", img, 0)));
+    draftStrokes.forEach((s) => s && orders.push(getObjectOrderValue("draft", s, 0)));
+    return orders.length ? Math.max(...orders) : 0;
   }
 
   function setItemOrder(it, newOrder) {
@@ -2133,11 +2336,27 @@
       return false;
     };
     const clonedStrokeIds = new Set();
+    const clonedDraftIds = new Set();
+    const clonedImageIds = new Set();
+    const clonedTextIds = new Set();
     const clonedGroupIds = new Map();
     const getCloneGroupId = (groupId) => {
       if (!groupId) return null;
       if (!clonedGroupIds.has(groupId)) clonedGroupIds.set(groupId, genId());
       return clonedGroupIds.get(groupId);
+    };
+    const duplicatedImageNames = new Map();
+    const getDuplicateImageName = (name) => {
+      const baseName = (name || "").trim();
+      if (!baseName) return "";
+      const match = baseName.match(/^(.*?)(?:\((\d+)\))?$/);
+      const root = (match?.[1] || baseName).trim() || baseName;
+      const used = new Set(images.map((img) => (img.imageName || "").trim()).filter(Boolean));
+      const start = Math.max(2, duplicatedImageNames.get(root) || 2);
+      let n = start;
+      while (used.has(`${root}(${n})`)) n += 1;
+      duplicatedImageNames.set(root, n + 1);
+      return `${root}(${n})`;
     };
     const cloneStroke = (s, idxOffset = 1) => {
       if (!s || clonedStrokeIds.has(s.id)) return;
@@ -2157,22 +2376,101 @@
         socket.emit("stroke:add", { boardId, stroke: clone });
       }
     };
+    const cloneFrameStroke = (s, idxOffset = 1) => {
+      if (!s || clonedStrokeIds.has(s.id)) return;
+      const clone = {
+        ...s,
+        id: genId(),
+        groupId: getCloneGroupId(s.groupId),
+        points: s.points.map((p) => ({ x: p.x + offset * idxOffset, y: p.y + offset * idxOffset })),
+        order: orderCounter++,
+        user: currentUser,
+      };
+      strokes.push(clone);
+      clonedStrokeIds.add(s.id);
+      if (socketConnected) socket.emit("stroke:add", { boardId, stroke: clone });
+    };
+    const cloneFrameDraft = (s, idxOffset = 1) => {
+      if (!s || clonedDraftIds.has(s.id)) return;
+      const clone = {
+        ...s,
+        id: genId(),
+        groupId: getCloneGroupId(s.groupId),
+        points: s.points.map((p) => ({ x: p.x + offset * idxOffset, y: p.y + offset * idxOffset })),
+        order: draftOrderCounter++,
+        user: currentUser,
+      };
+      draftStrokes.push(clone);
+      clonedDraftIds.add(s.id);
+      if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: clone });
+    };
+    const cloneFrameText = (t, idxOffset = 1) => {
+      if (!t || clonedTextIds.has(t.id)) return;
+      const clone = {
+        ...t,
+        id: genId(),
+        x: t.x + offset * idxOffset,
+        y: t.y + offset * idxOffset,
+        order: orderCounter++,
+        user: currentUser,
+      };
+      texts.push(clone);
+      clonedTextIds.add(t.id);
+      refreshTextList();
+      if (socketConnected) socket.emit("text:add", { boardId, text: clone });
+    };
+    const cloneFrameImage = (imgObj, idxOffset = 1) => {
+      if (!imgObj || clonedImageIds.has(imgObj.id)) return null;
+      const clone = {
+        ...imgObj,
+        id: genId(),
+        x: imgObj.x + offset * idxOffset,
+        y: imgObj.y + offset * idxOffset,
+        order: orderCounter++,
+        imageName: getDuplicateImageName(imgObj.imageName),
+        imageListOrder: bumpImageListOrderCounter(),
+        user: currentUser,
+      };
+      images.push(clone);
+      clonedImageIds.add(imgObj.id);
+      refreshImageList();
+      emitImageAdd(clone);
+      return clone;
+    };
+    const duplicateFrameWithContents = (frameImg, idxOffset = 1) => {
+      const contents = getFrameContentItems(frameImg);
+      const frameClone = cloneFrameImage(frameImg, idxOffset);
+      if (!frameClone) return;
+      contents.forEach((content) => {
+        if (content.type === "stroke") cloneFrameStroke(strokes[content.index], idxOffset);
+        else if (content.type === "draft") cloneFrameDraft(draftStrokes[content.index], idxOffset);
+        else if (content.type === "text") cloneFrameText(texts[content.index], idxOffset);
+        else if (content.type === "image") cloneFrameImage(images[content.index], idxOffset);
+      });
+    };
 
     items.forEach((item, idx) => {
-      if (item.type === "image" && allowImages) {
+      if (item.type === "image") {
         const imgObj = images[item.index];
         if (!imgObj) return;
+        if (!allowImages && !imgObj.tagType) return;
         if (!canInteractImage(imgObj)) return;
+        if (imgObj.tagType) {
+          duplicateFrameWithContents(imgObj, idx + 1);
+          return;
+        }
         const clone = {
           ...imgObj,
           id: genId(),
           x: imgObj.x + offset * (idx + 1) * 0.5,
           y: imgObj.y + offset * (idx + 1) * 0.5,
           order: orderCounter++,
+          imageName: getDuplicateImageName(imgObj.imageName),
           imageListOrder: bumpImageListOrderCounter(),
           user: currentUser,
         };
         images.push(clone);
+        clonedImageIds.add(imgObj.id);
         refreshImageList();
         emitImageAdd(clone);
       } else if (item.type === "stroke" && activeLayer !== "image") {
@@ -2202,8 +2500,262 @@
     redraw();
   }
 
+  function getImageBoundsWorld(img) {
+    if (!img) return null;
+    return { x: img.x, y: img.y, width: img.width, height: img.height };
+  }
+
+  function getFrameImagesForGrouping() {
+    return images
+      .map((img, index) => ({ img, index }))
+      .filter(({ img }) => img?.tagType)
+      .sort((a, b) => getFrameOrder(a.img) - getFrameOrder(b.img));
+  }
+
+  function getBoundsForFrameContentCandidate(item) {
+    if (!item) return null;
+    if (item.type === "stroke") return getStrokeBoundsWorld(strokes[item.index]);
+    if (item.type === "draft") return getStrokeBoundsWorld(draftStrokes[item.index]);
+    if (item.type === "text") return getTextBoundsWorld(texts[item.index]);
+    if (item.type === "image") return getImageBoundsWorld(images[item.index]);
+    return null;
+  }
+
+  function getOrderForFrameContentCandidate(item) {
+    if (!item) return 0;
+    if (item.type === "stroke") return getObjectOrderValue("stroke", strokes[item.index], 0);
+    if (item.type === "draft") return getObjectOrderValue("draft", draftStrokes[item.index], 0);
+    if (item.type === "text") return getObjectOrderValue("text", texts[item.index], 0);
+    if (item.type === "image") return getObjectOrderValue("image", images[item.index], 0);
+    return 0;
+  }
+
+  function findOwningFrameForItem(item) {
+    const bounds = getBoundsForFrameContentCandidate(item);
+    if (!bounds) return null;
+    const itemOrder = getOrderForFrameContentCandidate(item);
+    let owner = null;
+    getFrameImagesForGrouping().forEach(({ img, index }) => {
+      if (item.type === "image" && images[item.index]?.id === img.id) return;
+      const frameOrder = getFrameOrder(img);
+      if (frameOrder >= itemOrder) return;
+      const frameBounds = getImageBoundsWorld(img);
+      if (!frameBounds || !rectsOverlap(bounds, frameBounds)) return;
+      if (!owner || frameOrder > owner.order) {
+        owner = { frame: img, index, order: frameOrder };
+      }
+    });
+    return owner;
+  }
+
+  function getFrameContentItems(frameImg) {
+    if (!frameImg?.tagType) return [];
+    const frameBounds = getImageBoundsWorld(frameImg);
+    if (!frameBounds) return [];
+    const items = [];
+
+    strokes.forEach((s, index) => {
+      const owner = findOwningFrameForItem({ type: "stroke", index });
+      if (owner?.frame?.id === frameImg.id) {
+        items.push({ type: "stroke", index });
+      }
+    });
+    texts.forEach((t, index) => {
+      const owner = findOwningFrameForItem({ type: "text", index });
+      if (owner?.frame?.id === frameImg.id) {
+        items.push({ type: "text", index });
+      }
+    });
+    images.forEach((img, index) => {
+      if (!img || img.id === frameImg.id) return;
+      if (img.tagType) return;
+      const owner = findOwningFrameForItem({ type: "image", index });
+      if (owner?.frame?.id === frameImg.id) {
+        items.push({ type: "image", index });
+      }
+    });
+    draftStrokes.forEach((s, index) => {
+      if (!s) return;
+      const owner = findOwningFrameForItem({ type: "draft", index });
+      if (owner?.frame?.id === frameImg.id) {
+        items.push({ type: "draft", index });
+      }
+    });
+
+    return items;
+  }
+
+  function captureFrameDragItems(frameImg) {
+    if (!frameImg?.tagType) return null;
+    const captured = {
+      frameId: frameImg.id,
+      frameX: frameImg.x,
+      frameY: frameImg.y,
+      items: [],
+    };
+    getFrameContentItems(frameImg).forEach((item) => {
+      if (item.type === "stroke") {
+        const s = strokes[item.index];
+        if (s) {
+          captured.items.push({
+            type: "stroke",
+            index: item.index,
+            points: s.points.map((p) => ({ x: p.x, y: p.y })),
+          });
+        }
+      } else if (item.type === "draft") {
+        const s = draftStrokes[item.index];
+        if (s) {
+          captured.items.push({
+            type: "draft",
+            index: item.index,
+            points: s.points.map((p) => ({ x: p.x, y: p.y })),
+          });
+        }
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (t) captured.items.push({ type: "text", index: item.index, x: t.x, y: t.y });
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (img) captured.items.push({ type: "image", index: item.index, x: img.x, y: img.y });
+      }
+    });
+    return captured.items.length ? captured : null;
+  }
+
+  function applyFrameDragOffsets(captured, dx, dy) {
+    if (!captured) return;
+    captured.items.forEach((it) => {
+      if (it.type === "stroke") {
+        const s = strokes[it.index];
+        if (s) s.points = it.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      } else if (it.type === "draft") {
+        const s = draftStrokes[it.index];
+        if (s) s.points = it.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      } else if (it.type === "text") {
+        const t = texts[it.index];
+        if (t) {
+          t.x = it.x + dx;
+          t.y = it.y + dy;
+        }
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (img) {
+          img.x = it.x + dx;
+          img.y = it.y + dy;
+        }
+      }
+    });
+  }
+
+  function emitFrameDragUpdates(captured) {
+    if (!socketConnected || !captured) return;
+    captured.items.forEach((it) => {
+      if (it.type === "stroke") {
+        const s = strokes[it.index];
+        if (s) {
+          socket.emit("item:update", {
+            boardId,
+            type: "stroke",
+            id: s.id,
+            patch: { points: s.points.map((p) => ({ x: p.x, y: p.y })) },
+          });
+        }
+      } else if (it.type === "draft") {
+        const s = draftStrokes[it.index];
+        if (s) socket.emit("draft:stroke:add", { boardId, stroke: s });
+      } else if (it.type === "text") {
+        const t = texts[it.index];
+        if (t) {
+          socket.emit("item:update", {
+            boardId,
+            type: "text",
+            id: t.id,
+            patch: { x: t.x, y: t.y },
+          });
+        }
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (img) {
+          socket.emit("item:update", {
+            boardId,
+            type: "image",
+            id: img.id,
+            patch: { x: img.x, y: img.y },
+          });
+        }
+      }
+    });
+  }
+
+  function setFrameGroupedItemOrder(item, newOrder) {
+    if (!item || typeof newOrder !== "number") return;
+    if (item.type === "stroke") {
+      const s = strokes[item.index];
+      if (!s) return;
+      s.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "stroke",
+          id: s.id,
+          patch: { order: newOrder },
+        });
+      }
+    } else if (item.type === "draft") {
+      const s = draftStrokes[item.index];
+      if (!s) return;
+      s.order = newOrder;
+      bumpDraftOrderCounter(newOrder);
+      if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: s });
+    } else if (item.type === "text") {
+      const t = texts[item.index];
+      if (!t) return;
+      t.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: t.id,
+          patch: { order: newOrder },
+        });
+      }
+    } else if (item.type === "image") {
+      const img = images[item.index];
+      if (!img) return;
+      img.order = newOrder;
+      bumpOrderCounter(newOrder);
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "image",
+          id: img.id,
+          patch: { order: newOrder },
+        });
+      }
+    }
+  }
+
+  function bringFrameGroupToFront(frameImg) {
+    if (!frameImg?.tagType) return;
+    const frameIndex = images.findIndex((img) => img?.id === frameImg.id);
+    if (frameIndex < 0) return;
+    const contents = getFrameContentItems(frameImg);
+    let nextOrder = getMaxGlobalOrder() + 1;
+    setFrameGroupedItemOrder({ type: "image", index: frameIndex }, nextOrder++);
+    contents
+      .map((item) => ({ item, order: getOrderForFrameContentCandidate(item) }))
+      .sort((a, b) => a.order - b.order)
+      .forEach(({ item }) => {
+        setFrameGroupedItemOrder(item, nextOrder++);
+      });
+  }
+
   function fillClosedStrokeAt(worldPoint) {
     if (!requireUser()) return false;
+    if (!canCreateOnCurrentLayer()) return false;
     if (activeLayer === "image") {
       showTransientFooterMessage("塗りつぶしは通常/Admin/ベースレイヤーで使えます。", 3000);
       return false;
@@ -2432,10 +2984,6 @@
   }
 
   function moveSelectionToBase() {
-    if (!isAdminUser()) {
-      showTransientFooterMessage("ベースレイヤーへの移動は Admin のみ可能です。", 4000);
-      return;
-    }
     const items = [];
     if (multiSelection && multiSelection.items) {
       items.push(...multiSelection.items);
@@ -2486,14 +3034,28 @@
             });
           }
         }
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (img && img.layer !== "base") {
+          img.layer = "base";
+          if (socketConnected) {
+            socket.emit("item:update", {
+              boardId,
+              type: "image",
+              id: img.id,
+              patch: { layer: "base" },
+            });
+          }
+        }
       }
     });
+    refreshImageList();
     redraw();
   }
 
   function moveSelectionToImage() {
     if (!isAdminUser()) {
-      showTransientFooterMessage("画像レイヤーへの移動は Admin のみ可能です。", 4000);
+      showTransientFooterMessage("背景レイヤーへの移動は Admin のみ可能です。", 4000);
       return;
     }
     const items = [];
@@ -2567,16 +3129,35 @@
     const lineHeight = fontSize * 1.2;
     const paddingX = Math.max(4, fontSize * 0.35); // 横は少し広め
     const paddingY = Math.max(2, fontSize * 0.15); // 縦の余白は控えめに
+    const lines = t.lines && t.lines.length ? t.lines : [""];
+    if (t.gridText) {
+      const maxChars = lines.reduce((max, line) => Math.max(max, Array.from(line || "").length || 1), 1);
+      return {
+        x: t.x - paddingX,
+        y: t.y - paddingY,
+        width: (t.vertical ? lines.length : maxChars) * fontSize + paddingX * 2,
+        height: (t.vertical ? maxChars : lines.length) * fontSize + paddingY * 2,
+      };
+    }
+    if (t.vertical) {
+      const maxChars = lines.reduce((max, line) => Math.max(max, Array.from(line || "").length || 1), 1);
+      return {
+        x: t.x - paddingX,
+        y: t.y - paddingY,
+        width: lines.length * lineHeight + paddingX * 2,
+        height: maxChars * lineHeight + paddingY * 2,
+      };
+    }
 
     ctx.save();
     ctx.font = `${fontSize}px sans-serif`;
-    const maxWidth = t.lines.reduce((max, line) => {
+    const maxWidth = lines.reduce((max, line) => {
       const w = ctx.measureText(line || "").width;
       return Math.max(max, w);
     }, 0);
     ctx.restore();
 
-    const h = lineHeight * t.lines.length;
+    const h = lineHeight * lines.length;
     return {
       x: t.x - paddingX,
       y: t.y - paddingY,
@@ -2588,13 +3169,13 @@
   function canDeleteText(t) {
     if ((t.layer || "user") === "base") return activeLayer === "base";
     if (isAdminUser() || activeLayer === "admin") return true;
-    return !t.user || t.user === currentUser;
+    return (t.layer || "user") === "user";
   }
 
   function canDeleteStroke(stroke) {
     if ((stroke.layer || "user") === "base") return activeLayer === "base";
     if (isAdminUser() || activeLayer === "admin") return true;
-    return !stroke.user || stroke.user === currentUser;
+    return (stroke.layer || "user") === "user";
   }
 
   function canDeleteDraft(stroke) {
@@ -2655,6 +3236,8 @@
       label: text.label || "",
       layer: text.layer || "user",
       rotation: text.rotation || 0,
+      vertical: !!text.vertical,
+      gridText: !!text.gridText,
     };
     texts.push(withCreated);
     bumpOrderCounter(text.order);
@@ -3002,7 +3585,10 @@
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      const bounds = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
+      const bounds = imgObj.tagType
+        ? getFrameHeaderBoundsWorld(imgObj)
+        : { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
+      if (!bounds) continue;
       if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
         return i;
       }
@@ -3024,26 +3610,19 @@
     return "";
   }
 
-  function hitTestImageResizeHandle(screenX, screenY, radius = 8) {
+  function hitTestImageResizeHandle(screenX, screenY, radius = 12) {
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      const corners = getRotatedRectCornersWorld(
+      const hit = hitTestResizeHandlesScreen(
+        screenX,
+        screenY,
         { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
-        imgObj.rotation || 0
-      ).map((p) => worldToScreen(p.x, p.y));
-      const handles = [
-        { id: "tl", ...corners[0] },
-        { id: "tr", ...corners[1] },
-        { id: "br", ...corners[2] },
-        { id: "bl", ...corners[3] },
-      ];
-      for (const hpos of handles) {
-        const dx = screenX - hpos.x;
-        const dy = screenY - hpos.y;
-        if (dx * dx + dy * dy <= radius * radius) {
-          return { index: i, handle: hpos.id };
-        }
+        imgObj.rotation || 0,
+        radius
+      );
+      if (hit) {
+        return { index: i, handle: hit.handle };
       }
     }
     return null;
@@ -3064,23 +3643,18 @@
     return -1;
   }
 
-  function hitTestTextResizeHandle(screenX, screenY, radius = 8) {
+  function hitTestTextResizeHandle(screenX, screenY, radius = 12) {
     for (let i = texts.length - 1; i >= 0; i--) {
       const t = texts[i];
       if (!isTextVisible(t)) continue;
       if (!canInteractText(t)) continue;
       const b = getTextBoundsWorld(t);
-      const corners = getRotatedRectCornersWorld(b, t.rotation || 0);
-      const handle = worldToScreen(corners[2].x, corners[2].y);
-      const hx = handle.x;
-      const hy = handle.y;
-      const dx = screenX - hx;
-      const dy = screenY - hy;
-      if (dx * dx + dy * dy <= radius * radius) {
-        return i;
+      const hit = hitTestResizeHandlesScreen(screenX, screenY, b, t.rotation || 0, radius);
+      if (hit) {
+        return { index: i, handle: hit.handle };
       }
     }
-    return -1;
+    return null;
   }
 
   // --- 範囲選択 ---
@@ -3326,6 +3900,7 @@
         order: img.order ?? orderCounter + idx,
         index: idx,
         layer: img.layer || "base",
+        isFrame: !!img.tagType,
       });
     });
     texts.forEach((t, idx) =>
@@ -3336,6 +3911,44 @@
         layer: t.layer || "user",
       })
     );
+    combined.forEach((item) => {
+      if (item.type === "image") {
+        const img = images[item.index];
+        if (img?.tagType) {
+          item.frameGroupId = img.id;
+          item.frameGroupOrder = getFrameOrder(img);
+          item.frameGroupRank = 0;
+        } else {
+          const owner = findOwningFrameForItem({ type: "image", index: item.index });
+          if (owner) {
+            item.frameGroupId = owner.frame.id;
+            item.frameGroupOrder = owner.order;
+            item.frameGroupRank = 1;
+          }
+        }
+      } else if (item.type === "stroke") {
+        const owner = findOwningFrameForItem({ type: "stroke", index: item.index });
+        if (owner) {
+          item.frameGroupId = owner.frame.id;
+          item.frameGroupOrder = owner.order;
+          item.frameGroupRank = 1;
+        }
+      } else if (item.type === "draft-stroke") {
+        const owner = findOwningFrameForItem({ type: "draft", index: item.index });
+        if (owner) {
+          item.frameGroupId = owner.frame.id;
+          item.frameGroupOrder = owner.order;
+          item.frameGroupRank = 1;
+        }
+      } else if (item.type === "text") {
+        const owner = findOwningFrameForItem({ type: "text", index: item.index });
+        if (owner) {
+          item.frameGroupId = owner.frame.id;
+          item.frameGroupOrder = owner.order;
+          item.frameGroupRank = 1;
+        }
+      }
+    });
     combined.sort((a, b) => {
       const layerPriority = (item) => {
         const layer = item.layer || "user";
@@ -3345,6 +3958,16 @@
         if (layer === "draft") return 3; // 最上層
         return 4;
       };
+      if (a.frameGroupId || b.frameGroupId) {
+        const groupA = typeof a.frameGroupOrder === "number" ? a.frameGroupOrder : a.order ?? 0;
+        const groupB = typeof b.frameGroupOrder === "number" ? b.frameGroupOrder : b.order ?? 0;
+        if (groupA !== groupB) return groupA - groupB;
+        if (a.frameGroupId && b.frameGroupId && a.frameGroupId === b.frameGroupId) {
+          const rankA = a.frameGroupRank ?? 1;
+          const rankB = b.frameGroupRank ?? 1;
+          if (rankA !== rankB) return rankA - rankB;
+        }
+      }
       const lpA = layerPriority(a);
       const lpB = layerPriority(b);
       if (lpA !== lpB) return lpA - lpB;
@@ -3499,16 +4122,51 @@
         ctx.lineJoin = "round";
         ctx.miterLimit = 2.5;
 
-        t.lines.forEach((line, idx) => {
-          const y = base.y + idx * lineHeight;
+        if (t.gridText) {
+          const cell = fontSizePx;
+          ctx.font = `${cell * 0.9}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          t.lines.forEach((line, lineIdx) => {
+            Array.from(line || "").forEach((char, charIdx) => {
+              if (char === " ") return;
+              const x = base.x + (t.vertical ? lineIdx : charIdx) * cell + cell / 2;
+              const y = base.y + (t.vertical ? charIdx : lineIdx) * cell + cell / 2;
 
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = strokeWidth;
-          ctx.strokeText(line, base.x, y);
+              ctx.strokeStyle = "#ffffff";
+              ctx.lineWidth = strokeWidth;
+              ctx.strokeText(char, x, y);
 
-          ctx.fillStyle = fillColor;
-          ctx.fillText(line, base.x, y);
-        });
+              ctx.fillStyle = fillColor;
+              ctx.fillText(char, x, y);
+            });
+          });
+        } else if (t.vertical) {
+          t.lines.forEach((line, lineIdx) => {
+            const x = base.x + lineIdx * lineHeight;
+            Array.from(line || "").forEach((char, charIdx) => {
+              const y = base.y + charIdx * lineHeight;
+
+              ctx.strokeStyle = "#ffffff";
+              ctx.lineWidth = strokeWidth;
+              ctx.strokeText(char, x, y);
+
+              ctx.fillStyle = fillColor;
+              ctx.fillText(char, x, y);
+            });
+          });
+        } else {
+          t.lines.forEach((line, idx) => {
+            const y = base.y + idx * lineHeight;
+
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = strokeWidth;
+            ctx.strokeText(line, base.x, y);
+
+            ctx.fillStyle = fillColor;
+            ctx.fillText(line, base.x, y);
+          });
+        }
         ctx.restore();
 
         if (selected && selected.type === "text" && selected.index === item.index) {
@@ -3576,19 +4234,8 @@
       ctx.restore();
     }
 
-    if (multiSelection && multiSelection.rectWorld) {
-      const r = multiSelection.rectWorld;
-      const tl = worldToScreen(r.x, r.y);
-      const br = worldToScreen(r.x + r.width, r.y + r.height);
-      drawLassoRectScreen(
-        {
-          x: tl.x,
-          y: tl.y,
-          width: br.x - tl.x,
-          height: br.y - tl.y,
-        },
-        "#ff9800"
-      );
+    if (multiSelection && multiSelection.items) {
+      drawMultiSelectionItemBounds(multiSelection.items);
     }
     if (isSelectingArea && selectionDragStart && selectionDragCurrent) {
       drawLassoRectScreen(
@@ -3666,6 +4313,245 @@
       ctx.stroke();
     });
     ctx.restore();
+  }
+
+  function getSelectionItemBoundsWorld(item) {
+    if (!item) return null;
+    if (item.type === "image") {
+      const img = images[item.index];
+      if (!img) return null;
+      return {
+        bounds: { x: img.x, y: img.y, width: img.width, height: img.height },
+        rotation: img.rotation || 0,
+      };
+    }
+    if (item.type === "text") {
+      const text = texts[item.index];
+      if (!text) return null;
+      return { bounds: getTextBoundsWorld(text), rotation: text.rotation || 0 };
+    }
+    if (item.type === "stroke") {
+      const stroke = strokes[item.index];
+      return { bounds: getStrokeBoundsWorld(stroke), rotation: 0 };
+    }
+    if (item.type === "draft") {
+      const stroke = draftStrokes[item.index];
+      return { bounds: getStrokeBoundsWorld(stroke), rotation: 0 };
+    }
+    if (item.type === "stroke-group") {
+      const bounds = getSelectionWorldBounds(item.indices.map((idx) => ({ type: "stroke", index: idx })));
+      return { bounds, rotation: 0 };
+    }
+    if (item.type === "draft-group") {
+      const bounds = getSelectionWorldBounds(item.indices.map((idx) => ({ type: "draft", index: idx })));
+      return { bounds, rotation: 0 };
+    }
+    return null;
+  }
+
+  function drawMultiSelectionItemBounds(items) {
+    (items || []).forEach((item) => {
+      const resolved = getSelectionItemBoundsWorld(item);
+      if (!resolved || !resolved.bounds) return;
+      drawSelectionBoundsWorld(resolved.bounds, resolved.rotation || 0);
+    });
+  }
+
+  function getResizeHandlesScreen(bounds, rotation = 0) {
+    if (!bounds) return [];
+    const corners = getRotatedRectCornersWorld(bounds, rotation).map((p) =>
+      worldToScreen(p.x, p.y)
+    );
+    return [
+      { handle: "tl", ...corners[0] },
+      { handle: "tr", ...corners[1] },
+      { handle: "br", ...corners[2] },
+      { handle: "bl", ...corners[3] },
+    ];
+  }
+
+  function hitTestResizeHandlesScreen(screenX, screenY, bounds, rotation = 0, radius = 12) {
+    const handles = getResizeHandlesScreen(bounds, rotation);
+    for (const hpos of handles) {
+      const dx = screenX - hpos.x;
+      const dy = screenY - hpos.y;
+      if (dx * dx + dy * dy <= radius * radius) {
+        return hpos;
+      }
+    }
+    return null;
+  }
+
+  function hitTestMultiSelectionResizeHandle(screenX, screenY, radius = 12) {
+    if (!multiSelection || !multiSelection.items) return null;
+    for (let i = multiSelection.items.length - 1; i >= 0; i--) {
+      const item = multiSelection.items[i];
+      const resolved = getSelectionItemBoundsWorld(item);
+      if (!resolved || !resolved.bounds) continue;
+      const hit = hitTestResizeHandlesScreen(
+        screenX,
+        screenY,
+        resolved.bounds,
+        resolved.rotation || 0,
+        radius
+      );
+      if (hit) {
+        return { item, handle: hit.handle };
+      }
+    }
+    return null;
+  }
+
+  function getResizeAnchorForHandle(bounds, handle) {
+    if (!bounds) return null;
+    if (handle === "tl") return { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+    if (handle === "tr") return { x: bounds.x, y: bounds.y + bounds.height };
+    if (handle === "bl") return { x: bounds.x + bounds.width, y: bounds.y };
+    return { x: bounds.x, y: bounds.y };
+  }
+
+  function captureMultiResizeItems(items) {
+    const captured = [];
+    const seen = new Set();
+    const addStroke = (idx) => {
+      const s = strokes[idx];
+      if (!s || seen.has(`stroke:${s.id || idx}`)) return;
+      seen.add(`stroke:${s.id || idx}`);
+      captured.push({
+        type: "stroke",
+        index: idx,
+        points: s.points.map((p) => ({ x: p.x, y: p.y })),
+      });
+    };
+    const addDraft = (idx) => {
+      const s = draftStrokes[idx];
+      if (!s || seen.has(`draft:${s.id || idx}`)) return;
+      seen.add(`draft:${s.id || idx}`);
+      captured.push({
+        type: "draft",
+        index: idx,
+        points: s.points.map((p) => ({ x: p.x, y: p.y })),
+      });
+    };
+
+    (items || []).forEach((item) => {
+      if (!item) return;
+      if (item.type === "stroke") {
+        addStroke(item.index);
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach(addStroke);
+      } else if (item.type === "draft") {
+        addDraft(item.index);
+      } else if (item.type === "draft-group") {
+        item.indices.forEach(addDraft);
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (!t || seen.has(`text:${t.id || item.index}`)) return;
+        seen.add(`text:${t.id || item.index}`);
+        captured.push({
+          type: "text",
+          index: item.index,
+          x: t.x,
+          y: t.y,
+          fontSize: t.fontSize,
+        });
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (!img || seen.has(`image:${img.id || item.index}`)) return;
+        seen.add(`image:${img.id || item.index}`);
+        captured.push({
+          type: "image",
+          index: item.index,
+          x: img.x,
+          y: img.y,
+          width: img.width,
+          height: img.height,
+        });
+      }
+    });
+    return captured;
+  }
+
+  function scalePointFromAnchor(point, anchor, factor) {
+    return {
+      x: anchor.x + (point.x - anchor.x) * factor,
+      y: anchor.y + (point.y - anchor.y) * factor,
+    };
+  }
+
+  function applyMultiResize(resize, worldPos) {
+    if (!resize || resize.type !== "multi" || !resize.items?.length) return;
+    const anchor = { x: resize.anchorX, y: resize.anchorY };
+    const currentDistance = Math.hypot(worldPos.x - anchor.x, worldPos.y - anchor.y);
+    const factor = Math.max(currentDistance / Math.max(resize.startDistance || 1, 1), 0.05);
+
+    resize.items.forEach((it) => {
+      if (it.type === "stroke") {
+        const s = strokes[it.index];
+        if (!s || !it.points) return;
+        s.points = it.points.map((p) => scalePointFromAnchor(p, anchor, factor));
+      } else if (it.type === "draft") {
+        const s = draftStrokes[it.index];
+        if (!s || !it.points) return;
+        s.points = it.points.map((p) => scalePointFromAnchor(p, anchor, factor));
+      } else if (it.type === "text") {
+        const t = texts[it.index];
+        if (!t) return;
+        const pos = scalePointFromAnchor({ x: it.x, y: it.y }, anchor, factor);
+        t.x = pos.x;
+        t.y = pos.y;
+        t.fontSize = Math.max((it.fontSize || 1) * factor, 1);
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (!img) return;
+        const pos = scalePointFromAnchor({ x: it.x, y: it.y }, anchor, factor);
+        img.x = pos.x;
+        img.y = pos.y;
+        img.width = Math.max((it.width || 1) * factor, 1);
+        img.height = Math.max((it.height || 1) * factor, 1);
+      }
+    });
+
+    if (multiSelection) {
+      multiSelection.rectWorld = getSelectionWorldBounds(multiSelection.items);
+    }
+  }
+
+  function emitMultiResizeUpdates(items) {
+    if (!socketConnected) return;
+    (items || []).forEach((it) => {
+      if (it.type === "stroke") {
+        const s = strokes[it.index];
+        if (!s) return;
+        socket.emit("item:update", {
+          boardId,
+          type: "stroke",
+          id: s.id,
+          patch: { points: s.points.map((p) => ({ x: p.x, y: p.y })) },
+        });
+      } else if (it.type === "draft") {
+        const s = draftStrokes[it.index];
+        if (s) socket.emit("draft:stroke:add", { boardId, stroke: s });
+      } else if (it.type === "text") {
+        const t = texts[it.index];
+        if (!t) return;
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: t.id,
+          patch: { x: t.x, y: t.y, fontSize: t.fontSize },
+        });
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (!img) return;
+        socket.emit("item:update", {
+          boardId,
+          type: "image",
+          id: img.id,
+          patch: { x: img.x, y: img.y, width: img.width, height: img.height },
+        });
+      }
+    });
   }
 
   function drawLassoRectScreen(rect, color = "#0078d7") {
@@ -3834,6 +4720,7 @@
   }
 
   async function addImageFile(file, worldX, worldY, layout = null, targetLayer = getImageTargetLayer()) {
+    if (!canCreateOnCurrentLayer()) return;
     try {
       const { img, src } = await loadImageFromFile(file);
       const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -3883,6 +4770,7 @@
   }
 
   async function addImageFilesAt(files, worldX, worldY, targetLayer = getImageTargetLayer()) {
+    if (!canCreateOnCurrentLayer()) return;
     const imageFiles = Array.from(files || []).filter((file) => file.type && file.type.startsWith("image/"));
     if (!imageFiles.length) return;
 
@@ -3996,6 +4884,7 @@
 
   function addTemplateImage(src, worldX, worldY, targetLayer = getImageTargetLayer(), imageName = "") {
     if (!src) return;
+    if (!canCreateOnCurrentLayer()) return;
     const img = new Image();
     img.onload = () => {
       const maxWorldWidth = (canvas.width / scale) * 0.6;
@@ -4035,6 +4924,7 @@
   }
 
   function insertSideTag(type) {
+    if (!canCreateOnCurrentLayer()) return;
     ensureSnapshotForAction();
     const dataUrl = createSideTag(type);
     if (!dataUrl) return;
@@ -4043,7 +4933,7 @@
     img.onload = () => {
       const w = img.width / scale;
       const h = img.height / scale;
-      // 既存の画像レイヤー内で最小の order よりさらに小さい値を付与して最背面に
+      // 既存の背景レイヤー内で最小の order よりさらに小さい値を付与して最背面に
       const imageLayerOrders = images.filter((it) => (it.layer || "image") === "image").map((it) => it.order ?? 0);
       const minOrder = imageLayerOrders.length ? Math.min(...imageLayerOrders) : 0;
       const order = minOrder - 1;
@@ -4114,10 +5004,85 @@
   }
 
   // --- テキスト入力 ---
-  function createTextEditorAt(screenX, screenY, initialValue = "") {
+  function getTextLayerForCurrentLayer() {
+    return activeLayer === "base"
+      ? "base"
+      : activeLayer === "admin"
+      ? "admin"
+      : activeLayer === "draft"
+      ? "draft"
+      : "user";
+  }
+
+  function addTextObject(textData) {
+    texts.push(textData);
+    registerUser(currentUser);
+    if (socketConnected) {
+      socket.emit("text:add", { boardId, text: textData });
+    }
+  }
+
+  function autosizeTextEditor(textarea) {
+    if (!textarea) return;
+    const minWidth = 220;
+    const maxWidth = Math.max(minWidth, Math.min(720, window.innerWidth - 40));
+    const minHeight = 44;
+    const maxHeight = Math.max(minHeight, Math.min(520, window.innerHeight - 80));
+    textarea.style.width = `${minWidth}px`;
+    textarea.style.height = `${minHeight}px`;
+    const nextWidth = Math.min(maxWidth, Math.max(minWidth, textarea.scrollWidth + 4));
+    textarea.style.width = `${nextWidth}px`;
+    textarea.style.height = `${Math.min(maxHeight, Math.max(minHeight, textarea.scrollHeight + 4))}px`;
+  }
+
+  function insertTextEditorNewline(textarea) {
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    textarea.value = `${textarea.value.slice(0, start)}\n${textarea.value.slice(end)}`;
+    const next = start + 1;
+    textarea.setSelectionRange(next, next);
+    autosizeTextEditor(textarea);
+  }
+
+  function handleTextEditorKeydown(e, textarea, finish) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (e.shiftKey || e.altKey) {
+      insertTextEditorNewline(textarea);
+      return;
+    }
+    finish();
+  }
+
+  function buildGridTextObjects(lines, worldPos, fontSizeWorld, baseText) {
+    const created = [];
+    let row = 0;
+    lines.forEach((line) => {
+      if (line.length === 0) {
+        row += 1;
+        return;
+      }
+      created.push({
+        ...baseText,
+        id: genId(),
+        lines: [line],
+        x: worldPos.x,
+        y: worldPos.y + row * fontSizeWorld,
+        order: orderCounter++,
+        createdAt: Date.now(),
+        gridText: true,
+      });
+      row += 1;
+    });
+    return created;
+  }
+
+  function createTextEditorAt(screenX, screenY, initialValue = "", mode = "normal") {
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
     if (activeLayer === "image") return;
     pendingTextPos = null;
+    updateToolButtons();
     const presetLabel = findImageNameAtScreenPoint(screenX, screenY);
 
     if (textEditor) {
@@ -4132,8 +5097,6 @@
     const fontSizePx = fontSizeWorld * scale;
     textarea.style.left = `${screenX}px`;
     textarea.style.top = `${screenY}px`;
-    textarea.style.width = `200px`;
-    textarea.style.height = `${fontSizePx * 1.2 + 4}px`;
     textarea.style.fontSize = `${fontSizePx}px`;
     const baseColor = normalizeHexColor(textDefaultColor);
     textarea.style.color = lightenColor(baseColor);
@@ -4145,6 +5108,7 @@
     textEditor = textarea;
     const len = textarea.value.length;
     textarea.setSelectionRange(len, len);
+    autosizeTextEditor(textarea);
 
     let finished = false;
     const finish = () => {
@@ -4164,38 +5128,45 @@
       if (value.trim()) {
         ensureSnapshotForAction();
         const lines = value.split(/\r?\n/);
-    const t = {
-      id: genId(),
-      lines,
-      x: worldPos.x,
-      y: worldPos.y,
-      fontSize: fontSizeWorld,
-      color: textDefaultColor,
-      user: currentUser,
-      layer:
-        activeLayer === "base"
-          ? "base"
-          : activeLayer === "admin"
-          ? "admin"
-          : activeLayer === "draft"
-          ? "draft"
-          : "user",
-      order: orderCounter++,
-      createdAt: Date.now(),
-      label: presetLabel,
-      rotation: 0,
-    };
-        texts.push(t);
-        registerUser(currentUser);
-        if (socketConnected) {
-          socket.emit("text:add", { boardId, text: t });
+        const created = [];
+        if (mode === "grid") {
+          created.push(
+            ...buildGridTextObjects(lines, worldPos, fontSizeWorld, {
+              fontSize: fontSizeWorld,
+              color: textDefaultColor,
+              user: currentUser,
+              layer: getTextLayerForCurrentLayer(),
+              label: presetLabel,
+              rotation: 0,
+              vertical: false,
+            })
+          );
+        } else {
+          created.push({
+            id: genId(),
+            lines,
+            x: worldPos.x,
+            y: worldPos.y,
+            fontSize: fontSizeWorld,
+            color: textDefaultColor,
+            user: currentUser,
+            layer: getTextLayerForCurrentLayer(),
+            order: orderCounter++,
+            createdAt: Date.now(),
+            label: presetLabel,
+            rotation: 0,
+            vertical: false,
+            gridText: false,
+          });
         }
+        created.forEach(addTextObject);
+        if (!created.length) return;
 
         refreshTextList();
 
         // このテキストの色とサイズをデフォルトとして記憶
-        textDefaultColor = t.color;
-        textDefaultFontSizeWorld = t.fontSize;
+        textDefaultColor = created[created.length - 1].color;
+        textDefaultFontSizeWorld = created[created.length - 1].fontSize;
 
         currentTool = "select";
         updateToolButtons();
@@ -4205,11 +5176,9 @@
     };
 
     textarea.addEventListener("blur", finish);
+    textarea.addEventListener("input", () => autosizeTextEditor(textarea));
     textarea.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        finish();
-      }
+      handleTextEditorKeydown(e, textarea, finish);
     });
   }
 
@@ -4228,8 +5197,6 @@
     textarea.className = "text-editor-overlay";
     textarea.style.left = `${base.x}px`;
     textarea.style.top = `${base.y}px`;
-    textarea.style.width = `240px`;
-    textarea.style.height = `${fontSizePx * 1.2 * Math.max(1, t.lines.length) + 8}px`;
     textarea.style.fontSize = `${fontSizePx}px`;
     const baseColor = normalizeHexColor(t.color || "#000000");
     textarea.style.color = lightenColor(baseColor);
@@ -4239,6 +5206,7 @@
     textarea.focus();
     textEditor = textarea;
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    autosizeTextEditor(textarea);
 
     let finished = false;
     const finish = () => {
@@ -4260,6 +5228,27 @@
         return;
       }
       const lines = value.split(/\r?\n/);
+      if (t.gridText && lines.length > 1) {
+        const firstLine = lines[0] ?? "";
+        texts[index] = {
+          ...t,
+          lines: [firstLine],
+          layer: t.layer,
+        };
+        const created = buildGridTextObjects(lines.slice(1), { x: t.x, y: t.y + (t.fontSize || 16) }, t.fontSize || 16, t);
+        created.forEach(addTextObject);
+        refreshTextList();
+        redraw();
+        if (socketConnected) {
+          socket.emit("item:update", {
+            boardId,
+            type: "text",
+            id: t.id,
+            patch: { lines: [firstLine] },
+          });
+        }
+        return;
+      }
       texts[index] = {
         ...t,
         lines,
@@ -4278,16 +5267,15 @@
     };
 
     textarea.addEventListener("blur", finish);
+    textarea.addEventListener("input", () => autosizeTextEditor(textarea));
     textarea.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        finish();
-      }
+      handleTextEditorKeydown(e, textarea, finish);
     });
   }
 
   // --- クリップボードからのテキスト挿入 ---
   function addTextFromClipboard(text, worldX, worldY) {
+    if (!canCreateOnCurrentLayer()) return;
     if (activeLayer !== "user" && activeLayer !== "admin") return;
     const lines = text.split(/\r?\n/);
     const t = {
@@ -4310,6 +5298,8 @@
       createdAt: Date.now(),
       label: "",
       rotation: 0,
+      vertical: false,
+      gridText: false,
     };
     texts.push(t);
     registerUser(currentUser);
@@ -4339,6 +5329,7 @@
     }
 
     if (framePlaceType && e.button === 0) {
+      if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       ensureSnapshotForAction();
       const canvasPos = getCanvasPointFromEvent(e);
@@ -4355,6 +5346,7 @@
     }
 
     if (shapeMode && e.button === 0) {
+      if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       ensureSnapshotForAction();
       const canvasPos = getCanvasPointFromEvent(e);
@@ -4371,15 +5363,24 @@
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
-    pendingTextPos = null;
     const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
     const isRightButton = e.button === 2;
+    const isMiddleButton = e.button === 1;
+
+    if (pendingTextMode && e.button === 0) {
+      if (!canCreateOnCurrentLayer()) return;
+      e.preventDefault();
+      createTextEditorAt(canvasPos.x, canvasPos.y, "", pendingTextMode);
+      return;
+    }
+
+    pendingTextPos = null;
 
     if (e.button === 0 && e.altKey) {
       e.preventDefault();
       const wasSelected = selectAtPoint(canvasPos);
       if (wasSelected) {
-        rotateSelection(activeAltSide === "right" ? "ccw" : "cw");
+        handleAltSelectionAction(activeAltSide === "right" ? "ccw" : "cw");
         return;
       }
     }
@@ -4395,9 +5396,16 @@
         editTextAt(textIndex);
         return;
       }
-      if (activeLayer !== "image" && requireUser()) {
-        createTextEditorAt(canvasPos.x, canvasPos.y);
+      if (activeLayer !== "image" && requireUser() && canCreateOnCurrentLayer()) {
+        createTextEditorAt(canvasPos.x, canvasPos.y, "", "normal");
       }
+      return;
+    }
+
+    if (isMiddleButton) {
+      isPanning = true;
+      lastPan = { x: e.clientX, y: e.clientY };
+      hideContextMenu();
       return;
     }
 
@@ -4423,6 +5431,38 @@
         lastPan = { x: e.clientX, y: e.clientY };
       }
       return;
+    }
+
+    if (currentTool === "select" && e.button === 0 && e.ctrlKey) {
+      e.preventDefault();
+      toggleSelectionAtPoint(canvasPos);
+      return;
+    }
+
+    const multiResizeHandle =
+      currentTool === "select" && e.button === 0
+        ? hitTestMultiSelectionResizeHandle(canvasPos.x, canvasPos.y)
+        : null;
+    if (multiResizeHandle) {
+      const bounds = getSelectionWorldBounds(multiSelection.items);
+      const anchor = getResizeAnchorForHandle(bounds, multiResizeHandle.handle);
+      if (bounds && anchor) {
+        ensureSnapshotForAction();
+        selected = null;
+        resizeInfo = {
+          type: "multi",
+          handle: multiResizeHandle.handle,
+          anchorX: anchor.x,
+          anchorY: anchor.y,
+          startW: bounds.width,
+          startH: bounds.height,
+          startDistance: Math.hypot(worldPos.x - anchor.x, worldPos.y - anchor.y),
+          items: captureMultiResizeItems(multiSelection.items),
+        };
+        isResizingObject = true;
+        redraw();
+        return;
+      }
     }
 
     // 既存の範囲選択をドラッグ
@@ -4470,6 +5510,7 @@
 
     if (currentTool === "fill") {
       if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
       fillClosedStrokeAt(worldPos);
       return;
     }
@@ -4481,6 +5522,7 @@
       if (
         activeLayer !== "user" &&
         activeLayer !== "admin" &&
+        activeLayer !== "base" &&
         activeLayer !== "draft" &&
         !(activeLayer === "image" && isAdminUser())
       )
@@ -4495,6 +5537,7 @@
     // 選択ツールでないときは、ペン専用
     if (currentTool !== "select") {
       if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
       ensureSnapshotForAction();
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       if (activeLayer === "draft") {
@@ -4548,19 +5591,24 @@
 
     // 以下、選択ツール時の処理
     // テキストのリサイズハンドル
-    const textHandleIndex = hitTestTextResizeHandle(canvasPos.x, canvasPos.y);
-    if (textHandleIndex >= 0) {
+    const textHandle = hitTestTextResizeHandle(canvasPos.x, canvasPos.y);
+    if (textHandle) {
       ensureSnapshotForAction();
-      selected = { type: "text", index: textHandleIndex };
-      const t = texts[textHandleIndex];
+      selected = { type: "text", index: textHandle.index };
+      const t = texts[textHandle.index];
       const b = getTextBoundsWorld(t);
+      const anchor = getResizeAnchorForHandle(b, textHandle.handle);
       resizeInfo = {
         type: "text",
-        index: textHandleIndex,
+        index: textHandle.index,
+        handle: textHandle.handle,
         originX: b.x,
         originY: b.y,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
         startW: b.width,
         startH: b.height,
+        startDistance: Math.hypot(worldPos.x - anchor.x, worldPos.y - anchor.y),
         fontSize: t.fontSize,
       };
       isResizingObject = true;
@@ -4586,6 +5634,7 @@
       resizeInfo = {
         type: "image",
         index: imgHandle.index,
+        handle: imgHandle.handle,
         anchorX: anchor.x,
         anchorY: anchor.y,
         startW: imgObj.width,
@@ -4601,6 +5650,7 @@
     if (textIndex >= 0) {
       ensureSnapshotForAction();
       selected = { type: "text", index: textIndex };
+      multiSelection = null;
       const t = texts[textIndex];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
@@ -4617,7 +5667,10 @@
     if (imgIndex >= 0) {
       ensureSnapshotForAction();
       selected = { type: "image", index: imgIndex };
+      multiSelection = null;
       const imgObj = images[imgIndex];
+      if (imgObj?.tagType) bringFrameGroupToFront(imgObj);
+      frameDragOffsets = imgObj?.tagType ? captureFrameDragItems(imgObj) : null;
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
         x: worldPos.x - imgObj.x,
@@ -4633,6 +5686,7 @@
     if (strokeIndex >= 0) {
       ensureSnapshotForAction();
       selected = getStrokeGroupSelection(strokeIndex);
+      multiSelection = null;
       const s = strokes[strokeIndex];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
@@ -4650,6 +5704,7 @@
       if (draftIndex >= 0) {
         ensureSnapshotForAction();
         selected = getDraftGroupSelection(draftIndex);
+        multiSelection = null;
         const s =
           selected?.type === "draft-group"
             ? draftStrokes[selected.indices[0]]
@@ -4825,6 +5880,13 @@
         const imgObj = images[selected.index];
         imgObj.x = worldPos.x - dragOffsetWorld.x;
         imgObj.y = worldPos.y - dragOffsetWorld.y;
+        if (imgObj?.tagType && frameDragOffsets) {
+          applyFrameDragOffsets(
+            frameDragOffsets,
+            imgObj.x - frameDragOffsets.frameX,
+            imgObj.y - frameDragOffsets.frameY
+          );
+        }
       } else if (selected.type === "text") {
         const t = texts[selected.index];
         t.x = worldPos.x - dragOffsetWorld.x;
@@ -4869,23 +5931,30 @@
       redraw();
     }
 
-    if (isResizingObject && resizeInfo && selected) {
+    if (isResizingObject && resizeInfo) {
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       const dx = worldPos.x - resizeInfo.originX;
       const dy = worldPos.y - resizeInfo.originY;
-      if (resizeInfo.type === "image") {
+      if (resizeInfo.type === "multi") {
+        applyMultiResize(resizeInfo, worldPos);
+      } else if (resizeInfo.type === "image" && selected) {
         const imgObj = images[resizeInfo.index];
         const anchorX = resizeInfo.anchorX ?? imgObj.x;
         const anchorY = resizeInfo.anchorY ?? imgObj.y;
-        const newX = Math.min(anchorX, worldPos.x);
-        const newY = Math.min(anchorY, worldPos.y);
-        const newW = Math.max(Math.abs(worldPos.x - anchorX), 10);
-        const newH = Math.max(Math.abs(worldPos.y - anchorY), 10);
-        imgObj.x = newX;
-        imgObj.y = newY;
+        const aspect = Math.max(resizeInfo.startW, 1) / Math.max(resizeInfo.startH, 1);
+        const minW = 10;
+        const minH = minW / aspect;
+        const scaleByW = Math.abs(worldPos.x - anchorX) / Math.max(resizeInfo.startW, 1);
+        const scaleByH = Math.abs(worldPos.y - anchorY) / Math.max(resizeInfo.startH, 1);
+        const factor = Math.max(scaleByW, scaleByH, minW / Math.max(resizeInfo.startW, 1));
+        const newW = Math.max(resizeInfo.startW * factor, minW);
+        const newH = Math.max(resizeInfo.startH * factor, minH);
+        const handle = resizeInfo.handle || "br";
+        imgObj.x = handle === "tr" || handle === "br" ? anchorX : anchorX - newW;
+        imgObj.y = handle === "bl" || handle === "br" ? anchorY : anchorY - newH;
         imgObj.width = newW;
         imgObj.height = newH;
-      } else if (resizeInfo.type === "frame") {
+      } else if (resizeInfo.type === "frame" && selected) {
         const fr = frames[resizeInfo.index];
         const anchorX = resizeInfo.anchorX ?? fr.x;
         const anchorY = resizeInfo.anchorY ?? fr.y;
@@ -4893,9 +5962,14 @@
         fr.y = Math.min(anchorY, worldPos.y);
         fr.width = Math.max(Math.abs(worldPos.x - anchorX), 10);
         fr.height = Math.max(Math.abs(worldPos.y - anchorY), 10);
-      } else if (resizeInfo.type === "text") {
-        const factor =
-          Math.max(dx, dy, 10) / Math.max(resizeInfo.startW, resizeInfo.startH, 1);
+      } else if (resizeInfo.type === "text" && selected) {
+        const anchorX = resizeInfo.anchorX ?? resizeInfo.originX;
+        const anchorY = resizeInfo.anchorY ?? resizeInfo.originY;
+        const currentDistance = Math.hypot(worldPos.x - anchorX, worldPos.y - anchorY);
+        const factor = Math.max(
+          currentDistance / Math.max(resizeInfo.startDistance || 1, 1),
+          0.05
+        );
         const t = texts[resizeInfo.index];
         t.fontSize = resizeInfo.fontSize * factor;
       }
@@ -5046,7 +6120,7 @@
               boardId,
               type: "image",
               id: imgObj.id,
-              patch: { width: imgObj.width, height: imgObj.height },
+              patch: { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
             });
           }
         } else if (selected.type === "text") {
@@ -5059,6 +6133,14 @@
           });
         }
       }
+    }
+
+    if (isDraggingObject && selected?.type === "image" && frameDragOffsets) {
+      emitFrameDragUpdates(frameDragOffsets);
+    }
+
+    if (isResizingObject && resizeInfo?.type === "multi") {
+      emitMultiResizeUpdates(resizeInfo.items);
     }
 
     isDrawing = false;
@@ -5132,6 +6214,7 @@
     activeDraftId = null;
     isDrawingDraft = false;
     resizeInfo = null;
+    frameDragOffsets = null;
     multiDragActive = false;
     multiDragOffsets = null;
     multiDragStartWorld = null;
@@ -5159,6 +6242,13 @@
     }
 
     if (isDrawingShape && shapeMode && shapeStart) {
+      if (!canCreateOnCurrentLayer()) {
+        isDrawingShape = false;
+        shapeStart = null;
+        shapePreview = null;
+        shapeTargetLayer = null;
+        return;
+      }
       const upPos = getCanvasPointFromEvent(e);
       const worldPos = screenToWorld(upPos.x, upPos.y);
       const layer = shapeTargetLayer || getShapeTargetLayer();
@@ -5223,6 +6313,13 @@
     }
 
     if (isPlacingFrame && framePlaceStart) {
+      if (!canCreateOnCurrentLayer()) {
+        isPlacingFrame = false;
+        framePlaceType = null;
+        framePlaceStart = null;
+        framePlacePreview = null;
+        return;
+      }
       const upPos = getCanvasPointFromEvent(e);
       const worldPos = screenToWorld(upPos.x, upPos.y);
       const x0 = framePlaceStart.x;
@@ -5319,7 +6416,7 @@
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = "copy";
+      e.dataTransfer.dropEffect = isCreationLockedLayer() ? "none" : "copy";
     }
   }
 
@@ -5328,6 +6425,7 @@
     e.stopPropagation();
     const files = getImageFilesFromDataTransfer(e.dataTransfer);
     if (!files.length) return;
+    if (!canCreateOnCurrentLayer()) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -5361,6 +6459,7 @@
       const file = imageItem.getAsFile();
       if (file) {
         e.preventDefault();
+        if (!canCreateOnCurrentLayer()) return;
         addImageFile(file, worldPos.x, worldPos.y, null, getImageTargetLayer());
       }
       return;
@@ -5371,12 +6470,16 @@
       e.preventDefault();
       if (activeLayer === "image") return;
       if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
       addTextFromClipboard(text, worldPos.x, worldPos.y);
     }
   });
 
   // --- イベント登録 ---
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("auxclick", (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
   canvas.addEventListener("click", () => hideMenusIfCompact());
 
   function isInsideToolbar(target) {
@@ -5412,6 +6515,7 @@
         clearTimeout(otherMenu._closeTimer);
         otherMenu._closeTimer = null;
       }
+      closeInsertMenu();
       otherMenu.classList.remove("hidden");
     }
   }
@@ -5501,7 +6605,7 @@
       getSelectionItems().length > 0
     ) {
       e.preventDefault();
-      rotateSelection(activeAltSide === "right" ? "ccw" : "cw");
+      handleAltSelectionAction(activeAltSide === "right" ? "ccw" : "cw");
       return;
     }
 
@@ -5549,8 +6653,9 @@
     }
     if (activeLayer === "image") return;
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
     e.preventDefault();
-    createTextEditorAt(canvasPos.x, canvasPos.y);
+    createTextEditorAt(canvasPos.x, canvasPos.y, "", "normal");
   });
 
   window.addEventListener("keyup", (e) => {
@@ -5585,11 +6690,82 @@
     return [];
   }
 
+  function getSelectionItemKey(item) {
+    if (!item) return "";
+    if (item.type === "stroke") return `stroke:${strokes[item.index]?.id || item.index}`;
+    if (item.type === "text") return `text:${texts[item.index]?.id || item.index}`;
+    if (item.type === "image") return `image:${images[item.index]?.id || item.index}`;
+    if (item.type === "draft") return `draft:${draftStrokes[item.index]?.id || item.index}`;
+    if (item.type === "stroke-group") {
+      return `stroke-group:${item.indices.map((idx) => strokes[idx]?.id || idx).sort().join(",")}`;
+    }
+    if (item.type === "draft-group") {
+      return `draft-group:${item.indices.map((idx) => draftStrokes[idx]?.id || idx).sort().join(",")}`;
+    }
+    return `${item.type}:${item.index ?? ""}`;
+  }
+
+  function setSelectionFromItems(items) {
+    const unique = [];
+    const seen = new Set();
+    (items || []).forEach((item) => {
+      const key = getSelectionItemKey(item);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      unique.push(item);
+    });
+
+    if (unique.length === 0) {
+      selected = null;
+      multiSelection = null;
+    } else if (unique.length === 1) {
+      selected = unique[0];
+      multiSelection = null;
+    } else {
+      selected = null;
+      multiSelection = {
+        items: unique,
+        rectWorld: getSelectionWorldBounds(unique),
+      };
+    }
+    redraw();
+    updateFooterByState();
+  }
+
+  function hitTestSelectableItem(canvasPos) {
+    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
+    if (textIndex >= 0) return { type: "text", index: textIndex };
+
+    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y);
+    if (imgIndex >= 0) return { type: "image", index: imgIndex };
+
+    const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
+    if (strokeIndex >= 0) return getStrokeGroupSelection(strokeIndex);
+
+    if (activeLayer === "draft") {
+      const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
+      if (draftIndex >= 0) return getDraftGroupSelection(draftIndex);
+    }
+
+    return null;
+  }
+
+  function toggleSelectionAtPoint(canvasPos) {
+    const item = hitTestSelectableItem(canvasPos);
+    if (!item) return false;
+    const key = getSelectionItemKey(item);
+    const current = getSelectionItems();
+    const exists = current.some((it) => getSelectionItemKey(it) === key);
+    setSelectionFromItems(exists ? current.filter((it) => getSelectionItemKey(it) !== key) : [...current, item]);
+    return true;
+  }
+
   function selectAtPoint(canvasPos) {
     // テキストリサイズ
-    const textHandleIndex = hitTestTextResizeHandle(canvasPos.x, canvasPos.y);
-    if (textHandleIndex >= 0) {
-      selected = { type: "text", index: textHandleIndex };
+    const textHandle = hitTestTextResizeHandle(canvasPos.x, canvasPos.y);
+    if (textHandle) {
+      selected = { type: "text", index: textHandle.index };
+      multiSelection = null;
       redraw();
       return true;
     }
@@ -5597,40 +6773,15 @@
     const imgHandle = hitTestImageResizeHandle(canvasPos.x, canvasPos.y);
     if (imgHandle) {
       selected = { type: "image", index: imgHandle.index };
+      multiSelection = null;
       redraw();
       return true;
     }
     // テキスト本体
-    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
-    if (textIndex >= 0) {
-      selected = { type: "text", index: textIndex };
-      redraw();
+    const item = hitTestSelectableItem(canvasPos);
+    if (item) {
+      setSelectionFromItems([item]);
       return true;
-    }
-    // 画像本体
-    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y);
-    if (imgIndex >= 0) {
-      selected = { type: "image", index: imgIndex };
-      redraw();
-      return true;
-    }
-
-    // ストローク本体
-    const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
-    if (strokeIndex >= 0) {
-      selected = getStrokeGroupSelection(strokeIndex);
-      redraw();
-      return true;
-    }
-
-    // 下書きストローク（自分のみ）
-    if (activeLayer === "draft") {
-      const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
-      if (draftIndex >= 0) {
-        selected = getDraftGroupSelection(draftIndex);
-        redraw();
-        return true;
-      }
     }
     return false;
   }
@@ -5646,6 +6797,15 @@
 
   function selectionHasStrokeOrText() {
     return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "text");
+  }
+
+  function selectionHasBaseMoveTarget() {
+    return getSelectionItems().some((it) => {
+      if (it.type === "stroke" || it.type === "stroke-group" || it.type === "text") return true;
+      if (it.type !== "image") return false;
+      const img = images[it.index];
+      return !!img && (img.layer || "user") !== "base";
+    });
   }
 
   function selectionHasImage() {
@@ -5689,20 +6849,23 @@
   }
 
   function updateToolButtons() {
+    const creationLocked = isCreationLockedLayer();
     const isPen = currentTool === "pen";
     const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
-    const isSelect = currentTool === "select" && !shapeMode;
+    const isSelect = currentTool === "select" && !shapeMode && !pendingTextMode;
     const isShapeLine = shapeMode === "line";
     const isShapeRect = shapeMode === "rect";
     const isShapeGrid = shapeMode === "grid";
     if (penToolBtn) {
-      penToolBtn.disabled = isPen;
+      penToolBtn.disabled = creationLocked || isPen;
       penToolBtn.classList.toggle("active", isPen);
+      penToolBtn.title = creationLocked ? "このレイヤーではペンは使えません" : "ペン";
     }
     if (fillToolBtn) {
-      fillToolBtn.disabled = isFill;
+      fillToolBtn.disabled = creationLocked || isFill;
       fillToolBtn.classList.toggle("active", isFill);
+      fillToolBtn.title = creationLocked ? "このレイヤーでは塗りつぶしは使えません" : "塗りつぶし";
     }
     if (eraserToolBtn) {
       eraserToolBtn.disabled = isEraser;
@@ -5713,13 +6876,25 @@
       selectToolBtn.classList.toggle("active", isSelect);
     }
     if (shapeLineBtn) {
+      shapeLineBtn.disabled = creationLocked;
       shapeLineBtn.classList.toggle("active", isShapeLine);
     }
     if (shapeRectBtn) {
+      shapeRectBtn.disabled = creationLocked;
       shapeRectBtn.classList.toggle("active", isShapeRect);
     }
     if (shapeGridBtn) {
+      shapeGridBtn.disabled = creationLocked;
       shapeGridBtn.classList.toggle("active", isShapeGrid);
+    }
+    if (textToolBtn) {
+      textToolBtn.disabled = creationLocked;
+      textToolBtn.classList.toggle("active", !!pendingTextMode);
+      textToolBtn.title = creationLocked ? "このレイヤーでは文字入力は使えません" : "文字入力";
+    }
+    if (insertMenuBtn) {
+      insertMenuBtn.disabled = creationLocked;
+      insertMenuBtn.title = creationLocked ? "このレイヤーでは挿入は使えません" : "挿入";
     }
     if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill") {
       canvas.style.cursor = "crosshair";
@@ -5728,6 +6903,12 @@
     }
   }
   updateToolButtons();
+
+  function clearPendingTextMode() {
+    pendingTextMode = null;
+    if (textToolMenu) textToolMenu.classList.add("hidden");
+    updateToolButtons();
+  }
 
   // --- ユーザーモーダル ---
   userJoinBtn.addEventListener("click", () => {
@@ -5845,6 +7026,8 @@
   });
 
   penToolBtn.addEventListener("click", () => {
+    if (!canCreateOnCurrentLayer()) return;
+    pendingTextMode = null;
     currentTool = "pen";
     lastUserLayerTool = "pen";
     selected = null;
@@ -5857,9 +7040,11 @@
   if (fillToolBtn) {
     fillToolBtn.addEventListener("click", () => {
       if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
       if (activeLayer === "image") {
         setActiveLayer(isAdminUser() ? "admin" : "user");
       }
+      pendingTextMode = null;
       currentTool = "fill";
       lastUserLayerTool = "fill";
       selected = null;
@@ -5875,6 +7060,7 @@
     if (activeLayer === "image") {
       setActiveLayer(isAdminUser() ? "admin" : "user");
     }
+    pendingTextMode = null;
     currentTool = "eraser";
     lastUserLayerTool = "eraser";
     selected = null;
@@ -5884,6 +7070,7 @@
   });
 
   selectToolBtn.addEventListener("click", () => {
+    pendingTextMode = null;
     currentTool = "select";
     updateToolButtons();
     showTransientFooterMessage("選択ツール：右クリックでメニューを開けます。", 5000);
@@ -5948,7 +7135,7 @@
     const hasDraft = selectionHasDraft();
     const hasAny = getSelectionItems().length > 0;
     const hasImage = selectionHasImage();
-    const hasMoveTarget = selectionHasStrokeOrText() && isAdminUser();
+    const hasMoveTarget = selectionHasBaseMoveTarget();
     const hasMoveImageTarget = hasImage && isAdminUser();
     const hasOrderable = selectionHasOrderable();
     const hasRotatable = selectionHasRotatable();
@@ -6114,6 +7301,7 @@
     insertMenuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
+      if (!canCreateOnCurrentLayer()) return;
       if (!templates) templates = [];
       renderInsertMenu();
       if (insertMenu && !insertMenu.classList.contains("hidden")) {
@@ -6123,6 +7311,10 @@
       }
     });
     insertMenuBtn.addEventListener("mouseenter", () => {
+      if (isCreationLockedLayer()) {
+        closeInsertMenu();
+        return;
+      }
       if (!templates) templates = [];
       renderInsertMenu();
       openInsertMenu();
@@ -6135,6 +7327,10 @@
         scheduleCloseInsertMenu();
       });
       insertMenu.addEventListener("mouseenter", () => {
+        if (isCreationLockedLayer()) {
+          closeInsertMenu();
+          return;
+        }
         if (insertMenuHideTimer) {
           clearTimeout(insertMenuHideTimer);
           insertMenuHideTimer = null;
@@ -6159,6 +7355,50 @@
     shapeGridBtn.addEventListener("click", () => {
       startShapeMode("grid");
       updateToolButtons();
+    });
+  }
+
+  function setPendingTextMode(mode) {
+    if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
+    if (activeLayer === "image") return;
+    pendingTextMode = mode === "grid" ? "grid" : "normal";
+    currentTool = "select";
+    selected = null;
+    multiSelection = null;
+    if (textToolMenu) textToolMenu.classList.add("hidden");
+    updateToolButtons();
+    showTransientFooterMessage(
+      pendingTextMode === "grid"
+        ? "方眼紙用入力：配置したい場所をクリックしてください。"
+        : "通常入力：配置したい場所をクリックしてください。",
+      4000
+    );
+  }
+
+  if (textToolBtn) {
+    textToolBtn.addEventListener("mouseenter", () => {
+      if (isCreationLockedLayer()) return;
+      if (textToolMenu) textToolMenu.classList.remove("hidden");
+    });
+    textToolBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isCreationLockedLayer()) {
+        showCreationLockedMessage();
+        return;
+      }
+      if (textToolMenu) textToolMenu.classList.toggle("hidden");
+    });
+  }
+  if (textToolMenu) {
+    textToolMenu.addEventListener("mouseenter", () => textToolMenu.classList.remove("hidden"));
+    textToolMenu.addEventListener("mouseleave", () => textToolMenu.classList.add("hidden"));
+    textToolMenu.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-text-mode]");
+      if (!btn) return;
+      e.stopPropagation();
+      if (!canCreateOnCurrentLayer()) return;
+      setPendingTextMode(btn.getAttribute("data-text-mode"));
     });
   }
 
@@ -6188,9 +7428,14 @@
       otherMenu &&
       otherMenuBtn &&
       (otherMenu.contains(target) || otherMenuBtn.contains(target));
+    const insideTextTool =
+      textToolMenu &&
+      textToolBtn &&
+      (textToolMenu.contains(target) || textToolBtn.contains(target));
 
     if (!insideInsert) closeInsertMenu();
     if (!insideOther) closeOtherMenu();
+    if (!insideTextTool && textToolMenu) textToolMenu.classList.add("hidden");
   });
   window.addEventListener("resize", () => {
     refreshCompactMode();
@@ -6230,6 +7475,7 @@
   }
 
   function createStroke(points, layer, opts = {}) {
+    if (!canCreateOnCurrentLayer()) return;
     const stroke = {
       id: genId(),
       color: currentColor,
@@ -6249,6 +7495,8 @@
 
   function startShapeMode(kind) {
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
+    pendingTextMode = null;
     shapeMode = kind; // "line" | "rect" | "grid"
     if (currentTool !== "select") {
       currentTool = "select";
@@ -6278,6 +7526,7 @@
   function insertTemplateImage(src) {
     if (!src) return;
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
     const center = getCanvasCenterWorld();
     const name = src.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
     addTemplateImage(src, center.x, center.y, getImageTargetLayer(), decodeURIComponent(name));
@@ -6285,6 +7534,7 @@
 
   function chooseImageFiles() {
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
     if (!imageFileInput) return;
     pendingImageInsertLayer = getImageTargetLayer();
     imageFileInput.value = "";
@@ -6293,6 +7543,7 @@
 
   function startFramePlacement(type) {
     if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
     framePlaceType = type; // "omoteura" | "free"
     framePlaceStart = null;
     framePlacePreview = null;
@@ -6359,6 +7610,10 @@
 
   function openInsertMenu() {
     if (!insertMenu || !insertMenuBtn) return;
+    if (isCreationLockedLayer()) {
+      closeInsertMenu();
+      return;
+    }
     insertMenu.style.visibility = "hidden";
     insertMenu.classList.remove("hidden");
     positionInsertMenu();
