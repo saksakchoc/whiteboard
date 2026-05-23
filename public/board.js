@@ -100,7 +100,7 @@
   let shapeTargetLayer = null;
   let insertMenuHideTimer = null;
   let ignoreNextDblClick = false;
-  let activeCtrlSide = null; // "left" | "right" | null
+  let activeAltSide = null; // "left" | "right" | null
   let pendingImageInsertLayer = null;
 
   function getSquareBoundsFromDrag(start, end) {
@@ -4344,11 +4344,11 @@
     const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
     const isRightButton = e.button === 2;
 
-    if (e.button === 0 && e.ctrlKey) {
+    if (e.button === 0 && e.altKey) {
       e.preventDefault();
       const wasSelected = selectAtPoint(canvasPos);
       if (wasSelected) {
-        rotateSelection(activeCtrlSide === "right" ? "ccw" : "cw");
+        rotateSelection(activeAltSide === "right" ? "ccw" : "cw");
         return;
       }
     }
@@ -5419,8 +5419,8 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Control") {
-      activeCtrlSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
+    if (e.key === "Alt") {
+      activeAltSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
     }
     updateFooterByState();
     // 注目（レーザーポインター）開始
@@ -5462,15 +5462,15 @@
     }
 
     if (
-      e.key === "Control" &&
+      e.key === "Alt" &&
       !e.repeat &&
-      !e.altKey &&
+      !e.ctrlKey &&
       !e.shiftKey &&
       !e.metaKey &&
       getSelectionItems().length > 0
     ) {
       e.preventDefault();
-      rotateSelection(activeCtrlSide === "right" ? "ccw" : "cw");
+      rotateSelection(activeAltSide === "right" ? "ccw" : "cw");
       return;
     }
 
@@ -5523,9 +5523,9 @@
   });
 
   window.addEventListener("keyup", (e) => {
-    if (e.key === "Control") {
+    if (e.key === "Alt") {
       const releasedSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
-      if (activeCtrlSide === releasedSide) activeCtrlSide = null;
+      if (activeAltSide === releasedSide) activeAltSide = null;
     }
     if (attentionActive && !(e.ctrlKey && e.altKey && e.shiftKey)) {
       endAttention();
@@ -5533,7 +5533,7 @@
   });
 
   window.addEventListener("blur", () => {
-    activeCtrlSide = null;
+    activeAltSide = null;
     if (attentionActive) {
       // 少し猶予をもって終了
       clearTimeout(attentionTimeout);
