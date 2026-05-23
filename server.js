@@ -28,7 +28,9 @@ const {
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  maxHttpBufferSize: Number(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE || 50 * 1024 * 1024),
+});
 
 // 設定
 const PORT = process.env.PORT || 3001;

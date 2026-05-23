@@ -360,7 +360,7 @@
   function isStrokeVisible(stroke) {
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
-    if (activeLayer === "draft") return true; // すべて表示
+    if (activeLayer === "draft") return layer !== "draft" || stroke.user === currentUser;
     if (activeLayer === "user") return layer === "user" || layer === "base" || layer === "image";
     if (activeLayer === "base") return layer === "base" || layer === "image";
     if (activeLayer === "image") return layer === "image";
@@ -370,7 +370,7 @@
   function isTextVisible(text) {
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
-    if (activeLayer === "draft") return true; // すべて表示
+    if (activeLayer === "draft") return layer !== "draft" || text.user === currentUser;
     if (activeLayer === "user") return layer === "user" || layer === "base";
     if (activeLayer === "base") return layer === "base";
     if (activeLayer === "image") return false;
@@ -398,7 +398,7 @@
 
   function isImageVisible(imgObj) {
     if (activeLayer === "admin") return true;
-    if (activeLayer === "draft") return true;
+    if (activeLayer === "draft") return (imgObj?.layer || "user") !== "draft" || imgObj?.user === currentUser;
     if (activeLayer === "image") return (imgObj?.layer || "image") === "image";
     if (activeLayer === "base") return (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
     if (activeLayer === "user") return (imgObj?.layer || "user") === "user" || (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
@@ -406,12 +406,13 @@
   }
 
   function canInteractImage(imgObj = null) {
-    if (activeLayer === "image" || activeLayer === "admin") return true;
+    if (activeLayer === "admin") return true;
     if (!imgObj) return false;
     const layer = imgObj.layer || "user";
-    if (layer === "user" && activeLayer === "user" && imgObj.user === currentUser) {
-      return true;
-    }
+    if (activeLayer === "draft") return layer === "draft" && imgObj.user === currentUser;
+    if (activeLayer === "user") return layer === "user" && (!imgObj.user || imgObj.user === currentUser);
+    if (activeLayer === "base") return layer === "base";
+    if (activeLayer === "image") return layer === "image";
     return false;
   }
 
@@ -2359,7 +2360,8 @@
   function applyDraftSelectionToPublic() {
     if (activeLayer !== "draft") return;
     if (activeLayer === "image") return;
-    const targets = getSelectionItems()
+    const items = getSelectionItems();
+    const targets = items
       .flatMap((it) => {
         if (it.type === "draft") return [it.index];
         if (it.type === "draft-group") return it.indices;
@@ -2368,9 +2370,21 @@
     const unique = Array.from(new Set(targets))
       .map((idx) => draftStrokes[idx])
       .filter(Boolean);
-    if (!unique.length) return;
+    const textTargets = Array.from(
+      new Set(
+        items
+          .filter((it) => it.type === "text")
+          .map((it) => texts[it.index])
+          .filter((t) => t && (t.layer || "user") === "draft" && t.user === currentUser)
+          .map((t) => t.id)
+      )
+    )
+      .map((id) => texts.find((t) => t.id === id))
+      .filter(Boolean);
+    if (!unique.length && !textTargets.length) return;
 
     const targetLayer = "user";
+    ensureSnapshotForAction();
 
     unique.forEach((draft) => {
       const stroke = {
@@ -2399,6 +2413,20 @@
       }
     });
 
+    textTargets.forEach((text) => {
+      text.layer = targetLayer;
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: text.id,
+          patch: { layer: targetLayer },
+        });
+      }
+    });
+
+    refreshTextList();
+    selected = null;
     multiSelection = null;
     redraw();
   }
@@ -3798,63 +3826,60 @@
 
   // --- 画像追加 ---
   function getImageTargetLayer() {
+    if (!isAdminUser()) return "user";
     if (activeLayer === "image") return "image";
     if (activeLayer === "base") return "base";
-    if (activeLayer === "admin" && isAdminUser()) return "admin";
+    if (activeLayer === "admin") return "admin";
     return "user";
   }
 
-  function addImageFile(file, worldX, worldY, layout = null, targetLayer = getImageTargetLayer()) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const maxWorldWidth = (canvas.width / scale) * 0.6;
-        const maxWorldHeight = (canvas.height / scale) * 0.6;
-        let w = img.width;
-        let h = img.height;
-        const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
-        w *= r;
-        h *= r;
+  async function addImageFile(file, worldX, worldY, layout = null, targetLayer = getImageTargetLayer()) {
+    try {
+      const { img, src } = await loadImageFromFile(file);
+      const maxWorldWidth = (canvas.width / scale) * 0.6;
+      const maxWorldHeight = (canvas.height / scale) * 0.6;
+      let w = img.width;
+      let h = img.height;
+      const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
+      w *= r;
+      h *= r;
 
-        let placeX = worldX - w / 2;
-        let placeY = worldY - h / 2;
-        if (layout) {
-          placeX = layout.currentX;
-          placeY = layout.y - h / 2;
-          layout.currentX += w + (layout.gapX || 0);
-          layout.lastRowHeight = Math.max(layout.lastRowHeight || 0, h);
-        }
+      let placeX = worldX - w / 2;
+      let placeY = worldY - h / 2;
+      if (layout) {
+        placeX = layout.currentX;
+        placeY = layout.y - h / 2;
+        layout.currentX += w + (layout.gapX || 0);
+        layout.lastRowHeight = Math.max(layout.lastRowHeight || 0, h);
+      }
 
-        const imgObj = {
-          id: genId(),
-          img,
-          src: reader.result,
-          x: placeX,
-          y: placeY,
-          width: w,
-          height: h,
-          layer: targetLayer,
-          order: orderCounter++,
-          user: currentUser,
-          rotation: 0,
-          imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
-          imageListOrder: bumpImageListOrderCounter(),
-        };
-        images.push(imgObj);
-        registerUser(currentUser);
-        refreshImageList();
-        emitImageAdd(imgObj);
-
-        // 貼り付け直後は選択ツールに切り替えて、その画像を選択
-        currentTool = "select";
-        updateToolButtons();
-        selected = { type: "image", index: images.length - 1 };
-        redraw();
+      const imgObj = {
+        id: genId(),
+        img,
+        src,
+        x: placeX,
+        y: placeY,
+        width: w,
+        height: h,
+        layer: targetLayer,
+        order: orderCounter++,
+        user: currentUser,
+        rotation: 0,
+        imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
+        imageListOrder: bumpImageListOrderCounter(),
       };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
+      images.push(imgObj);
+      registerUser(currentUser);
+      refreshImageList();
+      emitImageAdd(imgObj);
+
+      currentTool = "select";
+      updateToolButtons();
+      selected = { type: "image", index: images.length - 1 };
+      redraw();
+    } catch (err) {
+      console.error("failed to load image", err);
+    }
   }
 
   async function addImageFilesAt(files, worldX, worldY, targetLayer = getImageTargetLayer()) {
@@ -3930,7 +3955,17 @@
       const reader = new FileReader();
       reader.onload = () => {
         const img = new Image();
-        img.onload = () => resolve({ img, src: reader.result });
+        img.onload = () => {
+          const src = resizeImageForStorage(img, reader.result, file.type);
+          if (src === reader.result) {
+            resolve({ img, src });
+            return;
+          }
+          const resizedImg = new Image();
+          resizedImg.onload = () => resolve({ img: resizedImg, src });
+          resizedImg.onerror = reject;
+          resizedImg.src = src;
+        };
         img.onerror = reject;
         img.src = reader.result;
       };
@@ -3939,28 +3974,24 @@
     });
   }
 
-  function emitImageAdd(imgObj) {
-    if (!socketConnected) return;
-    socket.emit("image:add", {
-      boardId,
-      image: {
-        id: imgObj.id,
-        src: imgObj.src,
-        x: imgObj.x,
-        y: imgObj.y,
-        width: imgObj.width,
-        height: imgObj.height,
-        layer: imgObj.layer,
-        order: imgObj.order,
-        user: imgObj.user,
-        rotation: imgObj.rotation || 0,
-        tagType: imgObj.tagType || null,
-        tagLabel: imgObj.tagLabel || "",
-        imageName: imgObj.imageName || "",
-        imageListOrder:
-          typeof imgObj.imageListOrder === "number" ? imgObj.imageListOrder : imgObj.order || 0,
-      },
-    });
+  function resizeImageForStorage(img, src, mimeType = "") {
+    const maxSide = 2400;
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    if (!width || !height || Math.max(width, height) <= maxSide) return src;
+
+    const ratio = maxSide / Math.max(width, height);
+    const canvasEl = document.createElement("canvas");
+    canvasEl.width = Math.round(width * ratio);
+    canvasEl.height = Math.round(height * ratio);
+    const canvasCtx = canvasEl.getContext("2d");
+    canvasCtx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+    const outputType = mimeType === "image/png" ? "image/png" : "image/jpeg";
+    const resizedSrc = canvasEl.toDataURL(outputType, 0.86);
+    if (outputType === "image/png" && resizedSrc.length > 12 * 1024 * 1024) {
+      return canvasEl.toDataURL("image/jpeg", 0.86);
+    }
+    return resizedSrc;
   }
 
   function addTemplateImage(src, worldX, worldY, targetLayer = getImageTargetLayer(), imageName = "") {
@@ -5605,7 +5636,12 @@
   }
 
   function selectionHasDraft() {
-    return getSelectionItems().some((it) => it.type === "draft" || it.type === "draft-group");
+    return getSelectionItems().some((it) => {
+      if (it.type === "draft" || it.type === "draft-group") return true;
+      if (it.type !== "text") return false;
+      const text = texts[it.index];
+      return !!text && (text.layer || "user") === "draft" && text.user === currentUser;
+    });
   }
 
   function selectionHasStrokeOrText() {
