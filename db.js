@@ -84,6 +84,25 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   active_frame_tab TEXT
 );
 
+CREATE TABLE IF NOT EXISTS links_v1 (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL,
+  user TEXT,
+  url TEXT NOT NULL,
+  title TEXT,
+  description TEXT,
+  image TEXT,
+  favicon TEXT,
+  site_name TEXT,
+  x REAL NOT NULL,
+  y REAL NOT NULL,
+  width REAL NOT NULL,
+  height REAL NOT NULL,
+  layer TEXT NOT NULL,
+  "order" INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS draft_strokes (
   id TEXT PRIMARY KEY,
   board_id TEXT NOT NULL,
@@ -204,6 +223,7 @@ try {
   ["images_v2", "active_frame_tab TEXT"],
   ["draft_strokes", "frame_id TEXT"],
   ["draft_strokes", "frame_tab TEXT"],
+  ["links_v1", "favicon TEXT"],
 ].forEach(([table, column]) => {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
@@ -416,6 +436,37 @@ function deleteImage(boardId, id) {
   stmt.run(boardId, id);
 }
 
+// --- links_v1 ---
+function saveLink(link) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO links_v1 (id, board_id, user, url, title, description, image, favicon, site_name, x, y, width, height, layer, "order", created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    link.id,
+    link.board_id,
+    link.user || null,
+    link.url,
+    link.title || null,
+    link.description || null,
+    link.image || null,
+    link.favicon || null,
+    link.siteName || null,
+    link.x,
+    link.y,
+    link.width || 320,
+    link.height || 150,
+    link.layer || "user",
+    link.order || 0,
+    link.createdAt || Date.now()
+  );
+}
+
+function deleteLink(boardId, id) {
+  const stmt = db.prepare(`DELETE FROM links_v1 WHERE board_id = ? AND id = ?`);
+  stmt.run(boardId, id);
+}
+
 // --- state ---
 function getBoardState(boardId) {
   const strokesStmt = db.prepare(`
@@ -433,6 +484,12 @@ function getBoardState(boardId) {
   const imagesStmt = db.prepare(`
     SELECT id, user, src, x, y, width, height, layer, "order", rotation, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab
     FROM images_v2
+    WHERE board_id = ?
+    ORDER BY "order" ASC
+  `);
+  const linksStmt = db.prepare(`
+    SELECT id, user, url, title, description, image, favicon, site_name, x, y, width, height, layer, "order", created_at
+    FROM links_v1
     WHERE board_id = ?
     ORDER BY "order" ASC
   `);
@@ -492,7 +549,25 @@ function getBoardState(boardId) {
     activeFrameTab: row.active_frame_tab || null,
   }));
 
-  return { title, strokes, texts, images };
+  const links = linksStmt.all(boardId).map((row) => ({
+    id: row.id,
+    user: row.user,
+    url: row.url,
+    title: row.title || "",
+    description: row.description || "",
+    image: row.image || "",
+    favicon: row.favicon || "",
+    siteName: row.site_name || "",
+    x: row.x,
+    y: row.y,
+    width: row.width,
+    height: row.height,
+    layer: row.layer || "user",
+    order: row.order,
+    createdAt: row.created_at,
+  }));
+
+  return { title, strokes, texts, images, links };
 }
 
 module.exports = {
@@ -506,6 +581,8 @@ module.exports = {
   deleteText,
   saveImage,
   deleteImage,
+  saveLink,
+  deleteLink,
   getBoardState,
   saveDraftStroke,
   deleteDraftStroke,

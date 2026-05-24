@@ -17,6 +17,8 @@ const {
   deleteText,
   saveImage,
   deleteImage,
+  saveLink,
+  deleteLink,
   getBoardState,
   saveDraftStroke,
   deleteDraftStroke,
@@ -148,6 +150,200 @@ app.post("/api/boards/:boardId/users", (req, res) => {
   }
 });
 
+function absolutizeUrl(value, baseUrl) {
+  if (!value) return "";
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractMeta(html, url) {
+  const pick = (...patterns) => {
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        return match[1]
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .trim();
+      }
+    }
+    return "";
+  };
+  const title = pick(
+    /<meta\s+[^>]*(?:property|name)=["']og:title["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']og:title["'][^>]*>/i,
+    /<title[^>]*>([^<]+)<\/title>/i
+  );
+  const description = pick(
+    /<meta\s+[^>]*(?:property|name)=["']og:description["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+    /<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i
+  );
+  const image = absolutizeUrl(
+    pick(
+      /<meta\s+[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+      /<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image["'][^>]*>/i,
+      /<meta\s+[^>]*(?:property|name)=["']twitter:image(?::src)?["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+      /<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']twitter:image(?::src)?["'][^>]*>/i,
+      /<meta\s+[^>]*itemprop=["']image["'][^>]*content=["']([^"']+)["'][^>]*>/i,
+      /<link\s+[^>]*rel=["'][^"']*image_src[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/i,
+      /<link\s+[^>]*href=["']([^"']+)["'][^>]*rel=["'][^"']*image_src[^"']*["'][^>]*>/i
+    ),
+    url
+  );
+  let jsonLdImage = "";
+  if (!image) {
+    const scripts = html.match(/<script\s+[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+    for (const script of scripts) {
+      const body = script.replace(/^<script[^>]*>/i, "").replace(/<\/script>$/i, "").trim();
+      try {
+        const data = JSON.parse(body);
+        const stack = Array.isArray(data) ? [...data] : [data];
+        while (stack.length) {
+          const item = stack.shift();
+          if (!item || typeof item !== "object") continue;
+          if (item.image) {
+            const candidate = Array.isArray(item.image) ? item.image[0] : item.image;
+            jsonLdImage = typeof candidate === "string" ? candidate : candidate?.url || "";
+            if (jsonLdImage) break;
+          }
+          Object.values(item).forEach((value) => {
+            if (value && typeof value === "object") {
+              if (Array.isArray(value)) stack.push(...value);
+              else stack.push(value);
+            }
+          });
+        }
+      } catch {
+        // ignore invalid JSON-LD
+      }
+      if (jsonLdImage) break;
+    }
+  }
+  const favicon = absolutizeUrl(
+    pick(
+      /<link\s+[^>]*rel=["'][^"']*(?:apple-touch-icon|icon|shortcut icon)[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/i,
+      /<link\s+[^>]*href=["']([^"']+)["'][^>]*rel=["'][^"']*(?:apple-touch-icon|icon|shortcut icon)[^"']*["'][^>]*>/i
+    ),
+    url
+  ) || absolutizeUrl("/favicon.ico", url);
+  const siteName =
+    pick(/<meta\s+[^>]*(?:property|name)=["']og:site_name["'][^>]*content=["']([^"']+)["'][^>]*>/i) ||
+    new URL(url).hostname;
+  return { title: title || url, description, image: image || absolutizeUrl(jsonLdImage, url), favicon, siteName };
+}
+
+function getYouTubeVideoId(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "";
+  }
+  const host = parsed.hostname.replace(/^www\./, "");
+  if (host === "youtu.be") return parsed.pathname.split("/").filter(Boolean)[0] || "";
+  if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+    if (parsed.pathname === "/watch") return parsed.searchParams.get("v") || "";
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (["embed", "shorts", "live"].includes(parts[0])) return parts[1] || "";
+  }
+  return "";
+}
+
+async function getYouTubePreview(url) {
+  const videoId = getYouTubeVideoId(url);
+  if (!videoId) return null;
+  const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`, {
+      signal: controller.signal,
+      headers: { "user-agent": "WhiteboardLinkPreview/1.0" },
+    });
+    clearTimeout(timeout);
+    if (response.ok) {
+      const data = await response.json();
+      return {
+        url,
+        title: data.title || url,
+        description: "",
+        image: data.thumbnail_url || thumbnail,
+        siteName: data.provider_name || "YouTube",
+      };
+    }
+  } catch {
+    // fall through to deterministic thumbnail
+  }
+  return { url, title: url, description: "", image: thumbnail, siteName: "YouTube" };
+}
+
+app.get("/api/link-preview", async (req, res) => {
+  const url = String(req.query.url || "").trim();
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).json({ error: "invalid url" });
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return res.status(400).json({ error: "unsupported url" });
+  }
+  const youtubePreview = await getYouTubePreview(parsed.toString());
+  if (youtubePreview) {
+    return res.json(youtubePreview);
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    const response = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      headers: { "user-agent": "WhiteboardLinkPreview/1.0" },
+    });
+    clearTimeout(timeout);
+    const html = await response.text();
+    res.json({ url: parsed.toString(), ...extractMeta(html.slice(0, 300000), parsed.toString()) });
+  } catch (err) {
+    res.json({ url: parsed.toString(), title: parsed.toString(), description: "", image: "", siteName: parsed.hostname });
+  }
+});
+
+app.get("/api/link-image", async (req, res) => {
+  const url = String(req.query.url || "").trim();
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).end();
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return res.status(400).end();
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      headers: { "user-agent": "WhiteboardLinkPreview/1.0" },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return res.status(502).end();
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    if (!contentType.toLowerCase().startsWith("image/")) return res.status(415).end();
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader("content-type", contentType);
+    res.setHeader("cache-control", "public, max-age=86400");
+    res.send(buffer);
+  } catch {
+    res.status(502).end();
+  }
+});
+
 // （今はまだ使わないけど、あとでフロントから呼ぶAPI）
 // --- WebSocket (Socket.IO) ---
 // 各ボードごとに簡易なメモリ上の状態を持つ
@@ -162,6 +358,7 @@ function ensureBoardState(boardId) {
       strokes: (dbState.strokes || []).map((s) => ({ ...s, layer: s.layer || "user" })),
       texts: (dbState.texts || []).map((t) => ({ ...t, layer: t.layer || "user" })),
       images: dbState.images || [],
+      links: dbState.links || [],
     });
   }
   return boardStates.get(boardId);
@@ -216,6 +413,15 @@ io.on("connection", (socket) => {
     socket.to(boardId).emit("image:add", image);
   });
 
+  socket.on("link:add", ({ boardId, link }) => {
+    if (boardId !== currentBoardId) return;
+    const state = ensureBoardState(boardId);
+    const l = link.createdAt ? link : { ...link, createdAt: Date.now() };
+    state.links.push(l);
+    saveLink({ ...l, board_id: boardId });
+    socket.to(boardId).emit("link:add", l);
+  });
+
   socket.on("item:update", ({ boardId, type, id, patch }) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
@@ -224,7 +430,9 @@ io.on("connection", (socket) => {
         ? state.strokes
         : type === "text"
         ? state.texts
-        : state.images;
+        : type === "image"
+        ? state.images
+        : state.links;
     const idx = list.findIndex((x) => x.id === id);
     if (idx >= 0) {
       list[idx] = { ...list[idx], ...patch };
@@ -234,6 +442,8 @@ io.on("connection", (socket) => {
         saveText({ ...list[idx], board_id: boardId });
       } else if (type === "image") {
         saveImage({ ...list[idx], board_id: boardId });
+      } else if (type === "link") {
+        saveLink({ ...list[idx], board_id: boardId });
       }
       socket.to(boardId).emit("item:update", { type, id, patch });
     }
@@ -247,13 +457,16 @@ io.on("connection", (socket) => {
         ? state.strokes
         : type === "text"
         ? state.texts
-        : state.images;
+        : type === "image"
+        ? state.images
+        : state.links;
     const idx = list.findIndex((x) => x.id === id);
     if (idx >= 0) {
       list.splice(idx, 1);
       if (type === "stroke") deleteStroke(boardId, id);
       else if (type === "text") deleteText(boardId, id);
       else if (type === "image") deleteImage(boardId, id);
+      else if (type === "link") deleteLink(boardId, id);
       socket.to(boardId).emit("item:remove", { type, id });
     }
   });

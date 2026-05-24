@@ -18,6 +18,7 @@
   const insertMenu = document.getElementById("insert-menu");
   const textListBtn = document.getElementById("text-list-btn");
   const imageListBtn = document.getElementById("image-list-btn");
+  const linkListBtn = document.getElementById("link-list-btn");
   const textListPanel = document.getElementById("text-list-panel");
   const textListBody = document.getElementById("text-list-body");
   const textListCloseBtn = document.getElementById("text-list-close-btn");
@@ -26,6 +27,9 @@
   const imageListPanel = document.getElementById("image-list-panel");
   const imageListBody = document.getElementById("image-list-body");
   const imageListCloseBtn = document.getElementById("image-list-close-btn");
+  const linkListPanel = document.getElementById("link-list-panel");
+  const linkListBody = document.getElementById("link-list-body");
+  const linkListCloseBtn = document.getElementById("link-list-close-btn");
   const otherMenuBtn = document.getElementById("other-menu-btn");
   const otherMenu = document.getElementById("other-menu");
   const changeUserBtn = document.getElementById("change-user-btn");
@@ -180,10 +184,13 @@
   const strokes = []; // { id, color, size, points: [{x,y}], user, order }
   const images = [];  // { id, img, src, x, y, width, height, layer: "base", order }
   const texts = [];   // { id, lines:[string], x, y, fontSize, color, user, order, createdAt, label }
+  const links = [];   // { id, url, title, description, image, siteName, x, y, width, height, layer, order }
   const draftStrokes = []; // { id, color, size, points, user, order, createdAt }
   let textListOpen = false;
   let imageListOpen = false;
+  let linkListOpen = false;
   let imageListOrderCounter = 0;
+  const linkPreviewRefreshes = new Set();
 
   // ズーム・パン
   let scale = 1.0;
@@ -323,6 +330,7 @@
         points: clonePoints(s.points),
       }));
     const cloneTexts = (arr) => arr.map((t) => ({ ...t, lines: t.lines ? [...t.lines] : [] }));
+    const cloneLinks = (arr) => arr.map(({ _img, ...l }) => ({ ...l }));
     const cloneImages = (arr) =>
       arr.map((img) => ({
         id: img.id,
@@ -349,6 +357,7 @@
       strokes: cloneStrokes(strokes),
       texts: cloneTexts(texts),
       images: cloneImages(images),
+      links: cloneLinks(links),
       draftStrokes: cloneStrokes(draftStrokes),
       orderCounter,
       draftOrderCounter,
@@ -379,6 +388,7 @@
     strokes.splice(0, strokes.length, ...(snap.strokes || []));
     texts.splice(0, texts.length, ...(snap.texts || []));
     images.splice(0, images.length, ...rebuildImages(snap.images || []));
+    links.splice(0, links.length, ...(snap.links || []));
     draftStrokes.splice(0, draftStrokes.length, ...(snap.draftStrokes || []));
     orderCounter = snap.orderCounter ?? orderCounter;
     draftOrderCounter = snap.draftOrderCounter ?? draftOrderCounter;
@@ -397,6 +407,7 @@
     textEditor = null;
     actionSnapshotTaken = false;
     refreshTextList();
+    refreshLinkList();
     updateLayerToggleUI();
     updateToolButtons();
     redraw();
@@ -406,6 +417,98 @@
     if (actionSnapshotTaken) return;
     pushSnapshot();
     actionSnapshotTaken = true;
+  }
+
+  function stableSnapshotValue(value) {
+    if (Array.isArray(value)) return value.map(stableSnapshotValue);
+    if (!value || typeof value !== "object") return value;
+    return Object.keys(value)
+      .filter((key) => key !== "img")
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = stableSnapshotValue(value[key]);
+        return acc;
+      }, {});
+  }
+
+  function snapshotItemChanged(beforeItem, afterItem) {
+    return JSON.stringify(stableSnapshotValue(beforeItem)) !== JSON.stringify(stableSnapshotValue(afterItem));
+  }
+
+  function imageSnapshotPayload(img) {
+    return {
+      id: img.id,
+      src: img.src,
+      x: img.x,
+      y: img.y,
+      width: img.width,
+      height: img.height,
+      layer: img.layer,
+      order: img.order,
+      user: img.user,
+      rotation: img.rotation || 0,
+      tagType: img.tagType || null,
+      tagLabel: img.tagLabel || "",
+      imageName: img.imageName || "",
+      imageListOrder:
+        typeof img.imageListOrder === "number" ? img.imageListOrder : img.order || 0,
+      frameId: img.frameId || null,
+      frameTab: img.frameTab || null,
+      frameTabs: img.frameTabs || null,
+      activeFrameTab: img.activeFrameTab || null,
+    };
+  }
+
+  function syncUndoCollection(type, beforeItems = [], afterItems = [], options = {}) {
+    if (!socketConnected) return;
+    const beforeById = new Map(beforeItems.filter((item) => item?.id).map((item) => [item.id, item]));
+    const afterById = new Map(afterItems.filter((item) => item?.id).map((item) => [item.id, item]));
+
+    beforeById.forEach((_, id) => {
+      if (!afterById.has(id)) {
+        if (options.remove) {
+          options.remove(id);
+        } else {
+          socket.emit("item:remove", { boardId, type, id });
+        }
+      }
+    });
+
+    afterById.forEach((afterItem, id) => {
+      const beforeItem = beforeById.get(id);
+      if (!beforeItem) {
+        if (options.add) {
+          options.add(afterItem);
+        } else if (type === "text") {
+          socket.emit("text:add", { boardId, text: afterItem });
+        } else if (type === "stroke") {
+          socket.emit("stroke:add", { boardId, stroke: afterItem });
+        } else if (type === "image") {
+          socket.emit("image:add", { boardId, image: imageSnapshotPayload(afterItem) });
+        }
+      } else if (snapshotItemChanged(beforeItem, afterItem)) {
+        if (options.update) {
+          options.update(afterItem);
+        } else {
+          socket.emit("item:update", { boardId, type, id, patch: stableSnapshotValue(afterItem) });
+        }
+      }
+    });
+  }
+
+  function syncRestoredSnapshot(before, after) {
+    if (!socketConnected || !before || !after) return;
+    syncUndoCollection("stroke", before.strokes, after.strokes);
+    syncUndoCollection("text", before.texts, after.texts);
+    syncUndoCollection("image", before.images, after.images);
+    syncUndoCollection("link", before.links, after.links, {
+      add: (link) => socket.emit("link:add", { boardId, link }),
+    });
+    syncUndoCollection("draft", before.draftStrokes, after.draftStrokes, {
+      add: (stroke) => socket.emit("draft:stroke:add", { boardId, stroke }),
+      remove: (id) => socket.emit("draft:stroke:remove", { boardId, id }),
+      update: (stroke) => socket.emit("draft:stroke:add", { boardId, stroke }),
+    });
   }
 
   function buildTextShadow(baseColor, fontSizePx) {
@@ -448,6 +551,23 @@
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer === "draft" && text.user === currentUser;
+    if (activeLayer === "user") return layer === "user";
+    if (activeLayer === "base") return layer === "base";
+    return false;
+  }
+
+  function isLinkVisible(link) {
+    const layer = link.layer || "user";
+    if (activeLayer === "admin") return true;
+    if (activeLayer === "draft") return layer !== "draft" || link.user === currentUser;
+    if (activeLayer === "user") return layer === "user" || layer === "base";
+    if (activeLayer === "base") return layer === "base";
+    return false;
+  }
+
+  function canInteractLink(link) {
+    const layer = link.layer || "user";
+    if (activeLayer === "admin") return true;
     if (activeLayer === "user") return layer === "user";
     if (activeLayer === "base") return layer === "base";
     return false;
@@ -1757,6 +1877,56 @@
     ).replace(/\n/g, "<br>");
   }
 
+  function normalizeTextTags(label) {
+    if (Array.isArray(label)) {
+      return [...new Set(label.map((tag) => String(tag || "").trim()).filter(Boolean))];
+    }
+    const value = String(label || "").trim();
+    if (!value) return [];
+    if (value.startsWith("[") && value.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return normalizeTextTags(parsed);
+      } catch {
+        // 古い単一ラベルとして扱う
+      }
+    }
+    return [value];
+  }
+
+  function serializeTextTags(tags) {
+    const normalized = normalizeTextTags(tags);
+    if (!normalized.length) return "";
+    return normalized.length === 1 ? normalized[0] : JSON.stringify(normalized);
+  }
+
+  function formatTextTagsForPrompt(tags) {
+    return normalizeTextTags(tags).join(", ");
+  }
+
+  function parseTextTagsInput(value) {
+    return normalizeTextTags(
+      String(value || "")
+        .split(/[,\n、]/)
+        .map((tag) => tag.trim())
+    );
+  }
+
+  function getFrameDisplayName(imgObj) {
+    if (!imgObj?.tagType) return "";
+    return (
+      imgObj.tagLabel ||
+      imgObj.imageName ||
+      (imgObj.tagType === "omoteura"
+        ? "表裏"
+        : imgObj.tagType === "omote"
+        ? "表"
+        : imgObj.tagType === "ura"
+        ? "裏"
+        : "フレーム")
+    );
+  }
+
   function openTextList() {
     textListOpen = true;
     textListPanel.classList.remove("hidden");
@@ -1791,21 +1961,21 @@
       const meta = document.createElement("span");
       meta.className = "text-list-meta";
       meta.textContent = `#${idx + 1}`;
-      const labelBadge = document.createElement("span");
-      labelBadge.className = "text-label-badge";
-      const firstLine = t.lines && t.lines.length > 0 ? t.lines[0] : "";
-      const labelText = t.label ? `${t.label}` : "#";
-      labelBadge.textContent = labelText;
-      labelBadge.addEventListener("click", (e) => {
+      const tags = normalizeTextTags(t.label);
+      const tagButton = document.createElement("span");
+      tagButton.className = "text-label-badge";
+      tagButton.textContent = tags.length ? tags.join(" / ") : "#";
+      tagButton.title = "タグを編集";
+      tagButton.addEventListener("click", (e) => {
         e.stopPropagation();
-        const current = t.label || "";
-        const newLabel = window.prompt("ラベルを入力", current);
-        if (newLabel === null) return;
-        setTextLabel(t.id, newLabel.trim());
+        const current = formatTextTagsForPrompt(t.label);
+        const next = window.prompt("タグをカンマ区切りで入力", current);
+        if (next === null) return;
+        setTextTags(t.id, parseTextTagsInput(next));
       });
 
       labelRow.appendChild(meta);
-      labelRow.appendChild(labelBadge);
+      labelRow.appendChild(tagButton);
 
       const content = document.createElement("div");
       content.className = "text-list-content";
@@ -1848,7 +2018,8 @@
     if (!list.length) return "";
     return list
       .map((t) => {
-        const label = (t.label && t.label.trim()) || "(ラベルなし)";
+        const tags = normalizeTextTags(t.label);
+        const label = tags.length ? tags.join(" / ") : "(タグなし)";
         const body = (t.lines || []).join("\n");
         return `${label}：${body}`;
       })
@@ -1935,6 +2106,151 @@
     }
   }
 
+  function openLinkList() {
+    linkListOpen = true;
+    linkListPanel.classList.remove("hidden");
+    positionLinkListPanel();
+    renderLinkList();
+  }
+
+  function closeLinkList() {
+    linkListOpen = false;
+    linkListPanel.classList.add("hidden");
+    linkListPanel.style.maxHeight = "";
+    if (linkListBody) linkListBody.style.maxHeight = "";
+    linkListPanel.style.top = "";
+    linkListPanel.style.bottom = "";
+  }
+
+  function refreshLinkList() {
+    if (linkListOpen) renderLinkList();
+  }
+
+  function positionLinkListPanel() {
+    if (!linkListPanel || linkListPanel.classList.contains("hidden")) return;
+    const margin = 12;
+    const footerSpace = getFooterSpace() + margin;
+    const toolbarBottom = toolbarEl ? toolbarEl.getBoundingClientRect().bottom + margin : 60;
+    const top = Math.max(margin, toolbarBottom);
+    linkListPanel.style.top = `${top}px`;
+    linkListPanel.style.bottom = "auto";
+    const available = window.innerHeight - top - footerSpace - margin;
+    const maxH = Math.max(260, available);
+    linkListPanel.style.maxHeight = `${maxH}px`;
+    if (linkListBody) {
+      const header = linkListPanel.querySelector(".text-list-header");
+      const headerH = header ? header.getBoundingClientRect().height : 44;
+      linkListBody.style.maxHeight = `${Math.max(180, maxH - headerH)}px`;
+    }
+  }
+
+  function renderLinkList() {
+    if (!linkListOpen || !linkListBody) return;
+    linkListBody.innerHTML = "";
+    links
+      .slice()
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      .forEach((link) => {
+        const item = document.createElement("div");
+        item.className = "link-list-item";
+        const title = document.createElement("button");
+        title.type = "button";
+        title.className = "link-list-title";
+        title.textContent = link.title || link.url;
+        title.title = link.url;
+        title.addEventListener("click", (e) => {
+          e.stopPropagation();
+          focusLinkFromList(link.id);
+          startLinkTitleInlineEdit(item, link, title);
+        });
+        const url = document.createElement("a");
+        url.href = link.url;
+        url.target = "_blank";
+        url.rel = "noopener noreferrer";
+        url.className = "link-list-url";
+        url.textContent = link.url;
+        item.appendChild(title);
+        item.appendChild(url);
+        item.addEventListener("click", () => focusLinkFromList(link.id));
+        linkListBody.appendChild(item);
+      });
+    positionLinkListPanel();
+  }
+
+  function startLinkTitleInlineEdit(item, link, titleEl) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "link-list-title-input";
+    input.value = link.title || "";
+    input.placeholder = "タイトル";
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      if (commit) {
+        const title = input.value.trim() || link.url;
+        if (title !== link.title) {
+          link.title = title;
+          emitItemPatch("link", link, { title });
+        }
+      }
+      refreshLinkList();
+      redraw();
+    };
+
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("mousedown", (e) => e.stopPropagation());
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+  }
+
+  function shouldRefreshLinkPreview(link) {
+    if (!link?.url) return false;
+    return !link.image || !link.title || link.title === link.url;
+  }
+
+  async function refreshLinkPreviewIfNeeded(link) {
+    if (!shouldRefreshLinkPreview(link) || linkPreviewRefreshes.has(link.id)) return;
+    linkPreviewRefreshes.add(link.id);
+    const preview = await fetchLinkPreview(link.url);
+    linkPreviewRefreshes.delete(link.id);
+    const patch = {};
+    if (preview.title && (!link.title || link.title === link.url)) patch.title = preview.title;
+    if (preview.description && !link.description) patch.description = preview.description;
+    if (preview.image && !link.image) patch.image = preview.image;
+    if (preview.favicon && !link.favicon) patch.favicon = preview.favicon;
+    if (preview.siteName && !link.siteName) patch.siteName = preview.siteName;
+    if (!Object.keys(patch).length) return;
+    Object.assign(link, patch);
+    emitItemPatch("link", link, patch);
+    refreshLinkList();
+    redraw();
+  }
+
+  function focusLinkFromList(linkId) {
+    const targetIdx = findIndexById(links, linkId);
+    if (targetIdx < 0) return;
+    const target = links[targetIdx];
+    offsetX = canvas.width / 2 - (target.x + target.width / 2) * scale;
+    offsetY = canvas.height / 2 - (target.y + target.height / 2) * scale;
+    selected = { type: "link", index: targetIdx };
+    currentTool = "select";
+    updateToolButtons();
+    redraw();
+  }
+
   function renderImageList() {
     if (!imageListOpen || !imageListBody) return;
     imageListBody.innerHTML = "";
@@ -1958,19 +2274,11 @@
       name.className = "image-list-name";
       name.textContent = img.imageName || "(画像名なし)";
       name.title = img.imageName || "";
-      name.addEventListener("click", (e) => {
+      name.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
         e.stopPropagation();
         focusImageFromList(img.id);
-      });
-      name.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const next = window.prompt("画像名を入力", img.imageName || "");
-        if (next === null) return;
-        const imageName = next.trim();
-        img.imageName = imageName;
-        emitItemPatch("image", img, { imageName });
-        refreshImageList();
+        startImageNameInlineEdit(item, img, name);
       });
 
       item.appendChild(meta);
@@ -2010,6 +2318,49 @@
     positionImageListPanel();
   }
 
+  function startImageNameInlineEdit(item, img, nameEl) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "image-list-name-input";
+    input.value = img.imageName || "";
+    input.placeholder = "画像名なし";
+    item.draggable = false;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      item.draggable = true;
+      if (commit) {
+        const imageName = input.value.trim();
+        const oldName = img.imageName || "";
+        if (imageName !== oldName) {
+          img.imageName = imageName;
+          emitItemPatch("image", img, { imageName });
+          updateTextTagsForRenamedImage(oldName, imageName);
+        }
+      }
+      refreshImageList();
+    };
+
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("mousedown", (e) => e.stopPropagation());
+    input.addEventListener("dragstart", (e) => e.preventDefault());
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+  }
+
   function focusImageFromList(imageId) {
     const targetIdx = findIndexById(images, imageId);
     if (targetIdx < 0) return;
@@ -2042,6 +2393,14 @@
       closeImageList();
     } else {
       openImageList();
+    }
+  }
+
+  function toggleLinkListPanelView() {
+    if (linkListOpen) {
+      closeLinkList();
+    } else {
+      openLinkList();
     }
   }
 
@@ -2097,9 +2456,10 @@
     }
   }
 
-  function setTextLabel(textId, label) {
+  function setTextTags(textId, tags) {
     const idx = findIndexById(texts, textId);
     if (idx < 0) return;
+    const label = serializeTextTags(tags);
     texts[idx].label = label;
     refreshTextList();
     if (socketConnected) {
@@ -2294,6 +2654,7 @@
     const strokeIds = new Set();
     const textIds = new Set();
     const imageIds = new Set();
+    const linkIds = new Set();
     const draftIds = new Set();
 
     const collect = (item) => {
@@ -2320,6 +2681,9 @@
           }
           imageIds.add(img.id);
         }
+      } else if (item.type === "link") {
+        const link = links[item.index];
+        if (link && canInteractLink(link)) linkIds.add(link.id);
       } else if (item.type === "draft") {
         const d = draftStrokes[item.index];
         if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.add(d.id);
@@ -2337,7 +2701,7 @@
       collect(selected);
     }
 
-    if (!strokeIds.size && !textIds.size && !imageIds.size && !draftIds.size) return;
+    if (!strokeIds.size && !textIds.size && !imageIds.size && !linkIds.size && !draftIds.size) return;
 
     strokeIds.forEach((id) => {
       const idx = findIndexById(strokes, id);
@@ -2369,6 +2733,16 @@
       }
     });
 
+    linkIds.forEach((id) => {
+      const idx = findIndexById(links, id);
+      if (idx >= 0) {
+        links.splice(idx, 1);
+        if (socketConnected) {
+          socket.emit("item:remove", { boardId, type: "link", id });
+        }
+      }
+    });
+
     draftIds.forEach((id) => {
       const idx = findIndexById(draftStrokes, id);
       if (idx >= 0 && canDeleteDraft(draftStrokes[idx])) {
@@ -2381,6 +2755,7 @@
 
     if (textIds.size) refreshTextList();
     if (imageIds.size) refreshImageList();
+    if (linkIds.size) refreshLinkList();
     selected = null;
     multiSelection = null;
     redraw();
@@ -2413,6 +2788,8 @@
       } else if (item.type === "image") {
         const img = images[item.index];
         if (img) addBounds({ x: img.x, y: img.y, width: img.width, height: img.height });
+      } else if (item.type === "link") {
+        addBounds(getLinkBoundsWorld(links[item.index]));
       }
     });
 
@@ -4021,6 +4398,170 @@
     };
   }
 
+  function getLinkBoundsWorld(link) {
+    return {
+      x: link.x,
+      y: link.y,
+      width: link.width || 320,
+      height: link.height || 150,
+    };
+  }
+
+  function getLinkImageSrc(src) {
+    if (!src) return "";
+    try {
+      const parsed = new URL(src, window.location.href);
+      if (parsed.origin === window.location.origin) return parsed.toString();
+      return `/api/link-image?url=${encodeURIComponent(parsed.toString())}`;
+    } catch {
+      return src;
+    }
+  }
+
+  function getYouTubeVideoId(url) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./, "");
+      if (host === "youtu.be") return parsed.pathname.split("/").filter(Boolean)[0] || "";
+      if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+        if (parsed.pathname === "/watch") return parsed.searchParams.get("v") || "";
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        if (["embed", "shorts", "live"].includes(parts[0])) return parts[1] || "";
+      }
+    } catch {
+      return "";
+    }
+    return "";
+  }
+
+  function getLinkThumbnail(link) {
+    if (link.image) return link.image;
+    const youtubeId = getYouTubeVideoId(link.url);
+    if (youtubeId) return `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
+    if (link.favicon) return link.favicon;
+    try {
+      return new URL("/favicon.ico", link.url).toString();
+    } catch {
+      return "";
+    }
+  }
+
+  function getLinkOpenButtonBoundsScreen(link) {
+    const p = worldToScreen(link.x, link.y);
+    const w = (link.width || 320) * scale;
+    const size = Math.max(22, Math.min(36, 30 * scale));
+    const margin = Math.max(6, Math.min(12, 8 * scale));
+    return {
+      x: p.x + w - margin - size,
+      y: p.y + margin,
+      width: size,
+      height: size,
+    };
+  }
+
+  function drawExternalLinkIconButton(link) {
+    const b = getLinkOpenButtonBoundsScreen(link);
+    ctx.save();
+    roundedRectPath(ctx, b.x, b.y, b.width, b.height, Math.max(4, b.width * 0.18));
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.strokeStyle = "#c7d4df";
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.stroke();
+
+    const pad = b.width * 0.24;
+    const x0 = b.x + pad;
+    const y0 = b.y + pad;
+    const x1 = b.x + b.width - pad;
+    const y1 = b.y + b.height - pad;
+    ctx.strokeStyle = "#12263a";
+    ctx.lineWidth = Math.max(2, b.width * 0.09);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(x0, y0 + b.height * 0.28);
+    ctx.lineTo(x0, y1);
+    ctx.lineTo(x1 - b.width * 0.28, y1);
+    ctx.moveTo(b.x + b.width * 0.46, b.y + b.height * 0.54);
+    ctx.lineTo(x1, y0);
+    ctx.moveTo(b.x + b.width * 0.62, y0);
+    ctx.lineTo(x1, y0);
+    ctx.lineTo(x1, b.y + b.height * 0.38);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawLinkCard(link) {
+    const p = worldToScreen(link.x, link.y);
+    const w = (link.width || 320) * scale;
+    const h = (link.height || 150) * scale;
+    const pad = 12 * scale;
+    const titleH = 32 * scale;
+    const bodyY = p.y + pad + titleH;
+    const bodyH = Math.max(0, h - titleH - pad * 2);
+    const thumbnail = getLinkThumbnail(link);
+    const thumbW = Math.min(112 * scale, w * 0.34);
+
+    ctx.save();
+    roundedRectPath(ctx, p.x, p.y, w, h, 8 * scale);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.strokeStyle = "#b8c7d6";
+    ctx.lineWidth = Math.max(1, scale);
+    ctx.stroke();
+
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#12263a";
+    ctx.font = `${Math.max(12, 15 * scale)}px sans-serif`;
+    const buttonBounds = getLinkOpenButtonBoundsScreen(link);
+    const titleW = Math.max(20, buttonBounds.x - (p.x + pad) - 8 * scale);
+    drawFittedText(ctx, link.title || link.url, p.x + pad, p.y + pad, titleW);
+    drawExternalLinkIconButton(link);
+
+    if (thumbnail) {
+      const img = link._img || new Image();
+      if (!link._img) {
+        link._img = img;
+        img.onload = redraw;
+        img.src = getLinkImageSrc(thumbnail);
+      }
+      ctx.fillStyle = "#eef3f7";
+      ctx.fillRect(p.x, bodyY, thumbW, bodyH);
+      if (img.complete && img.naturalWidth > 0) {
+        const ratio = Math.max(thumbW / img.naturalWidth, bodyH / img.naturalHeight);
+        const dw = img.naturalWidth * ratio;
+        const dh = img.naturalHeight * ratio;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(p.x, bodyY, thumbW, bodyH);
+        ctx.clip();
+        ctx.drawImage(img, p.x + (thumbW - dw) / 2, bodyY + (bodyH - dh) / 2, dw, dh);
+        ctx.restore();
+      }
+    } else {
+      ctx.fillStyle = "#eef3f7";
+      ctx.fillRect(p.x, bodyY, thumbW, bodyH);
+      ctx.fillStyle = "#52677a";
+      ctx.font = `${Math.max(12, 18 * scale)}px sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      const label = (link.siteName || link.url || "?").replace(/^www\./, "").slice(0, 2).toUpperCase();
+      ctx.fillText(label, p.x + thumbW / 2, bodyY + bodyH / 2);
+    }
+
+    const textX = p.x + thumbW + pad;
+    const textW = Math.max(20, w - thumbW - pad * 2);
+    ctx.fillStyle = "#52677a";
+    ctx.font = `${Math.max(10, 12 * scale)}px sans-serif`;
+    drawFittedText(ctx, link.siteName || link.url, textX, bodyY, textW);
+    if (link.description) {
+      ctx.fillStyle = "#2f3d49";
+      drawFittedText(ctx, link.description, textX, bodyY + 26 * scale, textW);
+    }
+    ctx.restore();
+  }
+
   function canDeleteText(t) {
     if ((t.layer || "user") === "base") return activeLayer === "base";
     if (isAdminUser() || activeLayer === "admin") return true;
@@ -4050,6 +4591,7 @@
     strokes.length = 0;
     texts.length = 0;
     images.length = 0;
+    links.length = 0;
     orderCounter = 0;
     draftStrokes.length = 0;
     draftOrderCounter = 0;
@@ -4063,6 +4605,9 @@
     }
     if (state?.images) {
       state.images.forEach((img) => addImageFromNetwork(img, true));
+    }
+    if (state?.links) {
+      state.links.forEach((link) => addLinkFromNetwork(link, false));
     }
     redraw();
   }
@@ -4133,6 +4678,27 @@
     img.src = imgData.src;
   }
 
+  function addLinkFromNetwork(linkData, shouldRedraw = true) {
+    if (findIndexById(links, linkData.id) >= 0) return;
+    links.push({
+      ...linkData,
+      title: linkData.title || linkData.url || "",
+      description: linkData.description || "",
+      image: linkData.image || "",
+      favicon: linkData.favicon || "",
+      siteName: linkData.siteName || "",
+      width: linkData.width || 320,
+      height: linkData.height || 150,
+      layer: linkData.layer || "user",
+      createdAt: linkData.createdAt || Date.now(),
+    });
+    bumpOrderCounter(linkData.order);
+    registerUser(linkData.user);
+    refreshLinkList();
+    refreshLinkPreviewIfNeeded(links[links.length - 1]);
+    if (shouldRedraw) redraw();
+  }
+
   socket.on("init", (state) => {
     applyInitialState(state);
     refreshUserDatalist();
@@ -4150,6 +4716,10 @@
 
   socket.on("image:add", (img) => {
     addImageFromNetwork(img);
+  });
+
+  socket.on("link:add", (link) => {
+    addLinkFromNetwork(link);
   });
 
   socket.on("draft:init", (drafts) => {
@@ -4210,6 +4780,10 @@
         const idx = findIndexById(images, id);
         if (idx >= 0) images.splice(idx, 1);
         refreshImageList();
+      } else if (type === "link") {
+        const idx = findIndexById(links, id);
+        if (idx >= 0) links.splice(idx, 1);
+        refreshLinkList();
       }
     refreshTextList();
     redraw();
@@ -4222,7 +4796,9 @@
         ? strokes
         : type === "text"
         ? texts
-        : images;
+        : type === "image"
+        ? images
+        : links;
     const idx = findIndexById(list, id);
     if (idx >= 0) {
       if (type === "image") {
@@ -4243,6 +4819,8 @@
         refreshTextList();
       } else if (type === "image") {
         refreshImageList();
+      } else if (type === "link") {
+        refreshLinkList();
       }
       redraw();
       updateFooterByState();
@@ -4477,18 +5055,45 @@
     return -1;
   }
 
-  function findImageNameAtScreenPoint(screenX, screenY) {
-    const worldPoint = screenToWorld(screenX, screenY);
-    for (let i = images.length - 1; i >= 0; i--) {
-      const imgObj = images[i];
-      if (!imgObj || imgObj.tagType || !imgObj.imageName) continue;
-      if (!isImageVisible(imgObj)) continue;
-      const bounds = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
-      if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
-        return imgObj.imageName;
-      }
-    }
-    return "";
+  function collectTextTagsAtWorldPoint(worldPoint) {
+    const tags = [];
+    const addTag = (value) => {
+      const tag = String(value || "").trim();
+      if (tag && !tags.includes(tag)) tags.push(tag);
+    };
+    images
+      .map((img, index) => ({ img, index }))
+      .filter(({ img }) => img && isImageVisible(img))
+      .sort((a, b) => getObjectOrderValue("image", a.img, a.index) - getObjectOrderValue("image", b.img, b.index))
+      .forEach(({ img }) => {
+        const bounds = img.tagType
+          ? getImageBoundsWorld(img)
+          : { x: img.x, y: img.y, width: img.width, height: img.height };
+        if (!bounds || !pointInRotatedRectWorld(worldPoint, bounds, img.rotation || 0)) return;
+        addTag(img.tagType ? getFrameDisplayName(img) : img.imageName);
+      });
+    return tags;
+  }
+
+  function updateTextTagsForRenamedImage(oldName, newName) {
+    const from = String(oldName || "").trim();
+    const to = String(newName || "").trim();
+    if (!from || from === to) return;
+    let changed = false;
+    texts.forEach((text) => {
+      const tags = normalizeTextTags(text.label);
+      if (!tags.includes(from)) return;
+      const nextTags = tags
+        .map((tag) => (tag === from ? to : tag))
+        .filter(Boolean)
+        .filter((tag, index, arr) => arr.indexOf(tag) === index);
+      const label = serializeTextTags(nextTags);
+      if (label === text.label) return;
+      text.label = label;
+      changed = true;
+      emitItemPatch("text", text, { label });
+    });
+    if (changed) refreshTextList();
   }
 
   function hitTestImageResizeHandle(screenX, screenY, radius = 12) {
@@ -4608,6 +5213,14 @@
           items.push({ type: "text", index: idx });
         }
       });
+      links.forEach((link, idx) => {
+        if (!isLinkVisible(link)) return;
+        if (!canInteractLink(link)) return;
+        const bounds = getLinkBoundsWorld(link);
+        if (bounds && rectContainsRect(rectWorld, bounds)) {
+          items.push({ type: "link", index: idx });
+        }
+      });
       images.forEach((img, idx) => {
         if (!canInteractImage(img)) return;
         if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
@@ -4665,6 +5278,8 @@
       const only = filteredItems[0];
       if (only.type === "image" || only.type === "text") {
         selected = { type: only.type, index: only.index };
+      } else if (only.type === "link") {
+        selected = { type: "link", index: only.index };
       } else {
         selected = null;
       }
@@ -4839,6 +5454,15 @@
         order: t.order ?? strokes.length + idx,
         index: idx,
         layer: t.layer || "user",
+      });
+    });
+    links.forEach((link, idx) => {
+      if (!isLinkVisible(link)) return;
+      combined.push({
+        type: "link",
+        order: link.order ?? orderCounter + idx,
+        index: idx,
+        layer: link.layer || "user",
       });
     });
     combined.forEach((item) => {
@@ -5075,6 +5699,7 @@
         ctx.textBaseline = "top";
         ctx.lineJoin = "round";
         ctx.miterLimit = 2.5;
+        ctx.globalAlpha = strokesDimmed ? DIM_ALPHA : 1;
 
         if (t.gridText) {
           const cell = fontSizePx;
@@ -5125,6 +5750,13 @@
 
         if (selected && selected.type === "text" && selected.index === item.index) {
           drawSelectionBoundsWorld(bounds, rotation);
+        }
+      } else if (item.type === "link") {
+        const link = links[item.index];
+        if (!link) continue;
+        drawLinkCard(link);
+        if (selected && selected.type === "link" && selected.index === item.index) {
+          drawSelectionBoundsWorld(getLinkBoundsWorld(link), 0);
         }
       }
       } finally {
@@ -5293,6 +5925,11 @@
       const text = texts[item.index];
       if (!text) return null;
       return { bounds: getTextBoundsWorld(text), rotation: text.rotation || 0 };
+    }
+    if (item.type === "link") {
+      const link = links[item.index];
+      if (!link) return null;
+      return { bounds: getLinkBoundsWorld(link), rotation: 0 };
     }
     if (item.type === "stroke") {
       const stroke = strokes[item.index];
@@ -5675,6 +6312,18 @@
   }
 
   // --- 画像追加 ---
+  const IMAGE_INSERT_MAX_WIDTH = 900;
+  const IMAGE_INSERT_MAX_HEIGHT = 650;
+  const IMAGE_INSERT_GAP_X = 6;
+  const IMAGE_INSERT_GAP_Y = 16;
+
+  function getInsertedImageWorldSize(img) {
+    let w = img.width;
+    let h = img.height;
+    const r = Math.min(1, IMAGE_INSERT_MAX_WIDTH / w, IMAGE_INSERT_MAX_HEIGHT / h);
+    return { width: w * r, height: h * r };
+  }
+
   function getImageTargetLayer() {
     if (!isAdminUser()) return "user";
     if (activeLayer === "image") return "image";
@@ -5687,13 +6336,7 @@
     if (!canCreateOnCurrentLayer()) return;
     try {
       const { img, src } = await loadImageFromFile(file);
-      const maxWorldWidth = (canvas.width / scale) * 0.6;
-      const maxWorldHeight = (canvas.height / scale) * 0.6;
-      let w = img.width;
-      let h = img.height;
-      const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
-      w *= r;
-      h *= r;
+      const { width: w, height: h } = getInsertedImageWorldSize(img);
 
       let placeX = worldX - w / 2;
       let placeY = worldY - h / 2;
@@ -5739,8 +6382,8 @@
     const imageFiles = Array.from(files || []).filter((file) => file.type && file.type.startsWith("image/"));
     if (!imageFiles.length) return;
 
-    const gapX = 6 / scale;
-    const gapY = 16 / scale;
+    const gapX = IMAGE_INSERT_GAP_X;
+    const gapY = IMAGE_INSERT_GAP_Y;
     const perRow = 4;
     const layout = {
       startX: worldX,
@@ -5756,13 +6399,7 @@
     for (const file of imageFiles) {
       try {
         const { img, src } = await loadImageFromFile(file);
-        const maxWorldWidth = (canvas.width / scale) * 0.6;
-        const maxWorldHeight = (canvas.height / scale) * 0.6;
-        let w = img.width;
-        let h = img.height;
-        const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
-        w *= r;
-        h *= r;
+        const { width: w, height: h } = getInsertedImageWorldSize(img);
 
         const imgObj = {
           id: genId(),
@@ -5853,13 +6490,7 @@
     if (!canCreateOnCurrentLayer()) return;
     const img = new Image();
     img.onload = () => {
-      const maxWorldWidth = (canvas.width / scale) * 0.6;
-      const maxWorldHeight = (canvas.height / scale) * 0.6;
-      let w = img.width;
-      let h = img.height;
-      const r = Math.min(1, maxWorldWidth / w, maxWorldHeight / h);
-      w *= r;
-      h *= r;
+      const { width: w, height: h } = getInsertedImageWorldSize(img);
 
       const imgObj = {
         id: genId(),
@@ -6054,7 +6685,7 @@
     if (activeLayer === "image") return;
     pendingTextPos = null;
     updateToolButtons();
-    const presetLabel = findImageNameAtScreenPoint(screenX, screenY);
+    const presetTags = collectTextTagsAtWorldPoint(screenToWorld(screenX, screenY));
 
     if (textEditor) {
       textEditor.remove();
@@ -6108,7 +6739,7 @@
               color: textDefaultColor,
               user: currentUser,
               layer: getTextLayerForCurrentLayer(),
-              label: presetLabel,
+              label: serializeTextTags(presetTags),
               rotation: 0,
               vertical: false,
               frameId: membership?.frameId || null,
@@ -6127,7 +6758,7 @@
             layer: getTextLayerForCurrentLayer(),
             order: orderCounter++,
             createdAt: Date.now(),
-            label: presetLabel,
+            label: serializeTextTags(presetTags),
             rotation: 0,
             vertical: false,
             gridText: false,
@@ -6178,6 +6809,7 @@
     textarea.style.color = lightenColor(baseColor);
     textarea.style.textShadow = buildTextShadow(baseColor, fontSizePx);
     textarea.value = t.lines.join("\n");
+    const originalValue = textarea.value;
     container.appendChild(textarea);
     textarea.focus();
     textEditor = textarea;
@@ -6193,6 +6825,8 @@
       textarea.remove();
       textEditor = null;
       const trimmed = value.trim();
+      if (value === originalValue) return;
+      ensureSnapshotForAction();
       if (!trimmed) {
         // 空なら削除
         const removed = texts.splice(index, 1)[0];
@@ -6250,6 +6884,57 @@
   }
 
   // --- クリップボードからのテキスト挿入 ---
+  function extractSingleUrl(text) {
+    const value = String(text || "").trim();
+    const match = value.match(/^https?:\/\/\S+$/i);
+    return match ? match[0] : "";
+  }
+
+  async function fetchLinkPreview(url) {
+    try {
+      const res = await fetch(`/api/link-preview?url=${encodeURIComponent(url)}`);
+      if (!res.ok) throw new Error("preview failed");
+      return await res.json();
+    } catch {
+      const host = new URL(url).hostname;
+      return { url, title: url, description: "", image: "", siteName: host };
+    }
+  }
+
+  async function addLinkFromClipboard(url, worldX, worldY) {
+    if (!canCreateOnCurrentLayer()) return;
+    if (activeLayer !== "user" && activeLayer !== "admin" && activeLayer !== "base") return;
+    const preview = await fetchLinkPreview(url);
+    ensureSnapshotForAction();
+    const link = {
+      id: genId(),
+      url: preview.url || url,
+      title: preview.title || url,
+      description: preview.description || "",
+      image: preview.image || "",
+      favicon: preview.favicon || "",
+      siteName: preview.siteName || "",
+      x: worldX,
+      y: worldY,
+      width: 340,
+      height: 150,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    if (socketConnected) {
+      socket.emit("link:add", { boardId, link });
+    }
+    refreshLinkList();
+    selected = { type: "link", index: links.length - 1 };
+    currentTool = "select";
+    updateToolButtons();
+    redraw();
+  }
+
   function addTextFromClipboard(text, worldX, worldY) {
     if (!canCreateOnCurrentLayer()) return;
     if (activeLayer !== "user" && activeLayer !== "admin") return;
@@ -6357,7 +7042,7 @@
 
     if (e.button === 0 && currentTool === "select") {
       const tabHit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
-      if (tabHit) {
+      if (tabHit && tabHit.action !== "header") {
         e.preventDefault();
         if (tabHit.action === "add") {
           ensureSnapshotForAction();
@@ -6495,6 +7180,9 @@
           } else if (it.type === "text") {
             const t = texts[it.index];
             return { type: "text", index: it.index, x: t?.x, y: t?.y };
+          } else if (it.type === "link") {
+            const link = links[it.index];
+            return { type: "link", index: it.index, x: link?.x, y: link?.y };
           } else if (it.type === "image") {
             const img = images[it.index];
             return { type: "image", index: it.index, x: img?.x, y: img?.y };
@@ -6649,6 +7337,33 @@
         startH: imgObj.height,
       };
       isResizingObject = true;
+      redraw();
+      return;
+    }
+
+    // リンクカード本体ヒット → ドラッグ移動
+    const linkOpenIndex = hitTestLinkOpenButton(canvasPos.x, canvasPos.y);
+    if (linkOpenIndex >= 0) {
+      e.preventDefault();
+      selected = { type: "link", index: linkOpenIndex };
+      multiSelection = null;
+      redraw();
+      window.open(links[linkOpenIndex].url, "_blank", "noopener");
+      return;
+    }
+
+    const linkIndex = hitTestLink(canvasPos.x, canvasPos.y);
+    if (linkIndex >= 0) {
+      ensureSnapshotForAction();
+      selected = { type: "link", index: linkIndex };
+      multiSelection = null;
+      const link = links[linkIndex];
+      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      dragOffsetWorld = {
+        x: worldPos.x - link.x,
+        y: worldPos.y - link.y,
+      };
+      isDraggingObject = true;
       redraw();
       return;
     }
@@ -6836,6 +7551,11 @@
           if (!t) return;
           t.x = (it.x || 0) + dx;
           t.y = (it.y || 0) + dy;
+        } else if (it.type === "link") {
+          const link = links[it.index];
+          if (!link) return;
+          link.x = (it.x || 0) + dx;
+          link.y = (it.y || 0) + dy;
         } else if (it.type === "image") {
           const img = images[it.index];
           if (!img) return;
@@ -6910,6 +7630,10 @@
             imgObj.y - frameDragOffsets.frameY
           );
         }
+      } else if (selected.type === "link") {
+        const link = links[selected.index];
+        link.x = worldPos.x - dragOffsetWorld.x;
+        link.y = worldPos.y - dragOffsetWorld.y;
       } else if (selected.type === "text") {
         const t = texts[selected.index];
         t.x = worldPos.x - dragOffsetWorld.x;
@@ -7129,6 +7853,14 @@
             id: imgObj.id,
             patch: { x: imgObj.x, y: imgObj.y, ...(selectedMembershipPatch || {}) },
           });
+        } else if (selected.type === "link") {
+          const link = links[selected.index];
+          socket.emit("item:update", {
+            boardId,
+            type: "link",
+            id: link.id,
+            patch: { x: link.x, y: link.y },
+          });
         } else if (selected.type === "text") {
           const t = texts[selected.index];
           socket.emit("item:update", {
@@ -7276,6 +8008,16 @@
                 type: "text",
                 id: t.id,
                 patch: { x: t.x, y: t.y, ...(multiMembershipPatches.get(`text:${it.index}`) || {}) },
+              });
+            }
+          } else if (it.type === "link") {
+            const link = links[it.index];
+            if (link) {
+              socket.emit("item:update", {
+                boardId,
+                type: "link",
+                id: link.id,
+                patch: { x: link.x, y: link.y },
               });
             }
           } else if (it.type === "image") {
@@ -7606,6 +8348,11 @@
       if (activeLayer === "image") return;
       if (!requireUser()) return;
       if (!canCreateOnCurrentLayer()) return;
+      const url = extractSingleUrl(text);
+      if (url) {
+        addLinkFromClipboard(url, worldPos.x, worldPos.y);
+        return;
+      }
       addTextFromClipboard(text, worldPos.x, worldPos.y);
     }
   });
@@ -7790,6 +8537,16 @@
     if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
       return;
     }
+    const linkOpenIndex = hitTestLinkOpenButton(canvasPos.x, canvasPos.y);
+    if (linkOpenIndex >= 0) {
+      window.open(links[linkOpenIndex].url, "_blank", "noopener");
+      return;
+    }
+    const linkIndex = hitTestLink(canvasPos.x, canvasPos.y);
+    if (linkIndex >= 0) {
+      window.open(links[linkIndex].url, "_blank", "noopener");
+      return;
+    }
     const textIndex = hitTestText(canvasPos.x, canvasPos.y);
     if (textIndex >= 0) {
       editTextAt(textIndex);
@@ -7839,6 +8596,7 @@
     if (item.type === "stroke") return `stroke:${strokes[item.index]?.id || item.index}`;
     if (item.type === "text") return `text:${texts[item.index]?.id || item.index}`;
     if (item.type === "image") return `image:${images[item.index]?.id || item.index}`;
+    if (item.type === "link") return `link:${links[item.index]?.id || item.index}`;
     if (item.type === "draft") return `draft:${draftStrokes[item.index]?.id || item.index}`;
     if (item.type === "stroke-group") {
       return `stroke-group:${item.indices.map((idx) => strokes[idx]?.id || idx).sort().join(",")}`;
@@ -7877,6 +8635,9 @@
   }
 
   function hitTestSelectableItem(canvasPos) {
+    const linkIndex = hitTestLink(canvasPos.x, canvasPos.y);
+    if (linkIndex >= 0) return { type: "link", index: linkIndex };
+
     const textIndex = hitTestText(canvasPos.x, canvasPos.y);
     if (textIndex >= 0) return { type: "text", index: textIndex };
 
@@ -7892,6 +8653,26 @@
     }
 
     return null;
+  }
+
+  function hitTestLink(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
+    for (let i = links.length - 1; i >= 0; i--) {
+      const link = links[i];
+      if (!link || !isLinkVisible(link) || !canInteractLink(link)) continue;
+      if (pointInRectWorld(getLinkBoundsWorld(link), worldPoint)) return i;
+    }
+    return -1;
+  }
+
+  function hitTestLinkOpenButton(screenX, screenY) {
+    const point = { x: screenX, y: screenY };
+    for (let i = links.length - 1; i >= 0; i--) {
+      const link = links[i];
+      if (!link || !isLinkVisible(link) || !canInteractLink(link)) continue;
+      if (pointInScreenRect(point, getLinkOpenButtonBoundsScreen(link))) return i;
+    }
+    return -1;
   }
 
   function toggleSelectionAtPoint(canvasPos) {
@@ -7974,8 +8755,10 @@
     if (next === null) return;
     const imageName = next.trim();
     targets.forEach((imgObj) => {
+      const oldName = imgObj.imageName || "";
       imgObj.imageName = imageName;
       emitItemPatch("image", imgObj, { imageName });
+      updateTextTagsForRenamedImage(oldName, imageName);
     });
     refreshImageList();
   }
@@ -8159,8 +8942,10 @@
 
   function undoLast() {
     if (!historyStack.length) return;
+    const before = cloneState();
     const snap = historyStack.pop();
     restoreSnapshot(snap);
+    syncRestoredSnapshot(before, snap);
   }
 
   colorPicker.addEventListener("input", () => {
@@ -8276,6 +9061,10 @@
     imageListBtn.addEventListener("click", toggleImageListPanelView);
   }
 
+  if (linkListBtn) {
+    linkListBtn.addEventListener("click", toggleLinkListPanelView);
+  }
+
   textListCloseBtn.addEventListener("click", () => {
     closeTextList();
   });
@@ -8283,6 +9072,12 @@
   if (imageListCloseBtn) {
     imageListCloseBtn.addEventListener("click", () => {
       closeImageList();
+    });
+  }
+
+  if (linkListCloseBtn) {
+    linkListCloseBtn.addEventListener("click", () => {
+      closeLinkList();
     });
   }
 
@@ -8485,7 +9280,7 @@
     }
     redraw();
     showTransientFooterMessage(
-      strokesDimmed ? "半透明：線を薄く表示中です。" : "半透明解除：線を通常の濃さで表示します。",
+      strokesDimmed ? "半透明：線と文字を薄く表示中です。" : "半透明解除：線と文字を通常の濃さで表示します。",
       4000
     );
   }
@@ -8673,6 +9468,7 @@
       positionInsertMenu();
     }
     positionImageListPanel();
+    positionLinkListPanel();
   });
   // Undo（最後に追加したテキスト/ペン/画像を取り消し）
   undoBtn.addEventListener("click", undoLast);

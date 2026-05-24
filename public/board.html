@@ -29,6 +29,7 @@
         </div>
         <button id="text-list-btn" class="side-button" title="テキスト一覧">📝</button>
         <button id="image-list-btn" class="side-button" title="画像一覧">🖼️</button>
+        <button id="link-list-btn" class="side-button" title="リンク集">🔗</button>
         <button id="stroke-alpha-toggle-btn" class="side-button" title="半透明">🧊</button>
         <button id="undo-btn" class="side-button" title="一手戻す">⟲</button>
         <div class="side-others">
@@ -115,6 +116,16 @@
         </div>
       </div>
       <div id="image-list-body" class="text-list-body image-list-body"></div>
+    </div>
+
+    <div id="link-list-panel" class="modal text-list-panel link-list-panel hidden">
+      <div class="text-list-header">
+        <span>リンク集</span>
+        <div class="text-list-actions">
+          <button id="link-list-close-btn">閉じる</button>
+        </div>
+      </div>
+      <div id="link-list-body" class="text-list-body link-list-body"></div>
     </div>
 
     <div id="user-modal" class="modal-backdrop hidden">

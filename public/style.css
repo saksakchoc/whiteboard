@@ -678,8 +678,69 @@ body.mobile-menu-open #toolbar {
   color: #12263a;
 }
 
+.image-list-name-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #9ac7ff;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  color: #12263a;
+  background: #fff;
+  outline: none;
+}
+
 .image-list-number {
   text-align: right;
+}
+
+.link-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid #d9e3ec;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.link-list-item:hover {
+  background: #f5f9ff;
+  border-color: #9ac7ff;
+}
+
+.link-list-title {
+  all: unset;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #12263a;
+  cursor: pointer;
+}
+
+.link-list-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #52677a;
+  font-size: 12px;
+}
+
+.link-list-title-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #9ac7ff;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  color: #12263a;
+  background: #fff;
+  outline: none;
 }
 
 .text-list-meta {
@@ -697,6 +758,7 @@ body.mobile-menu-open #toolbar {
   justify-content: flex-start;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .text-label-badge {
@@ -707,6 +769,8 @@ body.mobile-menu-open #toolbar {
   border-radius: 10px;
   padding: 2px 8px;
   cursor: pointer;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .text-label-badge:hover {
