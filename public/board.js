@@ -47,6 +47,10 @@
   const userNameInput = document.getElementById("user-name-input");
   const userDatalist = document.getElementById("user-datalist");
   const userJoinBtn = document.getElementById("user-join-btn");
+  const frameDeleteModal = document.getElementById("frame-delete-modal");
+  const frameDeleteContentsBtn = document.getElementById("frame-delete-contents-btn");
+  const frameDeleteFrameOnlyBtn = document.getElementById("frame-delete-frame-only-btn");
+  const frameDeleteCancelBtn = document.getElementById("frame-delete-cancel-btn");
 
   const ctx = canvas.getContext("2d");
 
@@ -225,6 +229,8 @@
   let selected = null;
   let dragOffsetWorld = { x: 0, y: 0 };
   let frameDragOffsets = null;
+  let frameScrollbarDrag = null;
+  let frameScrollIgnoredItemKeys = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
 
   // テキスト入力用（HTMLの textarea オーバーレイ）
@@ -266,6 +272,44 @@
     return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
   }
 
+  function parseColorRgb(color) {
+    const normalized = normalizeHexColor(color);
+    if (normalized.startsWith("#") && normalized.length === 7) {
+      const num = parseInt(normalized.slice(1), 16);
+      if (Number.isNaN(num)) return null;
+      return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+    }
+    const rgb = String(color || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+    if (!rgb) return null;
+    return {
+      r: Math.max(0, Math.min(255, Number(rgb[1]))),
+      g: Math.max(0, Math.min(255, Number(rgb[2]))),
+      b: Math.max(0, Math.min(255, Number(rgb[3]))),
+    };
+  }
+
+  function rgbToHex({ r, g, b }) {
+    return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  function darkenColor(color, ratio = 0.08) {
+    const rgb = parseColorRgb(color);
+    if (!rgb) return color;
+    return rgbToHex({
+      r: rgb.r * (1 - ratio),
+      g: rgb.g * (1 - ratio),
+      b: rgb.b * (1 - ratio),
+    });
+  }
+
+  function ensureVisibleFrameHeaderColor(bodyColor, headerColor) {
+    const body = parseColorRgb(bodyColor);
+    const header = parseColorRgb(headerColor);
+    if (!body || !header) return headerColor;
+    const delta = Math.abs(body.r - header.r) + Math.abs(body.g - header.g) + Math.abs(body.b - header.b);
+    return delta < 48 ? darkenColor(headerColor, 0.1) : headerColor;
+  }
+
   function getTextStrokeWidths(fontSizePx) {
     const outer = Math.max(1, fontSizePx * 0.15);
     return { outer };
@@ -290,6 +334,15 @@
         layer: img.layer,
         order: img.order,
         user: img.user,
+        rotation: img.rotation || 0,
+        tagType: img.tagType || null,
+        tagLabel: img.tagLabel || "",
+        imageName: img.imageName || "",
+        imageListOrder: img.imageListOrder ?? null,
+        frameId: img.frameId || null,
+        frameTab: img.frameTab || null,
+        frameTabs: img.frameTabs ? img.frameTabs.map((tab) => ({ ...tab })) : null,
+        activeFrameTab: img.activeFrameTab || null,
       }));
 
     return {
@@ -411,6 +464,8 @@
 
   function canInteractImage(imgObj = null) {
     if (!imgObj) return false;
+    const index = images.findIndex((img) => img?.id === imgObj.id);
+    if (index >= 0 && !isFrameMemberVisible(imgObj, { type: "image", index })) return false;
     if (imgObj.tagType) return isImageVisible(imgObj);
     if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
@@ -1083,12 +1138,12 @@
             textColor: "#0f4f9b",
           }
         : {
-            body: colors?.body || lightenColor(currentColor, 0.35),
-            header: colors?.header || lightenColor(currentColor, 0.15),
+            body: colors?.body || lightenColor(currentColor, 0.9),
+            header: colors?.header || lightenColor(currentColor, 0.8),
             text: label || "フレーム",
             textColor: colors?.text || "#1c1c1c",
           };
-    const headerH = Math.min(Math.max(24, h * 0.25), 40);
+    const headerH = Math.min(Math.max(34, h * 0.28), 56);
     const canvasTag = document.createElement("canvas");
     canvasTag.width = w;
     canvasTag.height = h;
@@ -1150,7 +1205,7 @@
 
   function getFrameHeaderHeightWorld(imgObj) {
     const worldH = Math.max(1, Math.abs(imgObj?.height || 0));
-    return Math.min(Math.max(24, worldH * 0.25), 40);
+    return Math.min(Math.max(34, worldH * 0.28), 56);
   }
 
   function getFrameTagColors(imgObj) {
@@ -1162,8 +1217,8 @@
         : imgObj?.tagType === "ura"
         ? { body: "#e6f3ff", header: "#b7d5ff", text: "#0f4f9b" }
         : {
-            body: lightenColor(currentColor, 0.35),
-            header: lightenColor(currentColor, 0.15),
+            body: lightenColor(currentColor, 0.9),
+            header: lightenColor(currentColor, 0.8),
             text: "#1c1c1c",
           };
     const imgEl = imgObj?.img;
@@ -1175,12 +1230,27 @@
       sample.height = imgEl.naturalHeight;
       const sampleCtx = sample.getContext("2d");
       sampleCtx.drawImage(imgEl, 0, 0);
-      const sourceHeaderH = Math.min(Math.max(24, imgEl.naturalHeight * 0.25), 40);
+      const sourceHeaderH = Math.min(Math.max(34, imgEl.naturalHeight * 0.28), 56);
       const toRgb = (data) => `rgb(${data[0]}, ${data[1]}, ${data[2]})`;
+      const toHex = (data) =>
+        `#${[data[0], data[1], data[2]]
+          .map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0"))
+          .join("")}`;
       const header = sampleCtx.getImageData(1, 1, 1, 1).data;
       const bodyY = Math.min(imgEl.naturalHeight - 1, Math.ceil(sourceHeaderH) + 1);
       const body = sampleCtx.getImageData(1, bodyY, 1, 1).data;
-      imgObj.tagColors = { ...fallback, body: toRgb(body), header: toRgb(header) };
+      const sampledBody = toRgb(body);
+      const sampledHeader = toRgb(header);
+      const sampledBodyHex = toHex(body);
+      const sampledHeaderHex = toHex(header);
+      imgObj.tagColors =
+        imgObj?.tagType === "free"
+          ? {
+              ...fallback,
+              body: lightenColor(sampledBodyHex, 0.6),
+              header: lightenColor(sampledHeaderHex, 0.6),
+            }
+          : { ...fallback, body: sampledBody, header: sampledHeader };
       return imgObj.tagColors;
     } catch {
       return fallback;
@@ -1193,6 +1263,7 @@
       return;
     }
     const colors = getFrameTagColors(imgObj);
+    const headerColor = ensureVisibleFrameHeaderColor(colors.body, colors.header);
     const worldW = imgObj.width;
     const worldH = imgObj.height;
     const headerH = Math.min(getFrameHeaderHeightWorld(imgObj), worldH);
@@ -1208,13 +1279,13 @@
       ctx.rotate((rotation * Math.PI) / 180);
       ctx.translate(-worldW / 2, -worldH / 2);
     }
-    const { radius } = drawModernFrameBase(ctx, worldW, worldH, colors.body, colors.header);
+    const { radius } = drawModernFrameBase(ctx, worldW, worldH, colors.body, headerColor);
     ctx.save();
     roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
     ctx.clip();
     const headerGradient = ctx.createLinearGradient(0, 0, 0, headerH);
-    headerGradient.addColorStop(0, lightenColor(colors.header, 0.28));
-    headerGradient.addColorStop(1, colors.header);
+    headerGradient.addColorStop(0, lightenColor(headerColor, 0.2));
+    headerGradient.addColorStop(1, headerColor);
     ctx.fillStyle = headerGradient;
     ctx.fillRect(0, 0, worldW, headerH);
     ctx.fillStyle = "rgba(255,255,255,0.42)";
@@ -1226,7 +1297,55 @@
     ctx.font = "18px sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    drawFittedText(ctx, label, 12, headerH / 2, Math.max(0, worldW - 24));
+    drawFrameTabs(ctx, imgObj, worldW, headerH);
+    if (worldW > 210) {
+      drawFittedText(ctx, label, Math.max(150, worldW * 0.55), headerH / 2, Math.max(0, worldW * 0.4));
+    }
+    ctx.restore();
+  }
+
+  function drawFrameHeaderOverlay(ctx, imgObj) {
+    if (!imgObj?.tagType || imgObj.tagType === "omoteura") return;
+    const colors = getFrameTagColors(imgObj);
+    const headerColor = ensureVisibleFrameHeaderColor(colors.body, colors.header);
+    const worldW = imgObj.width;
+    const worldH = imgObj.height;
+    const headerH = Math.min(getFrameHeaderHeightWorld(imgObj), worldH);
+    const label =
+      imgObj.tagLabel || (imgObj.tagType === "omote" ? "表" : imgObj.tagType === "ura" ? "裏" : "フレーム");
+    const rotation = normalizeRotation(imgObj.rotation || 0);
+
+    ctx.save();
+    const screenPos = worldToScreen(imgObj.x, imgObj.y);
+    ctx.translate(screenPos.x, screenPos.y);
+    ctx.scale(scale, scale);
+    if (rotation) {
+      ctx.translate(worldW / 2, worldH / 2);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.translate(-worldW / 2, -worldH / 2);
+    }
+    const radius = Math.min(10, Math.max(4, Math.min(worldW, worldH) * 0.04));
+    ctx.save();
+    roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
+    ctx.clip();
+    const headerGradient = ctx.createLinearGradient(0, 0, 0, headerH);
+    headerGradient.addColorStop(0, lightenColor(headerColor, 0.2));
+    headerGradient.addColorStop(1, headerColor);
+    ctx.fillStyle = headerGradient;
+    ctx.fillRect(0, 0, worldW, headerH);
+    ctx.fillStyle = "rgba(255,255,255,0.42)";
+    ctx.fillRect(0, 0, worldW, Math.max(1, headerH * 0.18));
+    ctx.fillStyle = "rgba(15,23,42,0.16)";
+    ctx.fillRect(0, Math.max(0, headerH - 1), worldW, 1);
+    ctx.restore();
+    ctx.fillStyle = colors.text;
+    ctx.font = "18px sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    drawFrameTabs(ctx, imgObj, worldW, headerH);
+    if (worldW > 210) {
+      drawFittedText(ctx, label, Math.max(150, worldW * 0.55), headerH / 2, Math.max(0, worldW * 0.4));
+    }
     ctx.restore();
   }
 
@@ -1348,6 +1467,7 @@
     ctx.textAlign = "center";
     ctx.fillText("表", barW / 2, midY / 2);
     ctx.fillText("裏", barW / 2, midY + (worldH - midY) / 2);
+    drawFrameTabs(ctx, imgObj, worldW, Math.min(getFrameHeaderHeightWorld(imgObj), worldH));
     ctx.restore();
   }
 
@@ -1366,6 +1486,25 @@
     ctx.fillText(fitted ? `${fitted}${ellipsis}` : ellipsis, x, y);
   }
 
+  function drawCenteredFittedText(ctx, text, x, y, maxWidth) {
+    const previousAlign = ctx.textAlign;
+    ctx.textAlign = "center";
+    const value = String(text || "");
+    if (ctx.measureText(value).width <= maxWidth) {
+      ctx.fillText(value, x, y);
+      ctx.textAlign = previousAlign;
+      return;
+    }
+
+    const ellipsis = "...";
+    let fitted = value;
+    while (fitted.length > 0 && ctx.measureText(`${fitted}${ellipsis}`).width > maxWidth) {
+      fitted = fitted.slice(0, -1);
+    }
+    ctx.fillText(fitted ? `${fitted}${ellipsis}` : ellipsis, x, y);
+    ctx.textAlign = previousAlign;
+  }
+
   function getFrameHeaderBoundsWorld(imgObj) {
     if (!imgObj || !imgObj.tagType) return null;
     return {
@@ -1374,6 +1513,100 @@
       width: imgObj.width,
       height: Math.min(imgObj.height, getFrameHeaderHeightWorld(imgObj)),
     };
+  }
+
+  function getFrameHeaderHitBoundsScreen(imgObj, minHitHeight = 28) {
+    const header = getFrameHeaderBoundsWorld(imgObj);
+    if (!header) return null;
+    const screenHeader = {
+      x: header.x * scale + offsetX,
+      y: header.y * scale + offsetY,
+      width: header.width * scale,
+      height: header.height * scale,
+    };
+    return {
+      x: screenHeader.x,
+      y: screenHeader.y - Math.max(0, minHitHeight - screenHeader.height) / 2,
+      width: screenHeader.width,
+      height: Math.max(screenHeader.height, minHitHeight),
+    };
+  }
+
+  function ensureFrameTabs(frameImg) {
+    if (!frameImg?.tagType) return [];
+    if (!Array.isArray(frameImg.frameTabs) || frameImg.frameTabs.length === 0) {
+      frameImg.frameTabs = [{ id: "tab-1", name: "1" }];
+    }
+    if (
+      !frameImg.activeFrameTab ||
+      (frameImg.activeFrameTab !== "background" && !frameImg.frameTabs.some((tab) => tab.id === frameImg.activeFrameTab))
+    ) {
+      frameImg.activeFrameTab = frameImg.frameTabs[0].id;
+    }
+    return frameImg.frameTabs;
+  }
+
+  function getFrameActiveTab(frameImg) {
+    const tabs = ensureFrameTabs(frameImg);
+    return frameImg?.activeFrameTab || tabs[0]?.id || "tab-1";
+  }
+
+  function getFrameCurrentTargetTab(frameImg) {
+    if (!frameImg?.tagType) return null;
+    return frameImg.activeFrameTab === "background" ? "background" : getFrameActiveTab(frameImg);
+  }
+
+  function getFrameTabAtWorldPoint(frameImg, worldPoint) {
+    if (!frameImg?.tagType || !worldPoint) return null;
+    const header = getFrameHeaderBoundsWorld(frameImg);
+    if (!header || !pointInRectWorld(header, worldPoint)) return null;
+    const tabs = ensureFrameTabs(frameImg);
+    const headerH = header.height;
+    const tabH = Math.max(16, Math.min(26, headerH * 0.7));
+    const tabY = header.y + (headerH - tabH) / 2;
+    const gap = 4;
+    let x = header.x + Math.min(10, header.width * 0.04);
+    const bgW = 42;
+    const addHit = { action: "background", x, y: tabY, width: bgW, height: tabH };
+    if (pointInRectWorld(addHit, worldPoint)) return addHit;
+    x += bgW + gap;
+    for (const tab of tabs) {
+      const w = Math.max(28, Math.min(46, 18 + String(tab.name || "").length * 9));
+      const hit = { action: "tab", tabId: tab.id, x, y: tabY, width: w, height: tabH };
+      if (pointInRectWorld(hit, worldPoint)) return hit;
+      x += w + gap;
+    }
+    const plus = { action: "add", x, y: tabY, width: 26, height: tabH };
+    if (pointInRectWorld(plus, worldPoint)) return plus;
+    return null;
+  }
+
+  function drawFrameTabs(ctx, frameImg, worldW, headerH) {
+    const tabs = ensureFrameTabs(frameImg);
+    const active = getFrameActiveTab(frameImg);
+    const tabH = Math.max(16, Math.min(26, headerH * 0.7));
+    const tabY = (headerH - tabH) / 2;
+    const gap = 4;
+    let x = Math.min(10, worldW * 0.04);
+    const drawTab = (label, w, selected) => {
+      roundedRectPath(ctx, x, tabY, w, tabH, Math.min(7, tabH / 2));
+      ctx.fillStyle = selected ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.42)";
+      ctx.fill();
+      ctx.strokeStyle = selected ? "rgba(15,23,42,0.24)" : "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = selected ? "#17232b" : "rgba(23,35,43,0.72)";
+      ctx.font = "12px sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      drawCenteredFittedText(ctx, label, x + w / 2, tabY + tabH / 2, Math.max(0, w - 8));
+      x += w + gap;
+    };
+    drawTab("背景", 42, frameImg.activeFrameTab === "background");
+    tabs.forEach((tab) => {
+      drawTab(tab.name || "?", Math.max(28, Math.min(46, 18 + String(tab.name || "").length * 9)), active === tab.id);
+    });
+    drawTab("+", 26, false);
   }
 
   function canEditFrameLabel(imgObj) {
@@ -1387,11 +1620,63 @@
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canEditFrameLabel(imgObj)) continue;
+      const headerHit = getFrameHeaderHitBoundsScreen(imgObj);
+      if (pointInScreenRect({ x: screenX, y: screenY }, headerHit)) return i;
       const header = getFrameHeaderBoundsWorld(imgObj);
       if (!header) continue;
       if (pointInRotatedRectWorld(worldPoint, header, imgObj.rotation || 0)) return i;
     }
     return -1;
+  }
+
+  function hitTestFrameTabControl(screenX, screenY) {
+    const worldPoint = screenToWorld(screenX, screenY);
+    for (let i = images.length - 1; i >= 0; i--) {
+      const imgObj = images[i];
+      if (!imgObj?.tagType || !isImageVisible(imgObj)) continue;
+      const headerHit = getFrameHeaderHitBoundsScreen(imgObj);
+      if (!pointInScreenRect({ x: screenX, y: screenY }, headerHit)) continue;
+      const hit = getFrameTabAtWorldPoint(imgObj, worldPoint);
+      if (!hit) return { index: i, frame: imgObj, action: "header" };
+      if (hit) return { index: i, frame: imgObj, ...hit };
+    }
+    return null;
+  }
+
+  function activateFrameTab(frameImg, tabId) {
+    if (!frameImg?.tagType) return;
+    ensureFrameTabs(frameImg);
+    frameImg.activeFrameTab = tabId === "background" ? "background" : tabId;
+    emitItemPatch("image", frameImg, { activeFrameTab: frameImg.activeFrameTab });
+    redraw();
+  }
+
+  function addFrameTab(frameImg) {
+    if (!frameImg?.tagType) return;
+    const tabs = ensureFrameTabs(frameImg);
+    const nextNum = tabs.length + 1;
+    const tab = { id: `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`, name: String(nextNum) };
+    tabs.push(tab);
+    frameImg.activeFrameTab = tab.id;
+    emitItemPatch("image", frameImg, {
+      frameTabs: frameImg.frameTabs,
+      activeFrameTab: frameImg.activeFrameTab,
+    });
+    redraw();
+  }
+
+  function editFrameTabName(frameImg, tabId) {
+    if (!frameImg?.tagType || !tabId || tabId === "background") return false;
+    const tabs = ensureFrameTabs(frameImg);
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return false;
+    const current = String(tab.name || "");
+    const next = window.prompt("タブ名を入力", current);
+    if (next === null) return true;
+    tab.name = next.trim() || current || "1";
+    emitItemPatch("image", frameImg, { frameTabs: frameImg.frameTabs });
+    redraw();
+    return true;
   }
 
   function editFrameLabelAt(index) {
@@ -1923,7 +2208,82 @@
     redraw();
   }
 
-  function deleteSelection() {
+  function getSelectedFrameIds() {
+    return getSelectionItems()
+      .filter((item) => item.type === "image" && images[item.index]?.tagType)
+      .map((item) => images[item.index]?.id)
+      .filter(Boolean);
+  }
+
+  function openFrameDeleteModal() {
+    if (!frameDeleteModal) return false;
+    frameDeleteModal.classList.remove("hidden");
+    hideContextMenu();
+    return true;
+  }
+
+  function closeFrameDeleteModal() {
+    if (frameDeleteModal) frameDeleteModal.classList.add("hidden");
+  }
+
+  function addFrameContentsToDeleteSets(frameImg, strokeIds, textIds, imageIds, draftIds) {
+    if (!frameImg?.tagType) return;
+    getFrameContentItems(frameImg).forEach((item) => {
+      if (item.type === "stroke") {
+        const st = strokes[item.index];
+        if (st) strokeIds.add(st.id);
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (t) textIds.add(t.id);
+      } else if (item.type === "draft") {
+        const d = draftStrokes[item.index];
+        if (d) draftIds.add(d.id);
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (!img) return;
+        imageIds.add(img.id);
+        if (img.tagType) addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
+      }
+    });
+  }
+
+  function detachFrameContents(frameImg) {
+    if (!frameImg?.tagType) return;
+    getFrameContentItems(frameImg).forEach((item) => {
+      if (item.type === "stroke") {
+        const st = strokes[item.index];
+        if (!st) return;
+        st.frameId = null;
+        st.frameTab = null;
+        emitItemPatch("stroke", st, { frameId: null, frameTab: null });
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (!t) return;
+        t.frameId = null;
+        t.frameTab = null;
+        emitItemPatch("text", t, { frameId: null, frameTab: null });
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (!img) return;
+        img.frameId = null;
+        img.frameTab = null;
+        emitItemPatch("image", img, { frameId: null, frameTab: null });
+      } else if (item.type === "draft") {
+        const d = draftStrokes[item.index];
+        if (!d) return;
+        d.frameId = null;
+        d.frameTab = null;
+        if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: d });
+      }
+    });
+  }
+
+  function deleteSelection(frameDeleteMode = null) {
+    const selectedFrameIds = getSelectedFrameIds();
+    if (selectedFrameIds.length && !frameDeleteMode) {
+      if (openFrameDeleteModal()) return;
+    }
+
     ensureSnapshotForAction();
     const allowUserLayer =
       activeLayer === "user" || activeLayer === "admin" || activeLayer === "base" || activeLayer === "draft";
@@ -1931,35 +2291,42 @@
       activeLayer === "image" ||
       activeLayer === "admin" ||
       (activeLayer === "user" && !!currentUser);
-    const strokeIds = [];
-    const textIds = [];
-    const imageIds = [];
-    const draftIds = [];
+    const strokeIds = new Set();
+    const textIds = new Set();
+    const imageIds = new Set();
+    const draftIds = new Set();
 
     const collect = (item) => {
       if (!allowUserLayer && item.type !== "image") return;
       if (!allowImages && item.type === "image" && !images[item.index]?.tagType) return;
       if (item.type === "stroke") {
         const st = strokes[item.index];
-        if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.push(st.id);
+        if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.add(st.id);
       } else if (item.type === "stroke-group") {
         item.indices.forEach((idx) => {
           const st = strokes[idx];
-          if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.push(st.id);
+          if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.add(st.id);
         });
       } else if (item.type === "text") {
         const t = texts[item.index];
-        if (t && canDeleteText(t) && isTextVisible(t)) textIds.push(t.id);
+        if (t && canDeleteText(t) && isTextVisible(t)) textIds.add(t.id);
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (img && (allowImages || img.tagType) && canInteractImage(img)) imageIds.push(img.id);
+        if (img && (allowImages || img.tagType) && canInteractImage(img)) {
+          if (img.tagType && frameDeleteMode === "with-contents") {
+            addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
+          } else if (img.tagType && frameDeleteMode === "frame-only") {
+            detachFrameContents(img);
+          }
+          imageIds.add(img.id);
+        }
       } else if (item.type === "draft") {
         const d = draftStrokes[item.index];
-        if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
+        if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.add(d.id);
       } else if (item.type === "draft-group") {
         item.indices.forEach((idx) => {
           const d = draftStrokes[idx];
-          if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.push(d.id);
+          if (d && canDeleteDraft(d) && d.user === currentUser) draftIds.add(d.id);
         });
       }
     };
@@ -1970,7 +2337,7 @@
       collect(selected);
     }
 
-    if (!strokeIds.length && !textIds.length && !imageIds.length && !draftIds.length) return;
+    if (!strokeIds.size && !textIds.size && !imageIds.size && !draftIds.size) return;
 
     strokeIds.forEach((id) => {
       const idx = findIndexById(strokes, id);
@@ -2012,8 +2379,8 @@
       }
     });
 
-    if (textIds.length) refreshTextList();
-    if (imageIds.length) refreshImageList();
+    if (textIds.size) refreshTextList();
+    if (imageIds.size) refreshImageList();
     selected = null;
     multiSelection = null;
     redraw();
@@ -2143,7 +2510,7 @@
         emitItemPatch("text", text, { x: text.x, y: text.y, rotation: text.rotation });
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (!img) return;
+        if (!img || img.tagType) return;
         const oldCenter = getRectCenter({ x: img.x, y: img.y, width: img.width, height: img.height });
         const newCenter = rotatePointAround(oldCenter, center, direction);
         img.x += newCenter.x - oldCenter.x;
@@ -2376,7 +2743,7 @@
         socket.emit("stroke:add", { boardId, stroke: clone });
       }
     };
-    const cloneFrameStroke = (s, idxOffset = 1) => {
+    const cloneFrameStroke = (s, idxOffset = 1, targetFrameId = null) => {
       if (!s || clonedStrokeIds.has(s.id)) return;
       const clone = {
         ...s,
@@ -2384,13 +2751,14 @@
         groupId: getCloneGroupId(s.groupId),
         points: s.points.map((p) => ({ x: p.x + offset * idxOffset, y: p.y + offset * idxOffset })),
         order: orderCounter++,
+        frameId: targetFrameId || s.frameId || null,
         user: currentUser,
       };
       strokes.push(clone);
       clonedStrokeIds.add(s.id);
       if (socketConnected) socket.emit("stroke:add", { boardId, stroke: clone });
     };
-    const cloneFrameDraft = (s, idxOffset = 1) => {
+    const cloneFrameDraft = (s, idxOffset = 1, targetFrameId = null) => {
       if (!s || clonedDraftIds.has(s.id)) return;
       const clone = {
         ...s,
@@ -2398,13 +2766,14 @@
         groupId: getCloneGroupId(s.groupId),
         points: s.points.map((p) => ({ x: p.x + offset * idxOffset, y: p.y + offset * idxOffset })),
         order: draftOrderCounter++,
+        frameId: targetFrameId || s.frameId || null,
         user: currentUser,
       };
       draftStrokes.push(clone);
       clonedDraftIds.add(s.id);
       if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: clone });
     };
-    const cloneFrameText = (t, idxOffset = 1) => {
+    const cloneFrameText = (t, idxOffset = 1, targetFrameId = null) => {
       if (!t || clonedTextIds.has(t.id)) return;
       const clone = {
         ...t,
@@ -2412,6 +2781,7 @@
         x: t.x + offset * idxOffset,
         y: t.y + offset * idxOffset,
         order: orderCounter++,
+        frameId: targetFrameId || t.frameId || null,
         user: currentUser,
       };
       texts.push(clone);
@@ -2419,7 +2789,7 @@
       refreshTextList();
       if (socketConnected) socket.emit("text:add", { boardId, text: clone });
     };
-    const cloneFrameImage = (imgObj, idxOffset = 1) => {
+    const cloneFrameImage = (imgObj, idxOffset = 1, targetFrameId = null) => {
       if (!imgObj || clonedImageIds.has(imgObj.id)) return null;
       const clone = {
         ...imgObj,
@@ -2429,6 +2799,8 @@
         order: orderCounter++,
         imageName: getDuplicateImageName(imgObj.imageName),
         imageListOrder: bumpImageListOrderCounter(),
+        frameId: imgObj.tagType ? null : targetFrameId || imgObj.frameId || null,
+        frameTabs: imgObj.frameTabs ? imgObj.frameTabs.map((tab) => ({ ...tab })) : imgObj.frameTabs,
         user: currentUser,
       };
       images.push(clone);
@@ -2442,10 +2814,10 @@
       const frameClone = cloneFrameImage(frameImg, idxOffset);
       if (!frameClone) return;
       contents.forEach((content) => {
-        if (content.type === "stroke") cloneFrameStroke(strokes[content.index], idxOffset);
-        else if (content.type === "draft") cloneFrameDraft(draftStrokes[content.index], idxOffset);
-        else if (content.type === "text") cloneFrameText(texts[content.index], idxOffset);
-        else if (content.type === "image") cloneFrameImage(images[content.index], idxOffset);
+        if (content.type === "stroke") cloneFrameStroke(strokes[content.index], idxOffset, frameClone.id);
+        else if (content.type === "draft") cloneFrameDraft(draftStrokes[content.index], idxOffset, frameClone.id);
+        else if (content.type === "text") cloneFrameText(texts[content.index], idxOffset, frameClone.id);
+        else if (content.type === "image") cloneFrameImage(images[content.index], idxOffset, frameClone.id);
       });
     };
 
@@ -2512,6 +2884,97 @@
       .sort((a, b) => getFrameOrder(a.img) - getFrameOrder(b.img));
   }
 
+  function getFrameById(frameId) {
+    if (!frameId) return null;
+    return images.find((img) => img?.id === frameId && img.tagType) || null;
+  }
+
+  function getFrameMembershipAtWorldPoint(worldPoint) {
+    if (!worldPoint) return null;
+    let owner = null;
+    getFrameImagesForGrouping().forEach(({ img }) => {
+      const bounds = getImageBoundsWorld(img);
+      if (!bounds || !pointInRectWorld(bounds, worldPoint)) return;
+      const order = getFrameOrder(img);
+      if (!owner || order > owner.order) owner = { frame: img, order };
+    });
+    if (!owner) return null;
+    return {
+      frameId: owner.frame.id,
+      frameTab: getFrameCurrentTargetTab(owner.frame),
+    };
+  }
+
+  function getFrameMembershipForBounds(bounds, excludeImageId = null) {
+    if (!bounds) return null;
+    let owner = null;
+    getFrameImagesForGrouping().forEach(({ img }) => {
+      if (excludeImageId && img.id === excludeImageId) return;
+      const frameBounds = getImageBoundsWorld(img);
+      if (!frameBounds || !rectContainsRect(frameBounds, bounds)) return;
+      const order = getFrameOrder(img);
+      if (!owner || order > owner.order) owner = { frame: img, order };
+    });
+    if (!owner) return null;
+    return {
+      frameId: owner.frame.id,
+      frameTab: getFrameCurrentTargetTab(owner.frame),
+    };
+  }
+
+  function applyFrameMembershipByPoint(obj, worldPoint) {
+    const membership = getFrameMembershipAtWorldPoint(worldPoint);
+    if (!membership) return obj;
+    obj.frameId = membership.frameId;
+    obj.frameTab = membership.frameTab;
+    return obj;
+  }
+
+  function updateFrameMembershipForItem(item) {
+    if (!item) return null;
+    const obj =
+      item.type === "stroke"
+        ? strokes[item.index]
+        : item.type === "draft"
+        ? draftStrokes[item.index]
+        : item.type === "text"
+        ? texts[item.index]
+        : item.type === "image"
+        ? images[item.index]
+        : null;
+    if (!obj) return null;
+    const bounds = getBoundsForFrameContentCandidate(item);
+    const membership = getFrameMembershipForBounds(bounds, item.type === "image" ? obj.id : null);
+    const nextFrameId = membership?.frameId || null;
+    const nextFrameTab = membership?.frameTab || null;
+    if ((obj.frameId || null) === nextFrameId && (obj.frameTab || null) === nextFrameTab) return null;
+    obj.frameId = nextFrameId;
+    obj.frameTab = nextFrameTab;
+    return { frameId: nextFrameId, frameTab: nextFrameTab };
+  }
+
+  function isFrameMemberVisible(obj, fallbackItem = null) {
+    if (!obj) return false;
+    if (obj.frameId) {
+      const frame = getFrameById(obj.frameId);
+      if (!frame || !isImageVisible(frame)) return false;
+      const tab = obj.frameTab || getFrameActiveTab(frame);
+      return tab === "background" || tab === getFrameActiveTab(frame);
+    }
+    if (fallbackItem) {
+      const owner = findOwningFrameForItem(fallbackItem);
+      if (owner) return owner.frame.activeFrameTab !== "background";
+    }
+    if (obj.tagType) return true;
+    return true;
+  }
+
+  function getFrameMemberDrawRank(obj) {
+    if (!obj) return 0;
+    if (obj.tagType) return 2;
+    return obj.frameTab === "background" ? 1 : 3;
+  }
+
   function getBoundsForFrameContentCandidate(item) {
     if (!item) return null;
     if (item.type === "stroke") return getStrokeBoundsWorld(strokes[item.index]);
@@ -2533,6 +2996,24 @@
   function findOwningFrameForItem(item) {
     const bounds = getBoundsForFrameContentCandidate(item);
     if (!bounds) return null;
+
+    const storedFrameId =
+      item?.type === "stroke"
+        ? strokes[item.index]?.frameId
+        : item?.type === "draft"
+        ? draftStrokes[item.index]?.frameId
+        : item?.type === "text"
+        ? texts[item.index]?.frameId
+        : item?.type === "image"
+        ? images[item.index]?.frameId
+        : null;
+    if (storedFrameId) {
+      const frame = getFrameById(storedFrameId);
+      if (frame) {
+        return { frame, index: images.findIndex((img) => img?.id === frame.id), order: getFrameOrder(frame) };
+      }
+    }
+
     const itemOrder = getOrderForFrameContentCandidate(item);
     let owner = null;
     getFrameImagesForGrouping().forEach(({ img, index }) => {
@@ -2540,7 +3021,7 @@
       const frameOrder = getFrameOrder(img);
       if (frameOrder >= itemOrder) return;
       const frameBounds = getImageBoundsWorld(img);
-      if (!frameBounds || !rectsOverlap(bounds, frameBounds)) return;
+      if (!frameBounds || !rectContainsRect(frameBounds, bounds)) return;
       if (!owner || frameOrder > owner.order) {
         owner = { frame: img, index, order: frameOrder };
       }
@@ -2568,7 +3049,6 @@
     });
     images.forEach((img, index) => {
       if (!img || img.id === frameImg.id) return;
-      if (img.tagType) return;
       const owner = findOwningFrameForItem({ type: "image", index });
       if (owner?.frame?.id === frameImg.id) {
         items.push({ type: "image", index });
@@ -2583,6 +3063,232 @@
     });
 
     return items;
+  }
+
+  function getFrameViewportWorld(frameImg) {
+    if (!frameImg?.tagType) return null;
+    const headerH = Math.min(getFrameHeaderHeightWorld(frameImg), frameImg.height);
+    return {
+      x: frameImg.x,
+      y: frameImg.y + headerH,
+      width: Math.max(0, frameImg.width),
+      height: Math.max(0, frameImg.height - headerH),
+    };
+  }
+
+  function getFrameScroll(frameImg) {
+    if (!frameImg.frameScroll) frameImg.frameScroll = { x: 0, y: 0 };
+    frameImg.frameScroll.x = Number.isFinite(frameImg.frameScroll.x) ? frameImg.frameScroll.x : 0;
+    frameImg.frameScroll.y = Number.isFinite(frameImg.frameScroll.y) ? frameImg.frameScroll.y : 0;
+    return frameImg.frameScroll;
+  }
+
+  function getVisibleFrameContentBounds(frameImg) {
+    if (!frameImg?.tagType) return null;
+    const activeTab = getFrameActiveTab(frameImg);
+    const activeFrameTab = frameImg.activeFrameTab === "background" ? "background" : activeTab;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const addBounds = (bounds) => {
+      if (!bounds) return;
+      minX = Math.min(minX, bounds.x);
+      minY = Math.min(minY, bounds.y);
+      maxX = Math.max(maxX, bounds.x + bounds.width);
+      maxY = Math.max(maxY, bounds.y + bounds.height);
+    };
+
+    getFrameContentItems(frameImg).forEach((item) => {
+      if (frameScrollIgnoredItemKeys?.has(getSelectionItemKey(item))) return;
+      const obj =
+        item.type === "stroke"
+          ? strokes[item.index]
+          : item.type === "draft"
+          ? draftStrokes[item.index]
+          : item.type === "text"
+          ? texts[item.index]
+          : item.type === "image"
+          ? images[item.index]
+          : null;
+      if (!obj) return;
+      const tab = obj.frameTab || activeTab;
+      if (tab !== "background" && tab !== activeFrameTab) return;
+      const bounds = getBoundsForFrameContentCandidate(item);
+      const frameBounds = getImageBoundsWorld(frameImg);
+      if (!bounds || !frameBounds || !rectsOverlap(bounds, frameBounds)) return;
+      addBounds(bounds);
+    });
+
+    if (!Number.isFinite(minX)) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function getFrameScrollMetrics(frameImg) {
+    const viewport = getFrameViewportWorld(frameImg);
+    const content = getVisibleFrameContentBounds(frameImg);
+    if (!viewport || !content) return { viewport, content, maxX: 0, maxY: 0 };
+    return {
+      viewport,
+      content,
+      maxX: Math.max(0, content.x + content.width - (viewport.x + viewport.width)),
+      maxY: Math.max(0, content.y + content.height - (viewport.y + viewport.height)),
+    };
+  }
+
+  function clampFrameScroll(frameImg) {
+    const scroll = getFrameScroll(frameImg);
+    const metrics = getFrameScrollMetrics(frameImg);
+    scroll.x = Math.max(0, Math.min(metrics.maxX || 0, scroll.x));
+    scroll.y = Math.max(0, Math.min(metrics.maxY || 0, scroll.y));
+    return scroll;
+  }
+
+  function getFrameScrollbarThumbs(frameImg) {
+    const metrics = getFrameScrollMetrics(frameImg);
+    const viewport = metrics.viewport;
+    if (!viewport || (metrics.maxX <= 0 && metrics.maxY <= 0)) return { metrics, vertical: null, horizontal: null };
+    const scroll = clampFrameScroll(frameImg);
+    const p = worldToScreen(viewport.x, viewport.y);
+    const w = viewport.width * scale;
+    const h = viewport.height * scale;
+    const size = Math.max(5, Math.min(9, 7 * scale));
+    let vertical = null;
+    let horizontal = null;
+    if (metrics.maxY > 0 && h > size * 3) {
+      const trackH = h;
+      const thumbH = Math.max(20, trackH * (viewport.height / (viewport.height + metrics.maxY)));
+      const thumbY = p.y + (trackH - thumbH) * (scroll.y / metrics.maxY);
+      vertical = {
+        track: { x: p.x + w - size - 2, y: p.y, width: size + 2, height: trackH },
+        thumb: { x: p.x + w - size - 1, y: thumbY, width: size, height: thumbH },
+        trackSpan: Math.max(1, trackH - thumbH),
+      };
+    }
+    if (metrics.maxX > 0 && w > size * 3) {
+      const trackW = w;
+      const thumbW = Math.max(20, trackW * (viewport.width / (viewport.width + metrics.maxX)));
+      const thumbX = p.x + (trackW - thumbW) * (scroll.x / metrics.maxX);
+      horizontal = {
+        track: { x: p.x, y: p.y + h - size - 2, width: trackW, height: size + 2 },
+        thumb: { x: thumbX, y: p.y + h - size - 1, width: thumbW, height: size },
+        trackSpan: Math.max(1, trackW - thumbW),
+      };
+    }
+    return { metrics, vertical, horizontal };
+  }
+
+  function pointInScreenRect(point, rect) {
+    return (
+      rect &&
+      point.x >= rect.x &&
+      point.x <= rect.x + rect.width &&
+      point.y >= rect.y &&
+      point.y <= rect.y + rect.height
+    );
+  }
+
+  function inflateScreenRect(rect, padding) {
+    if (!rect) return null;
+    return {
+      x: rect.x - padding,
+      y: rect.y - padding,
+      width: rect.width + padding * 2,
+      height: rect.height + padding * 2,
+    };
+  }
+
+  function hitTestFrameScrollbar(screenPoint) {
+    const hitPadding = 12;
+    for (let i = images.length - 1; i >= 0; i--) {
+      const frame = images[i];
+      if (!frame?.tagType || !isImageVisible(frame)) continue;
+      if (!isFrameMemberVisible(frame, { type: "image", index: i })) continue;
+      const { metrics, vertical, horizontal } = getFrameScrollbarThumbs(frame);
+      const scroll = getFrameScroll(frame);
+      if (vertical && pointInScreenRect(screenPoint, inflateScreenRect(vertical.track, hitPadding))) {
+        if (!pointInScreenRect(screenPoint, inflateScreenRect(vertical.thumb, hitPadding))) {
+          const targetRatio = Math.max(0, Math.min(1, (screenPoint.y - vertical.track.y - vertical.thumb.height / 2) / vertical.trackSpan));
+          scroll.y = targetRatio * metrics.maxY;
+          clampFrameScroll(frame);
+        }
+        return {
+          frame,
+          axis: "y",
+          startPointer: screenPoint.y,
+          startScroll: scroll.y,
+          maxScroll: metrics.maxY,
+          trackSpan: vertical.trackSpan,
+        };
+      }
+      if (horizontal && pointInScreenRect(screenPoint, inflateScreenRect(horizontal.track, hitPadding))) {
+        if (!pointInScreenRect(screenPoint, inflateScreenRect(horizontal.thumb, hitPadding))) {
+          const targetRatio = Math.max(0, Math.min(1, (screenPoint.x - horizontal.track.x - horizontal.thumb.width / 2) / horizontal.trackSpan));
+          scroll.x = targetRatio * metrics.maxX;
+          clampFrameScroll(frame);
+        }
+        return {
+          frame,
+          axis: "x",
+          startPointer: screenPoint.x,
+          startScroll: scroll.x,
+          maxScroll: metrics.maxX,
+          trackSpan: horizontal.trackSpan,
+        };
+      }
+    }
+    return null;
+  }
+
+  function getFrameRenderClipForItem(item) {
+    if (!item?.frameGroupId || item.frameGroupRank === 0) return null;
+    const frame = getFrameById(item.frameGroupId);
+    if (!frame) return null;
+    const metrics = getFrameScrollMetrics(frame);
+    if (!metrics.viewport) return null;
+    const scroll = clampFrameScroll(frame);
+    return { viewport: metrics.viewport, scroll };
+  }
+
+  function getFrameRenderClipChainForItem(item) {
+    if (!item?.frameGroupId || item.frameGroupRank === 0) return [];
+    const clips = [];
+    const seen = new Set();
+    let frame = item?.frameGroupId ? getFrameById(item.frameGroupId) : null;
+    while (frame && !seen.has(frame.id)) {
+      seen.add(frame.id);
+      const metrics = getFrameScrollMetrics(frame);
+      if (metrics.viewport) {
+        clips.push({ viewport: metrics.viewport, scroll: clampFrameScroll(frame) });
+      }
+      frame = frame.frameId ? getFrameById(frame.frameId) : null;
+    }
+    return clips.reverse();
+  }
+
+  function drawFrameScrollbars(frameImg) {
+    if (!frameImg?.tagType || !isImageVisible(frameImg)) return;
+    const frameIndex = images.findIndex((img) => img?.id === frameImg.id);
+    if (frameIndex >= 0 && !isFrameMemberVisible(frameImg, { type: "image", index: frameIndex })) return;
+    const metrics = getFrameScrollMetrics(frameImg);
+    const viewport = metrics.viewport;
+    if (!viewport || (metrics.maxX <= 0 && metrics.maxY <= 0)) return;
+    const { vertical, horizontal } = getFrameScrollbarThumbs(frameImg);
+    ctx.save();
+    ctx.fillStyle = "rgba(15,23,42,0.16)";
+    ctx.strokeStyle = "rgba(255,255,255,0.65)";
+    if (vertical) {
+      ctx.fillRect(vertical.track.x, vertical.track.y, vertical.track.width, vertical.track.height);
+      ctx.fillStyle = "rgba(15,23,42,0.42)";
+      ctx.fillRect(vertical.thumb.x, vertical.thumb.y, vertical.thumb.width, vertical.thumb.height);
+    }
+    if (horizontal) {
+      ctx.fillStyle = "rgba(15,23,42,0.16)";
+      ctx.fillRect(horizontal.track.x, horizontal.track.y, horizontal.track.width, horizontal.track.height);
+      ctx.fillStyle = "rgba(15,23,42,0.42)";
+      ctx.fillRect(horizontal.thumb.x, horizontal.thumb.y, horizontal.thumb.width, horizontal.thumb.height);
+    }
+    ctx.restore();
   }
 
   function captureFrameDragItems(frameImg) {
@@ -2738,11 +3444,102 @@
     }
   }
 
+  function adoptItemIntoFrameTab(item, frameImg) {
+    if (!item || !frameImg?.tagType) return;
+    const frameTab = getFrameCurrentTargetTab(frameImg);
+    const patch = { frameId: frameImg.id, frameTab };
+    if (item.type === "stroke") {
+      const s = strokes[item.index];
+      if (!s || s.frameId) return;
+      s.frameId = patch.frameId;
+      s.frameTab = patch.frameTab;
+      emitItemPatch("stroke", s, patch);
+    } else if (item.type === "draft") {
+      const s = draftStrokes[item.index];
+      if (!s || s.frameId) return;
+      s.frameId = patch.frameId;
+      s.frameTab = patch.frameTab;
+      if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: s });
+    } else if (item.type === "text") {
+      const t = texts[item.index];
+      if (!t || t.frameId) return;
+      t.frameId = patch.frameId;
+      t.frameTab = patch.frameTab;
+      emitItemPatch("text", t, patch);
+    } else if (item.type === "image") {
+      const img = images[item.index];
+      if (!img || img.frameId) return;
+      img.frameId = patch.frameId;
+      img.frameTab = patch.frameTab;
+      emitItemPatch("image", img, patch);
+    }
+  }
+
+  function assignExistingObjectsToNewFrame(frameImg) {
+    if (!frameImg?.tagType) return;
+    if (frameImg.frameId) return;
+    const frameBounds = getImageBoundsWorld(frameImg);
+    if (!frameBounds) return;
+    const contentTab = frameImg.frameTabs?.[0]?.id || "tab-1";
+    const nestedFrameIds = new Set(
+      images
+        .filter((img) => {
+          if (!img?.tagType || img.id === frameImg.id) return false;
+          const bounds = getImageBoundsWorld(img);
+          return bounds && rectContainsRect(frameBounds, bounds);
+        })
+        .map((img) => img.id)
+    );
+    const belongsToNestedFrame = (item) => {
+      const owner = findOwningFrameForItem(item);
+      return !!(owner?.frame?.id && nestedFrameIds.has(owner.frame.id));
+    };
+    const applyMembership = (type, obj, patch) => {
+      if (!obj) return;
+      obj.frameId = patch.frameId;
+      obj.frameTab = patch.frameTab;
+      if (type === "draft") {
+        if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: obj });
+      } else {
+        emitItemPatch(type, obj, patch);
+      }
+    };
+
+    strokes.forEach((s, index) => {
+      if (belongsToNestedFrame({ type: "stroke", index })) return;
+      const bounds = getBoundsForFrameContentCandidate({ type: "stroke", index });
+      if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
+      applyMembership("stroke", s, { frameId: frameImg.id, frameTab: contentTab });
+    });
+    texts.forEach((t, index) => {
+      if (belongsToNestedFrame({ type: "text", index })) return;
+      const bounds = getBoundsForFrameContentCandidate({ type: "text", index });
+      if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
+      applyMembership("text", t, { frameId: frameImg.id, frameTab: contentTab });
+    });
+    images.forEach((img, index) => {
+      if (!img || img.id === frameImg.id) return;
+      const bounds = getBoundsForFrameContentCandidate({ type: "image", index });
+      if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
+      applyMembership("image", img, {
+        frameId: frameImg.id,
+        frameTab: img.tagType ? contentTab : "background",
+      });
+    });
+    draftStrokes.forEach((s, index) => {
+      if (belongsToNestedFrame({ type: "draft", index })) return;
+      const bounds = getBoundsForFrameContentCandidate({ type: "draft", index });
+      if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
+      applyMembership("draft", s, { frameId: frameImg.id, frameTab: contentTab });
+    });
+  }
+
   function bringFrameGroupToFront(frameImg) {
     if (!frameImg?.tagType) return;
     const frameIndex = images.findIndex((img) => img?.id === frameImg.id);
     if (frameIndex < 0) return;
     const contents = getFrameContentItems(frameImg);
+    contents.forEach((item) => adoptItemIntoFrameTab(item, frameImg));
     let nextOrder = getMaxGlobalOrder() + 1;
     setFrameGroupedItemOrder({ type: "image", index: frameIndex }, nextOrder++);
     contents
@@ -2820,6 +3617,12 @@
       groupId,
       fillSourceId: source.id,
     };
+    if (source.frameId) {
+      fillStroke.frameId = source.frameId;
+      fillStroke.frameTab = source.frameTab || null;
+    } else {
+      applyFrameMembershipByPoint(fillStroke, worldPoint);
+    }
     if (activeLayer === "draft") {
       draftStrokes.push(fillStroke);
     } else {
@@ -2864,6 +3667,8 @@
         createdAt: Date.now(),
         fill: !!s.fill,
         groupId: draftGroupId,
+        frameId: s.frameId || null,
+        frameTab: s.frameTab || null,
       };
       draftStrokes.push(draft);
       copiedStrokeIds.add(s.id);
@@ -2949,6 +3754,8 @@
         order: orderCounter++,
         fill: !!draft.fill,
         groupId: draft.groupId || null,
+        frameId: draft.frameId || null,
+        frameTab: draft.frameTab || null,
       };
       strokes.push(stroke);
       registerUser(currentUser);
@@ -2972,7 +3779,7 @@
           boardId,
           type: "text",
           id: text.id,
-          patch: { layer: targetLayer },
+          patch: { layer: targetLayer, frameId: text.frameId || null, frameTab: text.frameTab || null },
         });
       }
     });
@@ -3087,6 +3894,54 @@
     if (changed) {
       redraw();
     }
+  }
+
+  function getFrameBackgroundMovePatch(item) {
+    const owner = findOwningFrameForItem(item);
+    if (!owner?.frame?.id) return null;
+    return { frameId: owner.frame.id, frameTab: "background" };
+  }
+
+  function moveSelectionToFrameBackground() {
+    const items = getSelectionItems();
+    if (!items.length) return;
+    let changed = false;
+    const applyPatch = (type, obj, patch) => {
+      if (!obj || !patch) return;
+      obj.frameId = patch.frameId;
+      obj.frameTab = patch.frameTab;
+      changed = true;
+      if (type === "draft") {
+        if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: obj });
+      } else {
+        emitItemPatch(type, obj, patch);
+      }
+    };
+
+    items.forEach((item) => {
+      if (item.type === "stroke") {
+        applyPatch("stroke", strokes[item.index], getFrameBackgroundMovePatch(item));
+      } else if (item.type === "stroke-group") {
+        item.indices.forEach((idx) => {
+          const target = { type: "stroke", index: idx };
+          applyPatch("stroke", strokes[idx], getFrameBackgroundMovePatch(target));
+        });
+      } else if (item.type === "text") {
+        applyPatch("text", texts[item.index], getFrameBackgroundMovePatch(item));
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (!img?.tagType) applyPatch("image", img, getFrameBackgroundMovePatch(item));
+      } else if (item.type === "draft") {
+        applyPatch("draft", draftStrokes[item.index], getFrameBackgroundMovePatch(item));
+      } else if (item.type === "draft-group") {
+        item.indices.forEach((idx) => {
+          const target = { type: "draft", index: idx };
+          applyPatch("draft", draftStrokes[idx], getFrameBackgroundMovePatch(target));
+        });
+      }
+    });
+
+    if (changed) redraw();
   }
 
   function openUserModal() {
@@ -3257,8 +4112,13 @@
         rotation: imgData.rotation || 0,
         imageName: imgData.imageName || "",
         imageListOrder,
+        frameId: imgData.frameId || null,
+        frameTab: imgData.frameTab || null,
+        frameTabs: imgData.frameTabs || null,
+        activeFrameTab: imgData.activeFrameTab || null,
         img,
       });
+      if (imgData.tagType) ensureFrameTabs(images[images.length - 1]);
       bumpImageListOrderCounter(imageListOrder);
       bumpOrderCounter(imgData.order);
       registerUser(imgData.user);
@@ -3404,6 +4264,15 @@
       a.x + a.width >= b.x &&
       a.y <= b.y + b.height &&
       a.y + a.height >= b.y
+    );
+  }
+
+  function rectContainsRect(container, inner) {
+    return (
+      inner.x >= container.x &&
+      inner.y >= container.y &&
+      inner.x + inner.width <= container.x + container.width &&
+      inner.y + inner.height <= container.y + container.height
     );
   }
 
@@ -3584,6 +4453,18 @@
     const worldPoint = screenToWorld(screenX, screenY);
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
+      if (!imgObj?.tagType || !canInteractImage(imgObj)) continue;
+      if (pointInScreenRect({ x: screenX, y: screenY }, getFrameHeaderHitBoundsScreen(imgObj))) {
+        return i;
+      }
+      const bounds = getFrameHeaderBoundsWorld(imgObj);
+      if (!bounds) continue;
+      if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
+        return i;
+      }
+    }
+    for (let i = images.length - 1; i >= 0; i--) {
+      const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
       const bounds = imgObj.tagType
         ? getFrameHeaderBoundsWorld(imgObj)
@@ -3675,8 +4556,10 @@
     const items = [];
     if (activeLayer === "image") {
       images.forEach((img, idx) => {
+        if (!isImageVisible(img)) return;
+        if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
         const bounds = { x: img.x, y: img.y, width: img.width, height: img.height };
-        if (rectsOverlap(bounds, rectWorld)) {
+        if (rectContainsRect(rectWorld, bounds)) {
           items.push({ type: "image", index: idx });
         }
       });
@@ -3684,8 +4567,9 @@
         strokes.forEach((s, idx) => {
           if (!isStrokeVisible(s)) return;
           if (!canInteractStroke(s)) return;
+          if (!isFrameMemberVisible(s, { type: "stroke", index: idx })) return;
           const bounds = getStrokeBoundsWorld(s);
-          if (bounds && rectsOverlap(bounds, rectWorld)) {
+          if (bounds && rectContainsRect(rectWorld, bounds)) {
             items.push({ type: "stroke", index: idx });
           }
         });
@@ -3694,14 +4578,21 @@
       strokes.forEach((s, idx) => {
         if (!isStrokeVisible(s)) return;
         if (!canInteractStroke(s)) return;
+        if (!isFrameMemberVisible(s, { type: "stroke", index: idx })) return;
         const bounds = getStrokeBoundsWorld(s);
-        if (bounds && rectsOverlap(bounds, rectWorld)) {
+        if (bounds && rectContainsRect(rectWorld, bounds)) {
           if (s.groupId) {
             const exists = items.find((it) => it.type === "stroke-group" && it.groupId === s.groupId);
             if (!exists) {
               const indices = [];
-              strokes.forEach((st, i) => st.groupId === s.groupId && indices.push(i));
-              items.push({ type: "stroke-group", groupId: s.groupId, indices });
+              strokes.forEach((st, i) => {
+                if (st.groupId !== s.groupId) return;
+                if (!isStrokeVisible(st)) return;
+                if (!canInteractStroke(st)) return;
+                if (!isFrameMemberVisible(st, { type: "stroke", index: i })) return;
+                indices.push(i);
+              });
+              if (indices.length) items.push({ type: "stroke-group", groupId: s.groupId, indices });
             }
           } else {
             items.push({ type: "stroke", index: idx });
@@ -3711,15 +4602,17 @@
       texts.forEach((t, idx) => {
         if (!isTextVisible(t)) return;
         if (!canInteractText(t)) return;
+        if (!isFrameMemberVisible(t, { type: "text", index: idx })) return;
         const bounds = getTextBoundsWorld(t);
-        if (bounds && rectsOverlap(bounds, rectWorld)) {
+        if (bounds && rectContainsRect(rectWorld, bounds)) {
           items.push({ type: "text", index: idx });
         }
       });
       images.forEach((img, idx) => {
         if (!canInteractImage(img)) return;
+        if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
         const bounds = { x: img.x, y: img.y, width: img.width, height: img.height };
-        if (bounds && rectsOverlap(bounds, rectWorld)) {
+        if (bounds && rectContainsRect(rectWorld, bounds)) {
           items.push({ type: "image", index: idx });
         }
       });
@@ -3727,16 +4620,49 @@
         draftStrokes.forEach((s, idx) => {
           if (!canDeleteDraft(s)) return;
           if (s.user !== currentUser) return;
+          if (!isFrameMemberVisible(s, { type: "draft", index: idx })) return;
           const bounds = getStrokeBoundsWorld(s);
-          if (bounds && rectsOverlap(bounds, rectWorld)) {
+          if (bounds && rectContainsRect(rectWorld, bounds)) {
             items.push({ type: "draft", index: idx });
           }
         });
       }
     }
 
-    if (items.length === 1) {
-      const only = items[0];
+    const selectedFrameIds = new Set(
+      items
+        .filter((item) => {
+          if (item.type !== "image") return false;
+          const img = images[item.index];
+          if (!img?.tagType) return false;
+          const bounds = getImageBoundsWorld(img);
+          return bounds && rectContainsRect(rectWorld, bounds);
+        })
+        .map((item) => images[item.index]?.id)
+        .filter(Boolean)
+    );
+    const filteredItems = selectedFrameIds.size
+      ? items.filter((item) => {
+          if (item.type === "image" && images[item.index]?.tagType) return true;
+          if (item.type === "stroke-group") {
+            return !item.indices.some((idx) => {
+              const owner = findOwningFrameForItem({ type: "stroke", index: idx });
+              return owner?.frame?.id && selectedFrameIds.has(owner.frame.id);
+            });
+          }
+          if (item.type === "draft-group") {
+            return !item.indices.some((idx) => {
+              const owner = findOwningFrameForItem({ type: "draft", index: idx });
+              return owner?.frame?.id && selectedFrameIds.has(owner.frame.id);
+            });
+          }
+          const owner = findOwningFrameForItem(item);
+          return !(owner?.frame?.id && selectedFrameIds.has(owner.frame.id));
+        })
+      : items;
+
+    if (filteredItems.length === 1) {
+      const only = filteredItems[0];
       if (only.type === "image" || only.type === "text") {
         selected = { type: only.type, index: only.index };
       } else {
@@ -3746,8 +4672,8 @@
       selected = null;
     }
 
-    multiSelection = items.length
-      ? { items, rectScreen: normScreen, rectWorld }
+    multiSelection = filteredItems.length
+      ? { items: filteredItems, rectScreen: normScreen, rectWorld }
       : null;
     redraw();
   }
@@ -3877,24 +4803,27 @@
 
     // 1. すべての描画オブジェクトを統合して並び替え
     const combined = [];
-    strokes.forEach((s, idx) =>
+    strokes.forEach((s, idx) => {
+      if (!isFrameMemberVisible(s, { type: "stroke", index: idx })) return;
       combined.push({
         type: "stroke",
         order: s.order ?? idx,
         index: idx,
         layer: s.layer || "user",
-      })
-    );
-    draftStrokes.forEach((s, idx) =>
+      });
+    });
+    draftStrokes.forEach((s, idx) => {
+      if (!isFrameMemberVisible(s, { type: "draft", index: idx })) return;
       combined.push({
         type: "draft-stroke",
         order: s.order ?? draftStrokes.length + idx,
         index: idx,
         layer: "draft",
-      })
-    );
+      });
+    });
     images.forEach((img, idx) => {
       if (!isImageVisible(img)) return;
+      if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
       combined.push({
         type: "image",
         order: img.order ?? orderCounter + idx,
@@ -3903,27 +4832,35 @@
         isFrame: !!img.tagType,
       });
     });
-    texts.forEach((t, idx) =>
+    texts.forEach((t, idx) => {
+      if (!isFrameMemberVisible(t, { type: "text", index: idx })) return;
       combined.push({
         type: "text",
         order: t.order ?? strokes.length + idx,
         index: idx,
         layer: t.layer || "user",
-      })
-    );
+      });
+    });
     combined.forEach((item) => {
       if (item.type === "image") {
         const img = images[item.index];
         if (img?.tagType) {
-          item.frameGroupId = img.id;
-          item.frameGroupOrder = getFrameOrder(img);
-          item.frameGroupRank = 0;
+          const owner = findOwningFrameForItem({ type: "image", index: item.index });
+          if (owner) {
+            item.frameGroupId = owner.frame.id;
+            item.frameGroupOrder = owner.order;
+            item.frameGroupRank = getFrameMemberDrawRank(img);
+          } else {
+            item.frameGroupId = img.id;
+            item.frameGroupOrder = getFrameOrder(img);
+            item.frameGroupRank = 0;
+          }
         } else {
           const owner = findOwningFrameForItem({ type: "image", index: item.index });
           if (owner) {
             item.frameGroupId = owner.frame.id;
             item.frameGroupOrder = owner.order;
-            item.frameGroupRank = 1;
+            item.frameGroupRank = getFrameMemberDrawRank(images[item.index]);
           }
         }
       } else if (item.type === "stroke") {
@@ -3931,21 +4868,21 @@
         if (owner) {
           item.frameGroupId = owner.frame.id;
           item.frameGroupOrder = owner.order;
-          item.frameGroupRank = 1;
+          item.frameGroupRank = getFrameMemberDrawRank(strokes[item.index]);
         }
       } else if (item.type === "draft-stroke") {
         const owner = findOwningFrameForItem({ type: "draft", index: item.index });
         if (owner) {
           item.frameGroupId = owner.frame.id;
           item.frameGroupOrder = owner.order;
-          item.frameGroupRank = 1;
+          item.frameGroupRank = getFrameMemberDrawRank(draftStrokes[item.index]);
         }
       } else if (item.type === "text") {
         const owner = findOwningFrameForItem({ type: "text", index: item.index });
         if (owner) {
           item.frameGroupId = owner.frame.id;
           item.frameGroupOrder = owner.order;
-          item.frameGroupRank = 1;
+          item.frameGroupRank = getFrameMemberDrawRank(texts[item.index]);
         }
       }
     });
@@ -3978,6 +4915,23 @@
 
     ctx.textBaseline = "top";
     for (const item of combined) {
+      const frameClipChain = getFrameRenderClipChainForItem(item);
+      if (frameClipChain.length) {
+        ctx.save();
+        frameClipChain.forEach((frameClip) => {
+          const clipPos = worldToScreen(frameClip.viewport.x, frameClip.viewport.y);
+          ctx.beginPath();
+          ctx.rect(
+            clipPos.x,
+            clipPos.y,
+            frameClip.viewport.width * scale,
+            frameClip.viewport.height * scale
+          );
+          ctx.clip();
+          ctx.translate(-frameClip.scroll.x * scale, -frameClip.scroll.y * scale);
+        });
+      }
+      try {
       if (item.type === "image") {
         const imgObj = images[item.index];
         const imgEl = imgObj?.img;
@@ -4173,7 +5127,17 @@
           drawSelectionBoundsWorld(bounds, rotation);
         }
       }
+      } finally {
+        if (frameClipChain.length) ctx.restore();
+      }
     }
+
+    images.forEach((img, idx) => {
+      if (!img?.tagType || !isImageVisible(img)) return;
+      if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
+      drawFrameHeaderOverlay(ctx, img);
+    });
+    images.forEach((img) => drawFrameScrollbars(img));
 
     // 4. 図形プレビュー
     if (isDrawingShape && shapeMode && shapeStart && shapePreview) {
@@ -4755,6 +5719,7 @@
         imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
         imageListOrder: bumpImageListOrderCounter(),
       };
+      applyFrameMembershipByPoint(imgObj, { x: placeX + w / 2, y: placeY + h / 2 });
       images.push(imgObj);
       registerUser(currentUser);
       refreshImageList();
@@ -4814,6 +5779,7 @@
           imageName: file.name ? file.name.replace(/\.[^.]+$/, "") : "",
           imageListOrder: bumpImageListOrderCounter(),
         };
+        applyFrameMembershipByPoint(imgObj, { x: layout.currentX + w / 2, y: layout.y });
         images.push(imgObj);
         registerUser(currentUser);
         refreshImageList();
@@ -4910,6 +5876,7 @@
         imageName,
         imageListOrder: bumpImageListOrderCounter(),
       };
+      applyFrameMembershipByPoint(imgObj, { x: worldX, y: worldY });
       images.push(imgObj);
       registerUser(currentUser);
       refreshImageList();
@@ -4999,6 +5966,10 @@
         imageName: imgObj.imageName || "",
         imageListOrder:
           typeof imgObj.imageListOrder === "number" ? imgObj.imageListOrder : imgObj.order || 0,
+        frameId: imgObj.frameId || null,
+        frameTab: imgObj.frameTab || null,
+        frameTabs: imgObj.frameTabs || null,
+        activeFrameTab: imgObj.activeFrameTab || null,
       },
     });
   }
@@ -5130,6 +6101,7 @@
         const lines = value.split(/\r?\n/);
         const created = [];
         if (mode === "grid") {
+          const membership = getFrameMembershipAtWorldPoint(worldPos);
           created.push(
             ...buildGridTextObjects(lines, worldPos, fontSizeWorld, {
               fontSize: fontSizeWorld,
@@ -5139,10 +6111,12 @@
               label: presetLabel,
               rotation: 0,
               vertical: false,
+              frameId: membership?.frameId || null,
+              frameTab: membership?.frameTab || null,
             })
           );
         } else {
-          created.push({
+          const t = {
             id: genId(),
             lines,
             x: worldPos.x,
@@ -5157,7 +6131,9 @@
             rotation: 0,
             vertical: false,
             gridText: false,
-          });
+          };
+          applyFrameMembershipByPoint(t, worldPos);
+          created.push(t);
         }
         created.forEach(addTextObject);
         if (!created.length) return;
@@ -5301,6 +6277,7 @@
       vertical: false,
       gridText: false,
     };
+    applyFrameMembershipByPoint(t, { x: worldX, y: worldY });
     texts.push(t);
     registerUser(currentUser);
     if (socketConnected) {
@@ -5366,6 +6343,35 @@
     const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
     const isRightButton = e.button === 2;
     const isMiddleButton = e.button === 1;
+
+    if (e.button === 0 && currentTool === "select") {
+      const scrollbarHit = hitTestFrameScrollbar(canvasPos);
+      if (scrollbarHit) {
+        e.preventDefault();
+        frameScrollbarDrag = scrollbarHit;
+        selected = { type: "image", index: images.findIndex((img) => img?.id === scrollbarHit.frame.id) };
+        multiSelection = null;
+        return;
+      }
+    }
+
+    if (e.button === 0 && currentTool === "select") {
+      const tabHit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
+      if (tabHit) {
+        e.preventDefault();
+        if (tabHit.action === "add") {
+          ensureSnapshotForAction();
+          addFrameTab(tabHit.frame);
+        } else if (tabHit.action === "background") {
+          activateFrameTab(tabHit.frame, "background");
+        } else if (tabHit.action === "tab") {
+          activateFrameTab(tabHit.frame, tabHit.tabId);
+        }
+        selected = { type: "image", index: tabHit.index };
+        multiSelection = null;
+        return;
+      }
+    }
 
     if (pendingTextMode && e.button === 0) {
       if (!canCreateOnCurrentLayer()) return;
@@ -5551,6 +6557,7 @@
           order: draftOrderCounter++,
           createdAt: Date.now(),
         };
+        applyFrameMembershipByPoint(stroke, worldPos);
         draftStrokes.push(stroke);
         activeDraftId = stroke.id;
         isDrawing = true;
@@ -5579,6 +6586,7 @@
               : "user",
           order: orderCounter++,
         };
+        applyFrameMembershipByPoint(stroke, worldPos);
         strokes.push(stroke);
         registerUser(currentUser);
         activeStrokeId = stroke.id;
@@ -5751,6 +6759,19 @@
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
 
+    if (frameScrollbarDrag) {
+      const scroll = getFrameScroll(frameScrollbarDrag.frame);
+      const pointer = frameScrollbarDrag.axis === "y" ? canvasPos.y : canvasPos.x;
+      const delta = pointer - frameScrollbarDrag.startPointer;
+      const next = frameScrollbarDrag.startScroll + (delta / frameScrollbarDrag.trackSpan) * frameScrollbarDrag.maxScroll;
+      if (frameScrollbarDrag.axis === "y") scroll.y = next;
+      else scroll.x = next;
+      clampFrameScroll(frameScrollbarDrag.frame);
+      redraw();
+      e.preventDefault();
+      return;
+    }
+
     if (isPlacingFrame && framePlaceStart) {
       framePlacePreview = screenToWorld(canvasPos.x, canvasPos.y);
       redraw();
@@ -5793,6 +6814,7 @@
     }
 
     if (multiDragActive && multiDragOffsets) {
+      frameScrollIgnoredItemKeys = new Set((multiSelection?.items || []).map(getSelectionItemKey).filter(Boolean));
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       const dx = worldPos.x - (multiDragStartWorld?.x || worldPos.x);
       const dy = worldPos.y - (multiDragStartWorld?.y || worldPos.y);
@@ -5875,6 +6897,7 @@
     }
 
     if (isDraggingObject && selected) {
+      frameScrollIgnoredItemKeys = new Set(getSelectionItems().map(getSelectionItemKey).filter(Boolean));
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       if (selected.type === "image") {
         const imgObj = images[selected.index];
@@ -5941,19 +6964,30 @@
         const imgObj = images[resizeInfo.index];
         const anchorX = resizeInfo.anchorX ?? imgObj.x;
         const anchorY = resizeInfo.anchorY ?? imgObj.y;
-        const aspect = Math.max(resizeInfo.startW, 1) / Math.max(resizeInfo.startH, 1);
-        const minW = 10;
-        const minH = minW / aspect;
-        const scaleByW = Math.abs(worldPos.x - anchorX) / Math.max(resizeInfo.startW, 1);
-        const scaleByH = Math.abs(worldPos.y - anchorY) / Math.max(resizeInfo.startH, 1);
-        const factor = Math.max(scaleByW, scaleByH, minW / Math.max(resizeInfo.startW, 1));
-        const newW = Math.max(resizeInfo.startW * factor, minW);
-        const newH = Math.max(resizeInfo.startH * factor, minH);
         const handle = resizeInfo.handle || "br";
-        imgObj.x = handle === "tr" || handle === "br" ? anchorX : anchorX - newW;
-        imgObj.y = handle === "bl" || handle === "br" ? anchorY : anchorY - newH;
-        imgObj.width = newW;
-        imgObj.height = newH;
+        if (imgObj?.tagType) {
+          const minW = 16;
+          const minH = 16;
+          const newW = Math.max(Math.abs(worldPos.x - anchorX), minW);
+          const newH = Math.max(Math.abs(worldPos.y - anchorY), minH);
+          imgObj.x = handle === "tr" || handle === "br" ? anchorX : anchorX - newW;
+          imgObj.y = handle === "bl" || handle === "br" ? anchorY : anchorY - newH;
+          imgObj.width = newW;
+          imgObj.height = newH;
+        } else {
+          const aspect = Math.max(resizeInfo.startW, 1) / Math.max(resizeInfo.startH, 1);
+          const minW = 10;
+          const minH = minW / aspect;
+          const scaleByW = Math.abs(worldPos.x - anchorX) / Math.max(resizeInfo.startW, 1);
+          const scaleByH = Math.abs(worldPos.y - anchorY) / Math.max(resizeInfo.startH, 1);
+          const factor = Math.max(scaleByW, scaleByH, minW / Math.max(resizeInfo.startW, 1));
+          const newW = Math.max(resizeInfo.startW * factor, minW);
+          const newH = Math.max(resizeInfo.startH * factor, minH);
+          imgObj.x = handle === "tr" || handle === "br" ? anchorX : anchorX - newW;
+          imgObj.y = handle === "bl" || handle === "br" ? anchorY : anchorY - newH;
+          imgObj.width = newW;
+          imgObj.height = newH;
+        }
       } else if (resizeInfo.type === "frame" && selected) {
         const fr = frames[resizeInfo.index];
         const anchorX = resizeInfo.anchorX ?? fr.x;
@@ -6001,6 +7035,7 @@
       isDraggingObject ||
       isResizingObject ||
       isErasing ||
+      frameScrollbarDrag ||
       multiDragActive ||
       selectionDragActive ||
       isDrawingShape
@@ -6055,7 +7090,32 @@
       isResizingObject && selected?.type === "image" ? images[selected.index] : null;
     const frameResizeHandled = !!resizedFrameImage?.tagType;
     if (frameResizeHandled) {
+      clampFrameScroll(resizedFrameImage);
       refreshFrameImageForCurrentSize(resizedFrameImage, { emit: socketConnected });
+    }
+
+    const selectedMembershipPatch =
+      isDraggingObject && selected && !["stroke-group", "draft-group"].includes(selected.type)
+        ? updateFrameMembershipForItem(selected)
+        : null;
+    let frameMembershipChanged = !!selectedMembershipPatch;
+    const selectedGroupMembershipPatches = new Map();
+    if (isDraggingObject && selected?.type === "stroke-group") {
+      selected.indices.forEach((idx) => {
+        const patch = updateFrameMembershipForItem({ type: "stroke", index: idx });
+        if (patch) {
+          selectedGroupMembershipPatches.set(idx, patch);
+          frameMembershipChanged = true;
+        }
+      });
+    } else if (isDraggingObject && selected?.type === "draft-group") {
+      selected.indices.forEach((idx) => {
+        const patch = updateFrameMembershipForItem({ type: "draft", index: idx });
+        if (patch) {
+          selectedGroupMembershipPatches.set(idx, patch);
+          frameMembershipChanged = true;
+        }
+      });
     }
 
     // 移動・リサイズを共有
@@ -6067,7 +7127,7 @@
             boardId,
             type: "image",
             id: imgObj.id,
-            patch: { x: imgObj.x, y: imgObj.y },
+            patch: { x: imgObj.x, y: imgObj.y, ...(selectedMembershipPatch || {}) },
           });
         } else if (selected.type === "text") {
           const t = texts[selected.index];
@@ -6075,11 +7135,11 @@
             boardId,
             type: "text",
             id: t.id,
-            patch: { x: t.x, y: t.y },
+            patch: { x: t.x, y: t.y, ...(selectedMembershipPatch || {}) },
           });
         } else if (selected.type === "stroke") {
           const s = strokes[selected.index];
-          const patch = { points: s.points.map((p) => ({ x: p.x, y: p.y })) };
+          const patch = { points: s.points.map((p) => ({ x: p.x, y: p.y })), ...(selectedMembershipPatch || {}) };
           socket.emit("item:update", {
             boardId,
             type: "stroke",
@@ -6090,7 +7150,10 @@
           selected.indices.forEach((idx) => {
             const s = strokes[idx];
             if (!s) return;
-            const patch = { points: s.points.map((p) => ({ x: p.x, y: p.y })) };
+            const patch = {
+              points: s.points.map((p) => ({ x: p.x, y: p.y })),
+              ...(selectedGroupMembershipPatches.get(idx) || {}),
+            };
             socket.emit("item:update", {
               boardId,
               type: "stroke",
@@ -6148,6 +7211,33 @@
     isDraggingObject = false;
     isResizingObject = false;
     if (multiDragActive && multiDragOffsets) {
+      const multiMembershipPatches = new Map();
+      multiDragOffsets.forEach((it) => {
+        if (!it) return;
+        if (it.type === "stroke" || it.type === "text" || it.type === "image" || it.type === "draft") {
+          const patch = updateFrameMembershipForItem({ type: it.type, index: it.index });
+          if (patch) {
+            multiMembershipPatches.set(`${it.type}:${it.index}`, patch);
+            frameMembershipChanged = true;
+          }
+        } else if (it.type === "stroke-group") {
+          it.indices.forEach((idx) => {
+            const patch = updateFrameMembershipForItem({ type: "stroke", index: idx });
+            if (patch) {
+              multiMembershipPatches.set(`stroke:${idx}`, patch);
+              frameMembershipChanged = true;
+            }
+          });
+        } else if (it.type === "draft-group") {
+          it.indices.forEach((idx) => {
+            const patch = updateFrameMembershipForItem({ type: "draft", index: idx });
+            if (patch) {
+              multiMembershipPatches.set(`draft:${idx}`, patch);
+              frameMembershipChanged = true;
+            }
+          });
+        }
+      });
       if (socketConnected) {
         multiDragOffsets.forEach((it) => {
           if (!it) return;
@@ -6158,7 +7248,10 @@
                 boardId,
                 type: "stroke",
                 id: s.id,
-                patch: { points: s.points.map((p) => ({ x: p.x, y: p.y })) },
+                patch: {
+                  points: s.points.map((p) => ({ x: p.x, y: p.y })),
+                  ...(multiMembershipPatches.get(`stroke:${it.index}`) || {}),
+                },
               });
             }
           } else if (it.type === "stroke-group") {
@@ -6169,7 +7262,10 @@
                 boardId,
                 type: "stroke",
                 id: s.id,
-                patch: { points: s.points.map((p) => ({ x: p.x, y: p.y })) },
+                patch: {
+                  points: s.points.map((p) => ({ x: p.x, y: p.y })),
+                  ...(multiMembershipPatches.get(`stroke:${idx}`) || {}),
+                },
               });
             });
           } else if (it.type === "text") {
@@ -6179,7 +7275,7 @@
                 boardId,
                 type: "text",
                 id: t.id,
-                patch: { x: t.x, y: t.y },
+                patch: { x: t.x, y: t.y, ...(multiMembershipPatches.get(`text:${it.index}`) || {}) },
               });
             }
           } else if (it.type === "image") {
@@ -6189,7 +7285,7 @@
                 boardId,
                 type: "image",
                 id: img.id,
-                patch: { x: img.x, y: img.y },
+                patch: { x: img.x, y: img.y, ...(multiMembershipPatches.get(`image:${it.index}`) || {}) },
               });
             }
           } else if (it.type === "draft") {
@@ -6209,7 +7305,13 @@
       }
     }
 
+    if (frameMembershipChanged) {
+      redraw();
+    }
+
     isErasing = false;
+    frameScrollIgnoredItemKeys = null;
+    frameScrollbarDrag = null;
     activeStrokeId = null;
     activeDraftId = null;
     isDrawingDraft = false;
@@ -6361,11 +7463,19 @@
           tagLabel: label,
           imageName: label,
           imageListOrder: bumpImageListOrderCounter(),
+          frameTabs: [{ id: "tab-1", name: "1" }],
+          activeFrameTab: "tab-1",
         };
+        const parentMembership = getFrameMembershipForBounds(getImageBoundsWorld(imgObj), imgObj.id);
+        if (parentMembership) {
+          imgObj.frameId = parentMembership.frameId;
+          imgObj.frameTab = parentMembership.frameTab;
+        }
         images.push(imgObj);
         registerUser(currentUser);
         refreshImageList();
         emitImageAdd(imgObj);
+        assignExistingObjectsToNewFrame(imgObj);
         currentTool = "select";
         updateToolButtons();
         selected = { type: "image", index: images.length - 1 };
@@ -6381,11 +7491,36 @@
   }
 
   // --- ズーム ---
+  function getScrollableFrameAtWorldPoint(worldPoint) {
+    if (!worldPoint) return null;
+    for (let i = images.length - 1; i >= 0; i--) {
+      const frame = images[i];
+      if (!frame?.tagType || !isImageVisible(frame)) continue;
+      if (!isFrameMemberVisible(frame, { type: "image", index: i })) continue;
+      const metrics = getFrameScrollMetrics(frame);
+      if (!metrics.viewport || (metrics.maxX <= 0 && metrics.maxY <= 0)) continue;
+      if (pointInRectWorld(metrics.viewport, worldPoint)) return { frame, metrics };
+    }
+    return null;
+  }
+
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
+
+    const wheelWorldPos = screenToWorld(canvasPos.x, canvasPos.y);
+    const scrollHit = getScrollableFrameAtWorldPoint(wheelWorldPos);
+    if (scrollHit) {
+      const scroll = getFrameScroll(scrollHit.frame);
+      scroll.x += (e.shiftKey ? e.deltaY : e.deltaX) / scale;
+      scroll.y += (e.shiftKey ? e.deltaX : e.deltaY) / scale;
+      clampFrameScroll(scrollHit.frame);
+      redraw();
+      updateFooterByState();
+      return;
+    }
 
     const before = screenToWorld(canvasPos.x, canvasPos.y);
     const delta = -e.deltaY * 0.001;
@@ -6642,6 +7777,15 @@
     if (textEditor) return;
     e.preventDefault();
     const canvasPos = getCanvasPointFromEvent(e);
+    const tabHit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
+    if (tabHit) {
+      if (tabHit.action === "tab") {
+        selected = { type: "image", index: tabHit.index };
+        multiSelection = null;
+        editFrameTabName(tabHit.frame, tabHit.tabId);
+      }
+      return;
+    }
     const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
     if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
       return;
@@ -6841,11 +7985,60 @@
   }
 
   function selectionHasRotatable() {
-    return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "draft" || it.type === "draft-group" || it.type === "text" || it.type === "image");
+    return getSelectionItems().some((it) => {
+      if (it.type === "image") return !images[it.index]?.tagType;
+      return it.type === "stroke" || it.type === "stroke-group" || it.type === "draft" || it.type === "draft-group" || it.type === "text";
+    });
   }
 
   function selectionHasDraftCopyTarget() {
     return getSelectionItems().some((it) => it.type === "stroke" || it.type === "stroke-group" || it.type === "text");
+  }
+
+  function selectionHasFrameBackgroundMoveTarget() {
+    return getSelectionItems().some((it) => {
+      if (it.type === "image" && images[it.index]?.tagType) return false;
+      if (it.type === "stroke-group") {
+        return it.indices.some((idx) => !!getFrameBackgroundMovePatch({ type: "stroke", index: idx }));
+      }
+      if (it.type === "draft-group") {
+        return it.indices.some((idx) => !!getFrameBackgroundMovePatch({ type: "draft", index: idx }));
+      }
+      return !!getFrameBackgroundMovePatch(it);
+    });
+  }
+
+  function getSelectedFrameItems() {
+    return getSelectionItems().filter((it) => it.type === "image" && images[it.index]?.tagType);
+  }
+
+  function getFrameContentItemsDeep(frameImg, seenFrameIds = new Set()) {
+    if (!frameImg?.tagType || seenFrameIds.has(frameImg.id)) return [];
+    seenFrameIds.add(frameImg.id);
+    const contents = getFrameContentItems(frameImg);
+    const result = [];
+    contents.forEach((item) => {
+      result.push(item);
+      if (item.type === "image") {
+        const img = images[item.index];
+        if (img?.tagType) result.push(...getFrameContentItemsDeep(img, seenFrameIds));
+      }
+    });
+    return result;
+  }
+
+  function selectionHasFrameContentsTarget() {
+    return getSelectedFrameItems().some((it) => getFrameContentItemsDeep(images[it.index]).length > 0);
+  }
+
+  function selectSelectedFrameContents() {
+    const frameItems = getSelectedFrameItems();
+    if (!frameItems.length) return;
+    const contents = [];
+    frameItems.forEach((item) => {
+      contents.push(...getFrameContentItemsDeep(images[item.index]));
+    });
+    setSelectionFromItems(contents);
   }
 
   function updateToolButtons() {
@@ -7133,18 +8326,28 @@
   function showContextMenu(x, y) {
     if (!contextMenu) return;
     const hasDraft = selectionHasDraft();
-    const hasAny = getSelectionItems().length > 0;
+    const selectionItems = getSelectionItems();
+    const hasAny = selectionItems.length > 0;
     const hasImage = selectionHasImage();
     const hasMoveTarget = selectionHasBaseMoveTarget();
     const hasMoveImageTarget = hasImage && isAdminUser();
     const hasOrderable = selectionHasOrderable();
     const hasRotatable = selectionHasRotatable();
     const hasDraftCopyTarget = selectionHasDraftCopyTarget();
+    const hasFrameBackgroundMoveTarget = selectionHasFrameBackgroundMoveTarget();
+    const hasFrameContentsTarget = selectionHasFrameContentsTarget();
+    const frameOnlySelection =
+      hasAny && selectionItems.every((item) => item.type === "image" && images[item.index]?.tagType);
 
-    contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.remove("disabled"));
+    contextMenu.querySelectorAll("button").forEach((btn) => {
+      btn.classList.remove("disabled");
+      btn.classList.toggle("hidden", frameOnlySelection && btn.getAttribute("data-action") !== "select-frame-contents");
+    });
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
     const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
     const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
+    const moveFrameBackgroundBtn = contextMenu.querySelector('button[data-action="move-frame-background"]');
+    const selectFrameContentsBtn = contextMenu.querySelector('button[data-action="select-frame-contents"]');
     const renameImageBtn = contextMenu.querySelector('button[data-action="rename-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
     const frontBtn = contextMenu.querySelector('button[data-action="bring-front"]');
@@ -7155,6 +8358,8 @@
     if (applyBtn && !hasDraft) applyBtn.classList.add("disabled");
     if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
     if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
+    if (moveFrameBackgroundBtn && !hasFrameBackgroundMoveTarget) moveFrameBackgroundBtn.classList.add("disabled");
+    if (selectFrameContentsBtn && !hasFrameContentsTarget) selectFrameContentsBtn.classList.add("disabled");
     if (renameImageBtn && !hasImage) renameImageBtn.classList.add("disabled");
     if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
     if (backBtn && !hasOrderable) backBtn.classList.add("disabled");
@@ -7184,6 +8389,10 @@
         moveSelectionToBase();
       } else if (action === "move-image") {
         moveSelectionToImage();
+      } else if (action === "move-frame-background") {
+        moveSelectionToFrameBackground();
+      } else if (action === "select-frame-contents") {
+        selectSelectedFrameContents();
       } else if (action === "rename-image") {
         setSelectedImageName();
       } else if (action === "bring-front") {
@@ -7198,6 +8407,26 @@
         copySelectionToDraft();
       }
       hideContextMenu();
+    });
+  }
+
+  if (frameDeleteContentsBtn) {
+    frameDeleteContentsBtn.addEventListener("click", () => {
+      closeFrameDeleteModal();
+      deleteSelection("with-contents");
+    });
+  }
+
+  if (frameDeleteFrameOnlyBtn) {
+    frameDeleteFrameOnlyBtn.addEventListener("click", () => {
+      closeFrameDeleteModal();
+      deleteSelection("frame-only");
+    });
+  }
+
+  if (frameDeleteCancelBtn) {
+    frameDeleteCancelBtn.addEventListener("click", () => {
+      closeFrameDeleteModal();
     });
   }
 
@@ -7486,6 +8715,7 @@
       order: orderCounter++,
       groupId: opts.groupId || null,
     };
+    applyFrameMembershipByPoint(stroke, points[0]);
     strokes.push(stroke);
     registerUser(currentUser);
     if (socketConnected) {

@@ -371,6 +371,10 @@ button:hover {
   display: none;
 }
 
+.context-menu button.hidden {
+  display: none;
+}
+
 .context-menu button {
   all: unset;
   padding: 8px 10px;
@@ -441,6 +445,21 @@ button:hover {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+
+.modal p {
+  margin: 0;
+  color: #445;
+  line-height: 1.5;
+}
+
+.frame-delete-modal {
+  max-width: 360px;
+}
+
+.frame-delete-actions {
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* テキスト一覧ポップアップ */

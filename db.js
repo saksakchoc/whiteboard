@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS strokes_v2 (
   created_at INTEGER NOT NULL,
   fill INTEGER NOT NULL DEFAULT 0,
   group_id TEXT,
-  fill_source_id TEXT
+  fill_source_id TEXT,
+  frame_id TEXT,
+  frame_tab TEXT
 );
 
 CREATE TABLE IF NOT EXISTS texts_v2 (
@@ -54,7 +56,9 @@ CREATE TABLE IF NOT EXISTS texts_v2 (
   label TEXT,
   rotation REAL NOT NULL DEFAULT 0,
   vertical INTEGER NOT NULL DEFAULT 0,
-  grid_text INTEGER NOT NULL DEFAULT 0
+  grid_text INTEGER NOT NULL DEFAULT 0,
+  frame_id TEXT,
+  frame_tab TEXT
 );
 
 CREATE TABLE IF NOT EXISTS images_v2 (
@@ -73,7 +77,11 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   tag_type TEXT,
   tag_label TEXT,
   image_name TEXT,
-  image_list_order REAL
+  image_list_order REAL,
+  frame_id TEXT,
+  frame_tab TEXT,
+  frame_tabs TEXT,
+  active_frame_tab TEXT
 );
 
 CREATE TABLE IF NOT EXISTS draft_strokes (
@@ -86,7 +94,9 @@ CREATE TABLE IF NOT EXISTS draft_strokes (
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   fill INTEGER NOT NULL DEFAULT 0,
-  group_id TEXT
+  group_id TEXT,
+  frame_id TEXT,
+  frame_tab TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -183,6 +193,24 @@ try {
 } catch (e) {
   // ignore
 }
+[
+  ["strokes_v2", "frame_id TEXT"],
+  ["strokes_v2", "frame_tab TEXT"],
+  ["texts_v2", "frame_id TEXT"],
+  ["texts_v2", "frame_tab TEXT"],
+  ["images_v2", "frame_id TEXT"],
+  ["images_v2", "frame_tab TEXT"],
+  ["images_v2", "frame_tabs TEXT"],
+  ["images_v2", "active_frame_tab TEXT"],
+  ["draft_strokes", "frame_id TEXT"],
+  ["draft_strokes", "frame_tab TEXT"],
+].forEach(([table, column]) => {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+  } catch (e) {
+    // ignore
+  }
+});
 
 // --- boards ---
 function createBoard(id) {
@@ -244,8 +272,8 @@ function setBoardTitle(boardId, title) {
 // --- strokes_v2 ---
 function saveStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id, frame_id, frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -258,7 +286,9 @@ function saveStroke(stroke) {
     stroke.order || 0,
     Date.now(),
     stroke.fill ? 1 : 0,
-    stroke.groupId || null
+    stroke.groupId || null,
+    stroke.frameId || null,
+    stroke.frameTab || null
   );
 }
 
@@ -270,8 +300,8 @@ function deleteStroke(boardId, id) {
 // --- draft_strokes ---
 function saveDraftStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -284,7 +314,9 @@ function saveDraftStroke(stroke) {
     stroke.createdAt || Date.now(),
     stroke.fill ? 1 : 0,
     stroke.groupId || null,
-    stroke.fillSourceId || null
+    stroke.fillSourceId || null,
+    stroke.frameId || null,
+    stroke.frameTab || null
   );
 }
 
@@ -297,7 +329,7 @@ function deleteDraftStroke(boardId, id, user) {
 
 function getDraftStrokes(boardId, user) {
   const stmt = db.prepare(`
-    SELECT id, color, size, points, "order", created_at, fill, group_id, fill_source_id
+    SELECT id, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab
     FROM draft_strokes
     WHERE board_id = ? AND user = ?
     ORDER BY "order" ASC
@@ -312,14 +344,16 @@ function getDraftStrokes(boardId, user) {
     fill: !!row.fill,
     groupId: row.group_id || null,
     fillSourceId: row.fill_source_id || null,
+    frameId: row.frame_id || null,
+    frameTab: row.frame_tab || null,
   }));
 }
 
 // --- texts_v2 ---
 function saveText(text) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, frame_id, frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     text.id,
@@ -336,7 +370,9 @@ function saveText(text) {
     text.label || null,
     text.rotation || 0,
     text.vertical ? 1 : 0,
-    text.gridText ? 1 : 0
+    text.gridText ? 1 : 0,
+    text.frameId || null,
+    text.frameTab || null
   );
 }
 
@@ -348,8 +384,8 @@ function deleteText(boardId, id) {
 // --- images_v2 ---
 function saveImage(img) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, tag_type, tag_label, image_name, image_list_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     img.id,
@@ -367,7 +403,11 @@ function saveImage(img) {
     img.tagType || null,
     img.tagLabel || null,
     img.imageName || null,
-    typeof img.imageListOrder === "number" ? img.imageListOrder : null
+    typeof img.imageListOrder === "number" ? img.imageListOrder : null,
+    img.frameId || null,
+    img.frameTab || null,
+    img.frameTabs ? JSON.stringify(img.frameTabs) : null,
+    img.activeFrameTab || null
   );
 }
 
@@ -379,19 +419,19 @@ function deleteImage(boardId, id) {
 // --- state ---
 function getBoardState(boardId) {
   const strokesStmt = db.prepare(`
-    SELECT id, user, color, size, points, layer, "order", fill, group_id
+    SELECT id, user, color, size, points, layer, "order", fill, group_id, frame_id, frame_tab
     FROM strokes_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
   `);
   const textsStmt = db.prepare(`
-    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text
+    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, frame_id, frame_tab
     FROM texts_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
   `);
   const imagesStmt = db.prepare(`
-    SELECT id, user, src, x, y, width, height, layer, "order", rotation, tag_type, tag_label, image_name, image_list_order
+    SELECT id, user, src, x, y, width, height, layer, "order", rotation, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab
     FROM images_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -408,6 +448,8 @@ function getBoardState(boardId) {
     order: row.order,
     fill: !!row.fill,
     groupId: row.group_id || null,
+    frameId: row.frame_id || null,
+    frameTab: row.frame_tab || null,
   }));
 
   const texts = textsStmt.all(boardId).map((row) => ({
@@ -425,6 +467,8 @@ function getBoardState(boardId) {
     vertical: !!row.vertical,
     gridText: !!row.grid_text,
     createdAt: row.created_at,
+    frameId: row.frame_id || null,
+    frameTab: row.frame_tab || null,
   }));
 
   const images = imagesStmt.all(boardId).map((row) => ({
@@ -442,6 +486,10 @@ function getBoardState(boardId) {
     tagLabel: row.tag_label || "",
     imageName: row.image_name || "",
     imageListOrder: typeof row.image_list_order === "number" ? row.image_list_order : null,
+    frameId: row.frame_id || null,
+    frameTab: row.frame_tab || null,
+    frameTabs: row.frame_tabs ? JSON.parse(row.frame_tabs) : null,
+    activeFrameTab: row.active_frame_tab || null,
   }));
 
   return { title, strokes, texts, images };
