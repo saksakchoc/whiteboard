@@ -586,7 +586,7 @@
     if (!imgObj) return false;
     const index = images.findIndex((img) => img?.id === imgObj.id);
     if (index >= 0 && !isFrameMemberVisible(imgObj, { type: "image", index })) return false;
-    if (imgObj.tagType) return isImageVisible(imgObj);
+    if (isFrameContainer(imgObj)) return isImageVisible(imgObj);
     if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
     if (activeLayer === "draft") return layer === "draft" && imgObj.user === currentUser;
@@ -1282,12 +1282,12 @@
 
   function getOmoteUraFrameColors() {
     return {
-      omoteBody: "#fff0e7",
-      omoteBar: "#e85d2a",
-      uraBody: "#e5f7ff",
-      uraBar: "#0896c7",
-      border: "#24313a",
-      text: "#17232b",
+      omoteBody: "#fff3f1",
+      omoteBar: "#f8b4ad",
+      uraBody: "#eef7ff",
+      uraBar: "#a8d8f5",
+      border: "#d5cbd2",
+      text: "#5f5360",
     };
   }
 
@@ -1587,7 +1587,6 @@
     ctx.textAlign = "center";
     ctx.fillText("表", barW / 2, midY / 2);
     ctx.fillText("裏", barW / 2, midY + (worldH - midY) / 2);
-    drawFrameTabs(ctx, imgObj, worldW, Math.min(getFrameHeaderHeightWorld(imgObj), worldH));
     ctx.restore();
   }
 
@@ -1626,7 +1625,7 @@
   }
 
   function getFrameHeaderBoundsWorld(imgObj) {
-    if (!imgObj || !imgObj.tagType) return null;
+    if (!isFrameContainer(imgObj)) return null;
     return {
       x: imgObj.x,
       y: imgObj.y,
@@ -1653,7 +1652,7 @@
   }
 
   function ensureFrameTabs(frameImg) {
-    if (!frameImg?.tagType) return [];
+    if (!isFrameContainer(frameImg)) return [];
     if (!Array.isArray(frameImg.frameTabs) || frameImg.frameTabs.length === 0) {
       frameImg.frameTabs = [{ id: "tab-1", name: "1" }];
     }
@@ -1672,12 +1671,12 @@
   }
 
   function getFrameCurrentTargetTab(frameImg) {
-    if (!frameImg?.tagType) return null;
+    if (!isFrameContainer(frameImg)) return null;
     return frameImg.activeFrameTab === "background" ? "background" : getFrameActiveTab(frameImg);
   }
 
   function getFrameTabAtWorldPoint(frameImg, worldPoint) {
-    if (!frameImg?.tagType || !worldPoint) return null;
+    if (!isFrameContainer(frameImg) || !worldPoint) return null;
     const header = getFrameHeaderBoundsWorld(frameImg);
     if (!header || !pointInRectWorld(header, worldPoint)) return null;
     const tabs = ensureFrameTabs(frameImg);
@@ -1753,7 +1752,7 @@
     const worldPoint = screenToWorld(screenX, screenY);
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
-      if (!imgObj?.tagType || !isImageVisible(imgObj)) continue;
+      if (!isFrameContainer(imgObj) || !isImageVisible(imgObj)) continue;
       const headerHit = getFrameHeaderHitBoundsScreen(imgObj);
       if (!pointInScreenRect({ x: screenX, y: screenY }, headerHit)) continue;
       const hit = getFrameTabAtWorldPoint(imgObj, worldPoint);
@@ -1764,7 +1763,7 @@
   }
 
   function activateFrameTab(frameImg, tabId) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     ensureFrameTabs(frameImg);
     frameImg.activeFrameTab = tabId === "background" ? "background" : tabId;
     emitItemPatch("image", frameImg, { activeFrameTab: frameImg.activeFrameTab });
@@ -1772,7 +1771,7 @@
   }
 
   function addFrameTab(frameImg) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     const tabs = ensureFrameTabs(frameImg);
     const nextNum = tabs.length + 1;
     const tab = { id: `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`, name: String(nextNum) };
@@ -1786,7 +1785,7 @@
   }
 
   function editFrameTabName(frameImg, tabId) {
-    if (!frameImg?.tagType || !tabId || tabId === "background") return false;
+    if (!isFrameContainer(frameImg) || !tabId || tabId === "background") return false;
     const tabs = ensureFrameTabs(frameImg);
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return false;
@@ -1894,6 +1893,10 @@
     return [value];
   }
 
+  function getVisibleTextTags(label) {
+    return normalizeTextTags(label).filter((tag) => tag !== "表裏");
+  }
+
   function serializeTextTags(tags) {
     const normalized = normalizeTextTags(tags);
     if (!normalized.length) return "";
@@ -1901,7 +1904,7 @@
   }
 
   function formatTextTagsForPrompt(tags) {
-    return normalizeTextTags(tags).join(", ");
+    return getVisibleTextTags(tags).join(", ");
   }
 
   function parseTextTagsInput(value) {
@@ -1961,7 +1964,7 @@
       const meta = document.createElement("span");
       meta.className = "text-list-meta";
       meta.textContent = `#${idx + 1}`;
-      const tags = normalizeTextTags(t.label);
+      const tags = getVisibleTextTags(t.label);
       const tagButton = document.createElement("span");
       tagButton.className = "text-label-badge";
       tagButton.textContent = tags.length ? tags.join(" / ") : "#";
@@ -2018,7 +2021,7 @@
     if (!list.length) return "";
     return list
       .map((t) => {
-        const tags = normalizeTextTags(t.label);
+        const tags = getVisibleTextTags(t.label);
         const label = tags.length ? tags.join(" / ") : "(タグなし)";
         const body = (t.lines || []).join("\n");
         return `${label}：${body}`;
@@ -2076,7 +2079,7 @@
   function sortImagesForList() {
     return images
       .map((img, index) => ({ img, index }))
-      .filter(({ img }) => !img.tagType)
+      .filter(({ img }) => !isFrameContainer(img))
       .sort((a, b) => {
         const ao = typeof a.img.imageListOrder === "number" ? a.img.imageListOrder : a.img.order ?? a.index;
         const bo = typeof b.img.imageListOrder === "number" ? b.img.imageListOrder : b.img.order ?? b.index;
@@ -2357,6 +2360,22 @@
       } else if (e.key === "Escape") {
         e.preventDefault();
         finish(false);
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        const ordered = sortImagesForList().map(({ img }) => img);
+        const currentIndex = ordered.findIndex((entry) => entry.id === img.id);
+        const nextIndex = currentIndex + (e.shiftKey ? -1 : 1);
+        const nextImg = ordered[nextIndex];
+        finish(true);
+        if (nextImg) {
+          focusImageFromList(nextImg.id);
+          requestAnimationFrame(() => {
+            const escapedId = window.CSS?.escape ? CSS.escape(nextImg.id) : String(nextImg.id).replace(/"/g, '\\"');
+            const nextItem = imageListBody?.querySelector(`.image-list-item[data-id="${escapedId}"]`);
+            const nextName = nextItem?.querySelector(".image-list-name");
+            if (nextItem && nextName) startImageNameInlineEdit(nextItem, nextImg, nextName);
+          });
+        }
       }
     });
   }
@@ -2570,7 +2589,7 @@
 
   function getSelectedFrameIds() {
     return getSelectionItems()
-      .filter((item) => item.type === "image" && images[item.index]?.tagType)
+      .filter((item) => item.type === "image" && isFrameContainer(images[item.index]))
       .map((item) => images[item.index]?.id)
       .filter(Boolean);
   }
@@ -2587,7 +2606,7 @@
   }
 
   function addFrameContentsToDeleteSets(frameImg, strokeIds, textIds, imageIds, draftIds) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     getFrameContentItems(frameImg).forEach((item) => {
       if (item.type === "stroke") {
         const st = strokes[item.index];
@@ -2602,13 +2621,13 @@
         const img = images[item.index];
         if (!img) return;
         imageIds.add(img.id);
-        if (img.tagType) addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
+        if (isFrameContainer(img)) addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
       }
     });
   }
 
   function detachFrameContents(frameImg) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     getFrameContentItems(frameImg).forEach((item) => {
       if (item.type === "stroke") {
         const st = strokes[item.index];
@@ -2659,7 +2678,7 @@
 
     const collect = (item) => {
       if (!allowUserLayer && item.type !== "image") return;
-      if (!allowImages && item.type === "image" && !images[item.index]?.tagType) return;
+      if (!allowImages && item.type === "image" && !isFrameContainer(images[item.index])) return;
       if (item.type === "stroke") {
         const st = strokes[item.index];
         if (st && canDeleteStroke(st) && isStrokeVisible(st)) strokeIds.add(st.id);
@@ -2673,10 +2692,10 @@
         if (t && canDeleteText(t) && isTextVisible(t)) textIds.add(t.id);
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (img && (allowImages || img.tagType) && canInteractImage(img)) {
-          if (img.tagType && frameDeleteMode === "with-contents") {
+        if (img && (allowImages || isFrameContainer(img)) && canInteractImage(img)) {
+          if (isFrameContainer(img) && frameDeleteMode === "with-contents") {
             addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
-          } else if (img.tagType && frameDeleteMode === "frame-only") {
+          } else if (isFrameContainer(img) && frameDeleteMode === "frame-only") {
             detachFrameContents(img);
           }
           imageIds.add(img.id);
@@ -2887,7 +2906,7 @@
         emitItemPatch("text", text, { x: text.x, y: text.y, rotation: text.rotation });
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (!img || img.tagType) return;
+        if (!img || isFrameContainer(img)) return;
         const oldCenter = getRectCenter({ x: img.x, y: img.y, width: img.width, height: img.height });
         const newCenter = rotatePointAround(oldCenter, center, direction);
         img.x += newCenter.x - oldCenter.x;
@@ -3176,7 +3195,7 @@
         order: orderCounter++,
         imageName: getDuplicateImageName(imgObj.imageName),
         imageListOrder: bumpImageListOrderCounter(),
-        frameId: imgObj.tagType ? null : targetFrameId || imgObj.frameId || null,
+        frameId: isFrameContainer(imgObj) ? null : targetFrameId || imgObj.frameId || null,
         frameTabs: imgObj.frameTabs ? imgObj.frameTabs.map((tab) => ({ ...tab })) : imgObj.frameTabs,
         user: currentUser,
       };
@@ -3202,9 +3221,9 @@
       if (item.type === "image") {
         const imgObj = images[item.index];
         if (!imgObj) return;
-        if (!allowImages && !imgObj.tagType) return;
+        if (!allowImages && !isFrameContainer(imgObj)) return;
         if (!canInteractImage(imgObj)) return;
-        if (imgObj.tagType) {
+        if (isFrameContainer(imgObj)) {
           duplicateFrameWithContents(imgObj, idx + 1);
           return;
         }
@@ -3254,16 +3273,27 @@
     return { x: img.x, y: img.y, width: img.width, height: img.height };
   }
 
+  function isFrameContainer(imgObj) {
+    return !!imgObj?.tagType && imgObj.tagType !== "omoteura";
+  }
+
+  function isOmoteUraTagImage(imgObj) {
+    return (
+      imgObj?.tagType === "omoteura" ||
+      (!imgObj?.tagType && imgObj?.tagLabel === "表裏" && imgObj?.imageName === "表裏")
+    );
+  }
+
   function getFrameImagesForGrouping() {
     return images
       .map((img, index) => ({ img, index }))
-      .filter(({ img }) => img?.tagType)
+      .filter(({ img }) => isFrameContainer(img))
       .sort((a, b) => getFrameOrder(a.img) - getFrameOrder(b.img));
   }
 
   function getFrameById(frameId) {
     if (!frameId) return null;
-    return images.find((img) => img?.id === frameId && img.tagType) || null;
+    return images.find((img) => img?.id === frameId && isFrameContainer(img)) || null;
   }
 
   function getFrameMembershipAtWorldPoint(worldPoint) {
@@ -3407,7 +3437,7 @@
   }
 
   function getFrameContentItems(frameImg) {
-    if (!frameImg?.tagType) return [];
+    if (!isFrameContainer(frameImg)) return [];
     const frameBounds = getImageBoundsWorld(frameImg);
     if (!frameBounds) return [];
     const items = [];
@@ -3443,7 +3473,7 @@
   }
 
   function getFrameViewportWorld(frameImg) {
-    if (!frameImg?.tagType) return null;
+    if (!isFrameContainer(frameImg)) return null;
     const headerH = Math.min(getFrameHeaderHeightWorld(frameImg), frameImg.height);
     return {
       x: frameImg.x,
@@ -3461,7 +3491,7 @@
   }
 
   function getVisibleFrameContentBounds(frameImg) {
-    if (!frameImg?.tagType) return null;
+    if (!isFrameContainer(frameImg)) return null;
     const activeTab = getFrameActiveTab(frameImg);
     const activeFrameTab = frameImg.activeFrameTab === "background" ? "background" : activeTab;
     let minX = Infinity;
@@ -3579,7 +3609,7 @@
     const hitPadding = 12;
     for (let i = images.length - 1; i >= 0; i--) {
       const frame = images[i];
-      if (!frame?.tagType || !isImageVisible(frame)) continue;
+      if (!isFrameContainer(frame) || !isImageVisible(frame)) continue;
       if (!isFrameMemberVisible(frame, { type: "image", index: i })) continue;
       const { metrics, vertical, horizontal } = getFrameScrollbarThumbs(frame);
       const scroll = getFrameScroll(frame);
@@ -3644,7 +3674,7 @@
   }
 
   function drawFrameScrollbars(frameImg) {
-    if (!frameImg?.tagType || !isImageVisible(frameImg)) return;
+    if (!isFrameContainer(frameImg) || !isImageVisible(frameImg)) return;
     const frameIndex = images.findIndex((img) => img?.id === frameImg.id);
     if (frameIndex >= 0 && !isFrameMemberVisible(frameImg, { type: "image", index: frameIndex })) return;
     const metrics = getFrameScrollMetrics(frameImg);
@@ -3669,7 +3699,7 @@
   }
 
   function captureFrameDragItems(frameImg) {
-    if (!frameImg?.tagType) return null;
+    if (!isFrameContainer(frameImg)) return null;
     const captured = {
       frameId: frameImg.id,
       frameX: frameImg.x,
@@ -3822,7 +3852,7 @@
   }
 
   function adoptItemIntoFrameTab(item, frameImg) {
-    if (!item || !frameImg?.tagType) return;
+    if (!item || !isFrameContainer(frameImg)) return;
     const frameTab = getFrameCurrentTargetTab(frameImg);
     const patch = { frameId: frameImg.id, frameTab };
     if (item.type === "stroke") {
@@ -3853,7 +3883,7 @@
   }
 
   function assignExistingObjectsToNewFrame(frameImg) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     if (frameImg.frameId) return;
     const frameBounds = getImageBoundsWorld(frameImg);
     if (!frameBounds) return;
@@ -3861,7 +3891,7 @@
     const nestedFrameIds = new Set(
       images
         .filter((img) => {
-          if (!img?.tagType || img.id === frameImg.id) return false;
+          if (!isFrameContainer(img) || img.id === frameImg.id) return false;
           const bounds = getImageBoundsWorld(img);
           return bounds && rectContainsRect(frameBounds, bounds);
         })
@@ -3900,7 +3930,7 @@
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
       applyMembership("image", img, {
         frameId: frameImg.id,
-        frameTab: img.tagType ? contentTab : "background",
+        frameTab: isFrameContainer(img) ? contentTab : "background",
       });
     });
     draftStrokes.forEach((s, index) => {
@@ -3912,7 +3942,7 @@
   }
 
   function bringFrameGroupToFront(frameImg) {
-    if (!frameImg?.tagType) return;
+    if (!isFrameContainer(frameImg)) return;
     const frameIndex = images.findIndex((img) => img?.id === frameImg.id);
     if (frameIndex < 0) return;
     const contents = getFrameContentItems(frameImg);
@@ -4307,7 +4337,7 @@
         applyPatch("text", texts[item.index], getFrameBackgroundMovePatch(item));
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (!img?.tagType) applyPatch("image", img, getFrameBackgroundMovePatch(item));
+        if (!isFrameContainer(img)) applyPatch("image", img, getFrameBackgroundMovePatch(item));
       } else if (item.type === "draft") {
         applyPatch("draft", draftStrokes[item.index], getFrameBackgroundMovePatch(item));
       } else if (item.type === "draft-group") {
@@ -4663,7 +4693,7 @@
         activeFrameTab: imgData.activeFrameTab || null,
         img,
       });
-      if (imgData.tagType) ensureFrameTabs(images[images.length - 1]);
+      if (isFrameContainer(images[images.length - 1])) ensureFrameTabs(images[images.length - 1]);
       bumpImageListOrderCounter(imageListOrder);
       bumpOrderCounter(imgData.order);
       registerUser(imgData.user);
@@ -5031,7 +5061,7 @@
     const worldPoint = screenToWorld(screenX, screenY);
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
-      if (!imgObj?.tagType || !canInteractImage(imgObj)) continue;
+      if (!isFrameContainer(imgObj) || !canInteractImage(imgObj)) continue;
       if (pointInScreenRect({ x: screenX, y: screenY }, getFrameHeaderHitBoundsScreen(imgObj))) {
         return i;
       }
@@ -5044,7 +5074,7 @@
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      const bounds = imgObj.tagType
+      const bounds = isFrameContainer(imgObj)
         ? getFrameHeaderBoundsWorld(imgObj)
         : { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
       if (!bounds) continue;
@@ -5066,11 +5096,12 @@
       .filter(({ img }) => img && isImageVisible(img))
       .sort((a, b) => getObjectOrderValue("image", a.img, a.index) - getObjectOrderValue("image", b.img, b.index))
       .forEach(({ img }) => {
-        const bounds = img.tagType
+        if (isOmoteUraTagImage(img)) return;
+        const bounds = isFrameContainer(img)
           ? getImageBoundsWorld(img)
           : { x: img.x, y: img.y, width: img.width, height: img.height };
         if (!bounds || !pointInRotatedRectWorld(worldPoint, bounds, img.rotation || 0)) return;
-        addTag(img.tagType ? getFrameDisplayName(img) : img.imageName);
+        addTag(isFrameContainer(img) ? getFrameDisplayName(img) : img.imageName);
       });
     return tags;
   }
@@ -5247,7 +5278,7 @@
         .filter((item) => {
           if (item.type !== "image") return false;
           const img = images[item.index];
-          if (!img?.tagType) return false;
+          if (!isFrameContainer(img)) return false;
           const bounds = getImageBoundsWorld(img);
           return bounds && rectContainsRect(rectWorld, bounds);
         })
@@ -5256,7 +5287,7 @@
     );
     const filteredItems = selectedFrameIds.size
       ? items.filter((item) => {
-          if (item.type === "image" && images[item.index]?.tagType) return true;
+          if (item.type === "image" && isFrameContainer(images[item.index])) return true;
           if (item.type === "stroke-group") {
             return !item.indices.some((idx) => {
               const owner = findOwningFrameForItem({ type: "stroke", index: idx });
@@ -5444,7 +5475,7 @@
         order: img.order ?? orderCounter + idx,
         index: idx,
         layer: img.layer || "base",
-        isFrame: !!img.tagType,
+        isFrame: isFrameContainer(img),
       });
     });
     texts.forEach((t, idx) => {
@@ -5468,7 +5499,7 @@
     combined.forEach((item) => {
       if (item.type === "image") {
         const img = images[item.index];
-        if (img?.tagType) {
+        if (isFrameContainer(img)) {
           const owner = findOwningFrameForItem({ type: "image", index: item.index });
           if (owner) {
             item.frameGroupId = owner.frame.id;
@@ -5765,7 +5796,7 @@
     }
 
     images.forEach((img, idx) => {
-      if (!img?.tagType || !isImageVisible(img)) return;
+      if (!isFrameContainer(img) || !isImageVisible(img)) return;
       if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
       drawFrameHeaderOverlay(ctx, img);
     });
@@ -7392,8 +7423,8 @@
       selected = { type: "image", index: imgIndex };
       multiSelection = null;
       const imgObj = images[imgIndex];
-      if (imgObj?.tagType) bringFrameGroupToFront(imgObj);
-      frameDragOffsets = imgObj?.tagType ? captureFrameDragItems(imgObj) : null;
+      if (isFrameContainer(imgObj)) bringFrameGroupToFront(imgObj);
+      frameDragOffsets = isFrameContainer(imgObj) ? captureFrameDragItems(imgObj) : null;
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
         x: worldPos.x - imgObj.x,
@@ -7623,7 +7654,7 @@
         const imgObj = images[selected.index];
         imgObj.x = worldPos.x - dragOffsetWorld.x;
         imgObj.y = worldPos.y - dragOffsetWorld.y;
-        if (imgObj?.tagType && frameDragOffsets) {
+        if (isFrameContainer(imgObj) && frameDragOffsets) {
           applyFrameDragOffsets(
             frameDragOffsets,
             imgObj.x - frameDragOffsets.frameX,
@@ -7689,7 +7720,7 @@
         const anchorX = resizeInfo.anchorX ?? imgObj.x;
         const anchorY = resizeInfo.anchorY ?? imgObj.y;
         const handle = resizeInfo.handle || "br";
-        if (imgObj?.tagType) {
+        if (isFrameContainer(imgObj)) {
           const minW = 16;
           const minH = 16;
           const newW = Math.max(Math.abs(worldPos.x - anchorX), minW);
@@ -7812,7 +7843,7 @@
 
     const resizedFrameImage =
       isResizingObject && selected?.type === "image" ? images[selected.index] : null;
-    const frameResizeHandled = !!resizedFrameImage?.tagType;
+    const frameResizeHandled = isFrameContainer(resizedFrameImage);
     if (frameResizeHandled) {
       clampFrameScroll(resizedFrameImage);
       refreshFrameImageForCurrentSize(resizedFrameImage, { emit: socketConnected });
@@ -8189,6 +8220,7 @@
       const dataUrl = createFrameTag(placedFrameType, width * scale, height * scale, label);
       const img = new Image();
       img.onload = () => {
+        const isOmoteUraImage = placedFrameType === "omoteura";
         const imgObj = {
           id: genId(),
           img,
@@ -8201,12 +8233,12 @@
           order: orderCounter++,
           user: currentUser,
           rotation: 0,
-          tagType: placedFrameType,
+          tagType: isOmoteUraImage ? null : placedFrameType,
           tagLabel: label,
-          imageName: label,
+          imageName: isOmoteUraImage ? "" : label,
           imageListOrder: bumpImageListOrderCounter(),
-          frameTabs: [{ id: "tab-1", name: "1" }],
-          activeFrameTab: "tab-1",
+          frameTabs: isOmoteUraImage ? null : [{ id: "tab-1", name: "1" }],
+          activeFrameTab: isOmoteUraImage ? null : "tab-1",
         };
         const parentMembership = getFrameMembershipForBounds(getImageBoundsWorld(imgObj), imgObj.id);
         if (parentMembership) {
@@ -8769,7 +8801,7 @@
 
   function selectionHasRotatable() {
     return getSelectionItems().some((it) => {
-      if (it.type === "image") return !images[it.index]?.tagType;
+      if (it.type === "image") return !isFrameContainer(images[it.index]);
       return it.type === "stroke" || it.type === "stroke-group" || it.type === "draft" || it.type === "draft-group" || it.type === "text";
     });
   }
@@ -8780,7 +8812,7 @@
 
   function selectionHasFrameBackgroundMoveTarget() {
     return getSelectionItems().some((it) => {
-      if (it.type === "image" && images[it.index]?.tagType) return false;
+      if (it.type === "image" && isFrameContainer(images[it.index])) return false;
       if (it.type === "stroke-group") {
         return it.indices.some((idx) => !!getFrameBackgroundMovePatch({ type: "stroke", index: idx }));
       }
@@ -8792,11 +8824,11 @@
   }
 
   function getSelectedFrameItems() {
-    return getSelectionItems().filter((it) => it.type === "image" && images[it.index]?.tagType);
+    return getSelectionItems().filter((it) => it.type === "image" && isFrameContainer(images[it.index]));
   }
 
   function getFrameContentItemsDeep(frameImg, seenFrameIds = new Set()) {
-    if (!frameImg?.tagType || seenFrameIds.has(frameImg.id)) return [];
+    if (!isFrameContainer(frameImg) || seenFrameIds.has(frameImg.id)) return [];
     seenFrameIds.add(frameImg.id);
     const contents = getFrameContentItems(frameImg);
     const result = [];
@@ -8804,7 +8836,7 @@
       result.push(item);
       if (item.type === "image") {
         const img = images[item.index];
-        if (img?.tagType) result.push(...getFrameContentItemsDeep(img, seenFrameIds));
+        if (isFrameContainer(img)) result.push(...getFrameContentItemsDeep(img, seenFrameIds));
       }
     });
     return result;
@@ -9132,7 +9164,7 @@
     const hasFrameBackgroundMoveTarget = selectionHasFrameBackgroundMoveTarget();
     const hasFrameContentsTarget = selectionHasFrameContentsTarget();
     const frameOnlySelection =
-      hasAny && selectionItems.every((item) => item.type === "image" && images[item.index]?.tagType);
+      hasAny && selectionItems.every((item) => item.type === "image" && isFrameContainer(images[item.index]));
 
     contextMenu.querySelectorAll("button").forEach((btn) => {
       btn.classList.remove("disabled");
