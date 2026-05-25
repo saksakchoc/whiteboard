@@ -3908,9 +3908,14 @@
 
   function getFrameRenderClipChainForItem(item) {
     if (!item?.frameGroupId || item.frameGroupRank === 0) return [];
+    return getFrameRenderClipChainFromFrameId(item.frameGroupId);
+  }
+
+  function getFrameRenderClipChainFromFrameId(frameId) {
+    if (!frameId) return [];
     const clips = [];
     const seen = new Set();
-    let frame = item?.frameGroupId ? getFrameById(item.frameGroupId) : null;
+    let frame = getFrameById(frameId);
     while (frame && !seen.has(frame.id)) {
       seen.add(frame.id);
       const metrics = getFrameScrollMetrics(frame);
@@ -5817,6 +5822,20 @@
         layer: img.layer || "base",
         isFrame: isFrameContainer(img),
       });
+      if (isFrameContainer(img)) {
+        combined.push({
+          type: "frame-header",
+          order: img.order ?? orderCounter + idx,
+          index: idx,
+          layer: img.layer || "base",
+        });
+        combined.push({
+          type: "frame-scrollbars",
+          order: img.order ?? orderCounter + idx,
+          index: idx,
+          layer: img.layer || "base",
+        });
+      }
     });
     texts.forEach((t, idx) => {
       if (!isFrameMemberVisible(t, { type: "text", index: idx })) return;
@@ -5857,6 +5876,15 @@
             item.frameGroupOrder = owner.order;
             item.frameGroupRank = getFrameMemberDrawRank(images[item.index]);
           }
+        }
+      } else if (item.type === "frame-header" || item.type === "frame-scrollbars") {
+        const img = images[item.index];
+        if (isFrameContainer(img)) {
+          item.frameGroupId = img.id;
+          item.frameGroupOrder = getFrameOrder(img);
+          item.frameGroupRank = item.type === "frame-header" ? 4 : 5;
+          const owner = findOwningFrameForItem({ type: "image", index: item.index });
+          item.frameUiClipFrameId = owner?.frame?.id || null;
         }
       } else if (item.type === "stroke") {
         const owner = findOwningFrameForItem({ type: "stroke", index: item.index });
@@ -5910,7 +5938,10 @@
 
     ctx.textBaseline = "top";
     for (const item of combined) {
-      const frameClipChain = getFrameRenderClipChainForItem(item);
+      const frameClipChain =
+        item.type === "frame-header" || item.type === "frame-scrollbars"
+          ? getFrameRenderClipChainFromFrameId(item.frameUiClipFrameId)
+          : getFrameRenderClipChainForItem(item);
       if (frameClipChain.length) {
         ctx.save();
         frameClipChain.forEach((frameClip) => {
@@ -6129,18 +6160,21 @@
         if (selected && selected.type === "link" && selected.index === item.index) {
           drawSelectionBoundsWorld(getLinkBoundsWorld(link), 0);
         }
+      } else if (item.type === "frame-header") {
+        const img = images[item.index];
+        if (!isFrameContainer(img) || !isImageVisible(img)) continue;
+        if (!isFrameMemberVisible(img, { type: "image", index: item.index })) continue;
+        drawFrameHeaderOverlay(ctx, img);
+      } else if (item.type === "frame-scrollbars") {
+        const img = images[item.index];
+        if (!isFrameContainer(img) || !isImageVisible(img)) continue;
+        if (!isFrameMemberVisible(img, { type: "image", index: item.index })) continue;
+        drawFrameScrollbars(img);
       }
       } finally {
         if (frameClipChain.length) ctx.restore();
       }
     }
-
-    images.forEach((img, idx) => {
-      if (!isFrameContainer(img) || !isImageVisible(img)) return;
-      if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
-      drawFrameHeaderOverlay(ctx, img);
-    });
-    images.forEach((img) => drawFrameScrollbars(img));
 
     // 4. 図形プレビュー
     if (isDrawingShape && shapeMode && shapeStart && shapePreview) {
