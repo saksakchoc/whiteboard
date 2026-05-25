@@ -89,6 +89,7 @@
   let selectionDragStart = null;
   let selectionDragCurrent = null;
   const pendingImageLoadTokens = new Map();
+  const imageElementCache = new Map();
   let imageLoadTokenCounter = 0;
   let multiSelection = null;
   let multiDragActive = false;
@@ -1905,7 +1906,6 @@
       currentTool = "select";
       updateToolButtons();
       redraw();
-      showTransientFooterMessage("画像を背景タブにして、タブ1を追加しました。", 3500);
     };
 
     frameImgEl.src = dataUrl;
@@ -1913,28 +1913,47 @@
   }
 
   function addTabToSelectedImageOrFrame() {
-    const index = getSingleSelectedImageIndex();
-    if (index < 0) return false;
-    const imgObj = images[index];
-    if (!imgObj) return false;
-    if (isFrameContainer(imgObj)) {
-      ensureSnapshotForAction();
-      addFrameTab(imgObj);
-      showTransientFooterMessage("タブを追加しました。", 2500);
-      return true;
-    }
-    if (imgObj.frameId) {
-      const frame = getFrameById(imgObj.frameId);
-      if (frame) {
+    const imageIndices = getSelectedImageIndices();
+    if (!imageIndices.length) return false;
+
+    let changed = false;
+    const tabbedFrameIds = new Set();
+
+    imageIndices.forEach((index) => {
+      const imgObj = images[index];
+      if (!imgObj) return;
+
+      if (isFrameContainer(imgObj)) {
+        if (tabbedFrameIds.has(imgObj.id)) return;
         ensureSnapshotForAction();
-        addFrameTab(frame);
-        const frameIndex = images.findIndex((item) => item?.id === frame.id);
-        if (frameIndex >= 0) selected = { type: "image", index: frameIndex };
-        showTransientFooterMessage("タブを追加しました。", 2500);
-        return true;
+        addFrameTab(imgObj);
+        tabbedFrameIds.add(imgObj.id);
+        changed = true;
+        return;
       }
+
+      if (imgObj.frameId) {
+        const frame = getFrameById(imgObj.frameId);
+        if (frame) {
+          if (tabbedFrameIds.has(frame.id)) return;
+          ensureSnapshotForAction();
+          addFrameTab(frame);
+          tabbedFrameIds.add(frame.id);
+          const frameIndex = images.findIndex((item) => item?.id === frame.id);
+          if (frameIndex >= 0) selected = { type: "image", index: frameIndex };
+          changed = true;
+          return;
+        }
+      }
+
+      changed = createTabbedFrameFromImageIndex(index) || changed;
+    });
+
+    if (changed) {
+      const count = imageIndices.length;
+      showTransientFooterMessage(count > 1 ? "選択した画像にタブを追加しました。" : "タブを追加しました。", 2500);
     }
-    return createTabbedFrameFromImageIndex(index);
+    return changed;
   }
 
   function editFrameTabName(frameImg, tabId) {
@@ -1960,6 +1979,7 @@
     if (next === null) return true;
     const label = next.trim() || current;
     imgObj.tagLabel = label;
+    updateTextTagsForRenamedImage(imgObj, current, label);
     refreshFrameImageForCurrentSize(imgObj, { emit: true });
     return true;
   }
@@ -2035,11 +2055,65 @@
       .normalize("NFKC");
   }
 
+  function getTextTagLabel(tag) {
+    if (tag && typeof tag === "object") return String(tag.label || tag.name || "").trim();
+    return String(tag || "").trim();
+  }
+
+  function normalizeTextTagEntry(tag) {
+    const label = getTextTagLabel(tag);
+    if (!label) return null;
+    if (tag && typeof tag === "object") {
+      return {
+        label,
+        sourceId: tag.sourceId || tag.id || null,
+        sourceType: tag.sourceType || tag.type || null,
+      };
+    }
+    return { label };
+  }
+
+  function getTextTagEntryKey(tag) {
+    if (tag?.sourceId) return `${tag.sourceType || "source"}:${tag.sourceId}`;
+    return `label:${getTextTagKey(tag?.label)}`;
+  }
+
+  function uniqueTextTagEntries(tags) {
+    const seen = new Set();
+    const unique = [];
+    tags.forEach((value) => {
+      const tag = normalizeTextTagEntry(value);
+      if (!tag) return;
+      const key = getTextTagEntryKey(tag);
+      if (seen.has(key)) return;
+      seen.add(key);
+      unique.push(tag);
+    });
+    return unique;
+  }
+
+  function parseTextTagEntries(label) {
+    if (Array.isArray(label)) {
+      return uniqueTextTagEntries(label);
+    }
+    const value = String(label || "").trim();
+    if (!value) return [];
+    if (value.startsWith("[") && value.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parseTextTagEntries(parsed);
+      } catch {
+        // 古い単一ラベルとして扱う
+      }
+    }
+    return uniqueTextTagEntries(value.split(/[,\n、]/));
+  }
+
   function uniqueTextTags(tags) {
     const seen = new Set();
     const unique = [];
     tags.forEach((value) => {
-      const tag = String(value || "").trim();
+      const tag = getTextTagLabel(value);
       const key = getTextTagKey(tag);
       if (!tag || seen.has(key)) return;
       seen.add(key);
@@ -2049,30 +2123,29 @@
   }
 
   function normalizeTextTags(label) {
-    if (Array.isArray(label)) {
-      return uniqueTextTags(label);
-    }
-    const value = String(label || "").trim();
-    if (!value) return [];
-    if (value.startsWith("[") && value.endsWith("]")) {
-      try {
-        const parsed = JSON.parse(value);
-        if (Array.isArray(parsed)) return normalizeTextTags(parsed);
-      } catch {
-        // 古い単一ラベルとして扱う
-      }
-    }
-    return uniqueTextTags(value.split(/[,\n、]/));
+    return uniqueTextTags(parseTextTagEntries(label).map((tag) => tag.label));
   }
 
   function getVisibleTextTags(label) {
-    return normalizeTextTags(label).filter((tag) => tag !== "表裏");
+    return uniqueTextTags(
+      parseTextTagEntries(label)
+        .map((tag) => tag.label)
+        .filter((tag) => {
+          const key = getTextTagKey(tag).toLowerCase();
+          return key !== "表裏" && key !== "image";
+        })
+    );
   }
 
   function serializeTextTags(tags) {
-    const normalized = normalizeTextTags(tags);
+    const normalized = parseTextTagEntries(tags);
     if (!normalized.length) return "";
-    return normalized.length === 1 ? normalized[0] : JSON.stringify(normalized);
+    const canUseLegacyFormat = normalized.every((tag) => !tag.sourceId && !tag.sourceType);
+    if (canUseLegacyFormat) {
+      const labels = uniqueTextTags(normalized.map((tag) => tag.label));
+      return labels.length === 1 ? labels[0] : JSON.stringify(labels);
+    }
+    return JSON.stringify(normalized);
   }
 
   function formatTextTagsForPrompt(tags) {
@@ -2080,7 +2153,7 @@
   }
 
   function parseTextTagsInput(value) {
-    return normalizeTextTags(
+    return parseTextTagEntries(
       String(value || "")
         .split(/[,\n、]/)
         .map((tag) => tag.trim())
@@ -2515,7 +2588,7 @@
         if (imageName !== oldName) {
           img.imageName = imageName;
           emitItemPatch("image", img, { imageName });
-          updateTextTagsForRenamedImage(oldName, imageName);
+          updateTextTagsForRenamedImage(img, oldName, imageName);
         }
       }
       refreshImageList();
@@ -4829,12 +4902,28 @@
     return arr.findIndex((x) => x.id === id);
   }
 
+  function removeAllById(arr, id) {
+    let removed = false;
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+      if (arr[i]?.id === id) {
+        arr.splice(i, 1);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
   function invalidatePendingImageLoad(id) {
     if (id) pendingImageLoadTokens.delete(id);
   }
 
   function applyInitialState(state) {
     pendingImageLoadTokens.clear();
+    images.forEach((imgObj) => {
+      if (imgObj?.id && imgObj?.src && imgObj?.img) {
+        imageElementCache.set(imgObj.id, { src: imgObj.src, img: imgObj.img });
+      }
+    });
     if (state?.title) {
       boardTitle = state.title;
     }
@@ -4856,7 +4945,7 @@
       state.texts.forEach((t) => addTextFromNetwork(t, false));
     }
     if (state?.images) {
-      state.images.forEach((img) => addImageFromNetwork(img, true));
+      state.images.forEach((img) => addImageFromNetwork(img, false, { redrawOnLoad: true }));
     }
     if (state?.links) {
       state.links.forEach((link) => addLinkFromNetwork(link, false));
@@ -4898,15 +4987,17 @@
     if (shouldRedraw) redraw();
   }
 
-  function addImageFromNetwork(imgData, shouldRedraw = true) {
+  function addImageFromNetwork(imgData, shouldRedraw = true, options = {}) {
     if (findIndexById(images, imgData.id) >= 0) return;
     const loadToken = ++imageLoadTokenCounter;
     pendingImageLoadTokens.set(imgData.id, loadToken);
-    const img = new Image();
+    const cached = imageElementCache.get(imgData.id);
+    const img = cached?.src === imgData.src && cached.img ? cached.img : new Image();
     const finish = () => {
       if (pendingImageLoadTokens.get(imgData.id) !== loadToken) return;
       pendingImageLoadTokens.delete(imgData.id);
       if (findIndexById(images, imgData.id) >= 0) return;
+      imageElementCache.set(imgData.id, { src: imgData.src, img });
       const imageListOrder =
         typeof imgData.imageListOrder === "number" ? imgData.imageListOrder : bumpImageListOrderCounter();
       images.push({
@@ -4925,7 +5016,7 @@
       bumpOrderCounter(imgData.order);
       registerUser(imgData.user);
       refreshImageList();
-      if (shouldRedraw) redraw();
+      if (shouldRedraw || options.redrawOnLoad) redraw();
     };
     img.onload = finish;
     img.onerror = () => {
@@ -4934,7 +5025,11 @@
       console.error("failed to load image", imgData?.id);
       if (shouldRedraw) redraw();
     };
-    img.src = imgData.src;
+    if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      finish();
+    } else {
+      img.src = imgData.src;
+    }
   }
 
   function addLinkFromNetwork(linkData, shouldRedraw = true) {
@@ -5030,19 +5125,15 @@
 
   socket.on("item:remove", ({ type, id }) => {
     if (type === "stroke") {
-      const idx = findIndexById(strokes, id);
-      if (idx >= 0) strokes.splice(idx, 1);
+      removeAllById(strokes, id);
     } else if (type === "text") {
-      const idx = findIndexById(texts, id);
-      if (idx >= 0) texts.splice(idx, 1);
+      removeAllById(texts, id);
     } else if (type === "image") {
-      const idx = findIndexById(images, id);
-      if (idx >= 0) images.splice(idx, 1);
+      removeAllById(images, id);
       invalidatePendingImageLoad(id);
       refreshImageList();
     } else if (type === "link") {
-      const idx = findIndexById(links, id);
-      if (idx >= 0) links.splice(idx, 1);
+      removeAllById(links, id);
       refreshLinkList();
     }
     refreshTextList();
@@ -5317,9 +5408,15 @@
 
   function collectTextTagsAtWorldPoint(worldPoint) {
     const tags = [];
-    const addTag = (value) => {
-      const tag = String(value || "").trim();
-      if (tag && !tags.includes(tag)) tags.push(tag);
+    const addTag = (img) => {
+      const label = isFrameContainer(img) ? getFrameDisplayName(img) : img.imageName;
+      const tag = String(label || "").trim();
+      if (!tag) return;
+      tags.push({
+        label: tag,
+        sourceId: img.id,
+        sourceType: isFrameContainer(img) ? "frame" : "image",
+      });
     };
     images
       .map((img, index) => ({ img, index }))
@@ -5331,23 +5428,36 @@
           ? getImageBoundsWorld(img)
           : { x: img.x, y: img.y, width: img.width, height: img.height };
         if (!bounds || !pointInRotatedRectWorld(worldPoint, bounds, img.rotation || 0)) return;
-        addTag(isFrameContainer(img) ? getFrameDisplayName(img) : img.imageName);
+        addTag(img);
       });
     return tags;
   }
 
-  function updateTextTagsForRenamedImage(oldName, newName) {
+  function updateTextTagsForRenamedImage(imgObj, oldName, newName) {
     const from = String(oldName || "").trim();
     const to = String(newName || "").trim();
     if (!from || from === to) return;
+    const sourceId = imgObj?.id || null;
+    const sourceType = imgObj ? (isFrameContainer(imgObj) ? "frame" : "image") : null;
     let changed = false;
     texts.forEach((text) => {
-      const tags = normalizeTextTags(text.label);
-      if (!tags.includes(from)) return;
+      const tags = parseTextTagEntries(text.label);
+      let updated = false;
       const nextTags = tags
-        .map((tag) => (tag === from ? to : tag))
-        .filter(Boolean)
-        .filter((tag, index, arr) => arr.indexOf(tag) === index);
+        .map((tag) => {
+          const sourceMatches = sourceId && tag.sourceId === sourceId;
+          const legacyMatches = !tag.sourceId && tag.label === from;
+          if (!sourceMatches && !legacyMatches) return tag;
+          updated = true;
+          return {
+            ...tag,
+            label: to,
+            sourceId: tag.sourceId || sourceId,
+            sourceType: tag.sourceType || sourceType,
+          };
+        })
+        .filter((tag) => tag.label);
+      if (!updated) return;
       const label = serializeTextTags(nextTags);
       if (label === text.label) return;
       text.label = label;
@@ -8999,16 +9109,21 @@
     return getSelectionItems().some((it) => it.type === "image");
   }
 
-  function getSingleSelectedImageIndex() {
-    const imageItems = getSelectionItems().filter((it) => it.type === "image");
-    if (imageItems.length !== 1) return -1;
-    return imageItems[0].index;
+  function getSelectedImageIndices() {
+    const seen = new Set();
+    return getSelectionItems()
+      .filter((it) => it.type === "image" && images[it.index])
+      .map((it) => it.index)
+      .filter((index) => {
+        const id = images[index]?.id || index;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
   }
 
   function selectionHasImageTabTarget() {
-    const index = getSingleSelectedImageIndex();
-    if (index < 0) return false;
-    return !!images[index];
+    return getSelectedImageIndices().length > 0;
   }
 
   function getSelectedImages() {
@@ -9032,7 +9147,7 @@
       const oldName = imgObj.imageName || "";
       imgObj.imageName = imageName;
       emitItemPatch("image", imgObj, { imageName });
-      updateTextTagsForRenamedImage(oldName, imageName);
+      updateTextTagsForRenamedImage(imgObj, oldName, imageName);
     });
     refreshImageList();
   }

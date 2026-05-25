@@ -350,6 +350,35 @@ app.get("/api/link-image", async (req, res) => {
 // { strokes:[], texts:[], images:[] }
 const boardStates = new Map();
 
+function upsertById(list, item) {
+  if (!item?.id) return;
+  const idx = list.findIndex((x) => x.id === item.id);
+  if (idx >= 0) {
+    list[idx] = item;
+  } else {
+    list.push(item);
+  }
+}
+
+function removeAllById(list, id) {
+  let removed = false;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.id === id) {
+      list.splice(i, 1);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
+function dedupeById(list) {
+  const byId = new Map();
+  list.forEach((item) => {
+    if (item?.id) byId.set(item.id, item);
+  });
+  return Array.from(byId.values());
+}
+
 function ensureBoardState(boardId) {
   if (!boardStates.has(boardId)) {
     const dbState = getBoardState(boardId);
@@ -377,6 +406,10 @@ io.on("connection", (socket) => {
     currentBoardId = boardId;
     socket.join(boardId);
     const state = ensureBoardState(boardId);
+    state.strokes = dedupeById(state.strokes);
+    state.texts = dedupeById(state.texts);
+    state.images = dedupeById(state.images);
+    state.links = dedupeById(state.links);
     socket.emit("init", state);
   });
 
@@ -391,7 +424,7 @@ io.on("connection", (socket) => {
   socket.on("stroke:add", ({ boardId, stroke }) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
-    state.strokes.push(stroke);
+    upsertById(state.strokes, stroke);
     saveStroke({ ...stroke, board_id: boardId });
     socket.to(boardId).emit("stroke:add", stroke);
   });
@@ -400,7 +433,7 @@ io.on("connection", (socket) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
     const t = text.createdAt ? text : { ...text, createdAt: Date.now() };
-    state.texts.push(t);
+    upsertById(state.texts, t);
     saveText({ ...t, board_id: boardId });
     socket.to(boardId).emit("text:add", t);
   });
@@ -408,7 +441,7 @@ io.on("connection", (socket) => {
   socket.on("image:add", ({ boardId, image }) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
-    state.images.push(image);
+    upsertById(state.images, image);
     saveImage({ ...image, board_id: boardId });
     socket.to(boardId).emit("image:add", image);
   });
@@ -417,7 +450,7 @@ io.on("connection", (socket) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
     const l = link.createdAt ? link : { ...link, createdAt: Date.now() };
-    state.links.push(l);
+    upsertById(state.links, l);
     saveLink({ ...l, board_id: boardId });
     socket.to(boardId).emit("link:add", l);
   });
@@ -460,9 +493,7 @@ io.on("connection", (socket) => {
         : type === "image"
         ? state.images
         : state.links;
-    const idx = list.findIndex((x) => x.id === id);
-    if (idx >= 0) {
-      list.splice(idx, 1);
+    if (removeAllById(list, id)) {
       if (type === "stroke") deleteStroke(boardId, id);
       else if (type === "text") deleteText(boardId, id);
       else if (type === "image") deleteImage(boardId, id);
