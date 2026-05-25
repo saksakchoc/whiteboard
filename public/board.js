@@ -34,9 +34,6 @@
   const otherMenu = document.getElementById("other-menu");
   const changeUserBtn = document.getElementById("change-user-btn");
   const layerDisplay = document.getElementById("layer-display");
-  const shapeLineBtn = document.getElementById("shape-line-btn");
-  const shapeRectBtn = document.getElementById("shape-rect-btn");
-  const shapeGridBtn = document.getElementById("shape-grid-btn");
   const textToolBtn = document.getElementById("text-tool-btn");
   const textToolMenu = document.getElementById("text-tool-menu");
   const undoBtn = document.getElementById("undo-btn");
@@ -91,6 +88,8 @@
   let isSelectingArea = false;
   let selectionDragStart = null;
   let selectionDragCurrent = null;
+  const pendingImageLoadTokens = new Map();
+  let imageLoadTokenCounter = 0;
   let multiSelection = null;
   let multiDragActive = false;
   let multiDragStartWorld = null;
@@ -375,6 +374,7 @@
 
   function restoreSnapshot(snap) {
     if (!snap) return;
+    pendingImageLoadTokens.clear();
     const rebuildImages = (arr = []) =>
       arr.map((img) => {
         const el = new Image();
@@ -509,6 +509,70 @@
       remove: (id) => socket.emit("draft:stroke:remove", { boardId, id }),
       update: (stroke) => socket.emit("draft:stroke:add", { boardId, stroke }),
     });
+  }
+
+  function canUndoItem(item) {
+    if (!item) return false;
+    return item.user ? item.user === currentUser : !currentUser;
+  }
+
+  function mergeUndoCollection(currentItems = [], snapshotItems = []) {
+    const currentById = new Map(currentItems.filter((item) => item?.id).map((item) => [item.id, item]));
+    const snapshotById = new Map(snapshotItems.filter((item) => item?.id).map((item) => [item.id, item]));
+    const merged = [];
+
+    snapshotItems.forEach((snapshotItem) => {
+      if (!snapshotItem?.id) {
+        merged.push(snapshotItem);
+        return;
+      }
+
+      const currentItem = currentById.get(snapshotItem.id);
+      if (currentItem && !canUndoItem(currentItem) && !canUndoItem(snapshotItem)) {
+        merged.push(currentItem);
+        return;
+      }
+
+      if (!currentItem && !canUndoItem(snapshotItem)) return;
+      merged.push(snapshotItem);
+    });
+
+    currentItems.forEach((currentItem) => {
+      if (!currentItem?.id || snapshotById.has(currentItem.id)) return;
+      if (!canUndoItem(currentItem)) merged.push(currentItem);
+    });
+
+    return merged;
+  }
+
+  function maxOrderInCollections(collections) {
+    return collections.reduce((max, items) => {
+      (items || []).forEach((item) => {
+        if (typeof item?.order === "number") max = Math.max(max, item.order);
+      });
+      return max;
+    }, 0);
+  }
+
+  function buildUndoSnapshot(current, snapshot) {
+    const merged = {
+      ...snapshot,
+      strokes: mergeUndoCollection(current.strokes, snapshot.strokes),
+      texts: mergeUndoCollection(current.texts, snapshot.texts),
+      images: mergeUndoCollection(current.images, snapshot.images),
+      links: mergeUndoCollection(current.links, snapshot.links),
+      draftStrokes: mergeUndoCollection(current.draftStrokes, snapshot.draftStrokes),
+    };
+
+    merged.orderCounter = Math.max(
+      snapshot.orderCounter || 0,
+      maxOrderInCollections([merged.strokes, merged.texts, merged.images, merged.links])
+    );
+    merged.draftOrderCounter = Math.max(
+      snapshot.draftOrderCounter || 0,
+      maxOrderInCollections([merged.draftStrokes])
+    );
+    return merged;
   }
 
   function buildTextShadow(baseColor, fontSizePx) {
@@ -1784,6 +1848,95 @@
     redraw();
   }
 
+  function estimateFrameHeaderHeightForImage(imgObj) {
+    let headerH = getFrameHeaderHeightWorld(imgObj);
+    for (let i = 0; i < 3; i += 1) {
+      headerH = getFrameHeaderHeightWorld({ height: Math.max(1, Math.abs(imgObj.height || 0)) + headerH });
+    }
+    return headerH;
+  }
+
+  function createTabbedFrameFromImageIndex(imageIndex) {
+    const sourceImg = images[imageIndex];
+    if (!sourceImg || isFrameContainer(sourceImg)) return false;
+    ensureSnapshotForAction();
+
+    const headerH = estimateFrameHeaderHeightForImage(sourceImg);
+    const frameWidth = Math.max(80, Math.abs(sourceImg.width || 0));
+    const frameHeight = Math.max(80, Math.abs(sourceImg.height || 0) + headerH);
+    const label = sourceImg.imageName || "フレーム";
+    const dataUrl = createFrameTag("free", frameWidth * scale, frameHeight * scale, label);
+    const frameImgEl = new Image();
+
+    frameImgEl.onload = () => {
+      const frameObj = {
+        id: genId(),
+        img: frameImgEl,
+        src: dataUrl,
+        x: sourceImg.x,
+        y: sourceImg.y - headerH,
+        width: frameWidth,
+        height: frameHeight,
+        layer: "image",
+        order: sourceImg.order ?? orderCounter++,
+        user: currentUser || sourceImg.user || "",
+        rotation: sourceImg.rotation || 0,
+        tagType: "free",
+        tagLabel: label,
+        imageName: label,
+        imageListOrder: bumpImageListOrderCounter(),
+        frameTabs: [{ id: "tab-1", name: "1" }],
+        activeFrameTab: "tab-1",
+      };
+
+      sourceImg.frameId = frameObj.id;
+      sourceImg.frameTab = "background";
+      sourceImg.rotation = sourceImg.rotation || 0;
+      images.push(frameObj);
+      registerUser(frameObj.user);
+      refreshImageList();
+      emitImageAdd(frameObj);
+      emitItemPatch("image", sourceImg, {
+        frameId: sourceImg.frameId,
+        frameTab: sourceImg.frameTab,
+        rotation: sourceImg.rotation,
+      });
+      selected = { type: "image", index: images.length - 1 };
+      currentTool = "select";
+      updateToolButtons();
+      redraw();
+      showTransientFooterMessage("画像を背景タブにして、タブ1を追加しました。", 3500);
+    };
+
+    frameImgEl.src = dataUrl;
+    return true;
+  }
+
+  function addTabToSelectedImageOrFrame() {
+    const index = getSingleSelectedImageIndex();
+    if (index < 0) return false;
+    const imgObj = images[index];
+    if (!imgObj) return false;
+    if (isFrameContainer(imgObj)) {
+      ensureSnapshotForAction();
+      addFrameTab(imgObj);
+      showTransientFooterMessage("タブを追加しました。", 2500);
+      return true;
+    }
+    if (imgObj.frameId) {
+      const frame = getFrameById(imgObj.frameId);
+      if (frame) {
+        ensureSnapshotForAction();
+        addFrameTab(frame);
+        const frameIndex = images.findIndex((item) => item?.id === frame.id);
+        if (frameIndex >= 0) selected = { type: "image", index: frameIndex };
+        showTransientFooterMessage("タブを追加しました。", 2500);
+        return true;
+      }
+    }
+    return createTabbedFrameFromImageIndex(index);
+  }
+
   function editFrameTabName(frameImg, tabId) {
     if (!isFrameContainer(frameImg) || !tabId || tabId === "background") return false;
     const tabs = ensureFrameTabs(frameImg);
@@ -1876,9 +2029,28 @@
     ).replace(/\n/g, "<br>");
   }
 
+  function getTextTagKey(tag) {
+    return String(tag || "")
+      .trim()
+      .normalize("NFKC");
+  }
+
+  function uniqueTextTags(tags) {
+    const seen = new Set();
+    const unique = [];
+    tags.forEach((value) => {
+      const tag = String(value || "").trim();
+      const key = getTextTagKey(tag);
+      if (!tag || seen.has(key)) return;
+      seen.add(key);
+      unique.push(tag);
+    });
+    return unique;
+  }
+
   function normalizeTextTags(label) {
     if (Array.isArray(label)) {
-      return [...new Set(label.map((tag) => String(tag || "").trim()).filter(Boolean))];
+      return uniqueTextTags(label);
     }
     const value = String(label || "").trim();
     if (!value) return [];
@@ -1890,7 +2062,7 @@
         // 古い単一ラベルとして扱う
       }
     }
-    return [value];
+    return uniqueTextTags(value.split(/[,\n、]/));
   }
 
   function getVisibleTextTags(label) {
@@ -2579,6 +2751,7 @@
   function deleteSelectedImage() {
     if (!selected || selected.type !== "image") return;
     const removed = images.splice(selected.index, 1)[0];
+    invalidatePendingImageLoad(removed?.id);
     if (removed && socketConnected) {
       socket.emit("item:remove", { boardId, type: "image", id: removed.id });
     }
@@ -2746,9 +2919,12 @@
       const idx = findIndexById(images, id);
       if (idx >= 0) {
         const removed = images.splice(idx, 1)[0];
+        invalidatePendingImageLoad(removed?.id);
         if (removed && socketConnected) {
           socket.emit("item:remove", { boardId, type: "image", id });
         }
+      } else {
+        invalidatePendingImageLoad(id);
       }
     });
 
@@ -4303,10 +4479,45 @@
     }
   }
 
+  function getFrameCandidateObject(item) {
+    if (!item) return null;
+    if (item.type === "stroke") return strokes[item.index] || null;
+    if (item.type === "draft") return draftStrokes[item.index] || null;
+    if (item.type === "text") return texts[item.index] || null;
+    if (item.type === "image") return images[item.index] || null;
+    return null;
+  }
+
+  function findFrameForBackgroundMove(item) {
+    const obj = getFrameCandidateObject(item);
+    if (!obj) return null;
+    if (obj.frameId) {
+      const frame = getFrameById(obj.frameId);
+      if (frame) return frame;
+    }
+
+    const bounds = getBoundsForFrameContentCandidate(item);
+    if (!bounds) return null;
+    const center = {
+      x: bounds.x + bounds.width / 2,
+      y: bounds.y + bounds.height / 2,
+    };
+    let owner = null;
+    getFrameImagesForGrouping().forEach(({ img }) => {
+      if (item.type === "image" && obj.id === img.id) return;
+      const frameBounds = getImageBoundsWorld(img);
+      if (!frameBounds) return;
+      if (!rectContainsRect(frameBounds, bounds) && !pointInRectWorld(frameBounds, center)) return;
+      const order = getFrameOrder(img);
+      if (!owner || order > owner.order) owner = { frame: img, order };
+    });
+    return owner?.frame || null;
+  }
+
   function getFrameBackgroundMovePatch(item) {
-    const owner = findOwningFrameForItem(item);
-    if (!owner?.frame?.id) return null;
-    return { frameId: owner.frame.id, frameTab: "background" };
+    const frame = findFrameForBackgroundMove(item);
+    if (!frame?.id) return null;
+    return { frameId: frame.id, frameTab: "background" };
   }
 
   function moveSelectionToFrameBackground() {
@@ -4315,6 +4526,8 @@
     let changed = false;
     const applyPatch = (type, obj, patch) => {
       if (!obj || !patch) return;
+      if ((obj.frameId || null) === patch.frameId && (obj.frameTab || null) === patch.frameTab) return;
+      if (!changed) ensureSnapshotForAction();
       obj.frameId = patch.frameId;
       obj.frameTab = patch.frameTab;
       changed = true;
@@ -4348,7 +4561,11 @@
       }
     });
 
-    if (changed) redraw();
+    if (changed) {
+      redraw();
+    } else {
+      showTransientFooterMessage("背景タブへ移動できるフレーム内の項目がありません。", 3500);
+    }
   }
 
   function openUserModal() {
@@ -4612,7 +4829,12 @@
     return arr.findIndex((x) => x.id === id);
   }
 
+  function invalidatePendingImageLoad(id) {
+    if (id) pendingImageLoadTokens.delete(id);
+  }
+
   function applyInitialState(state) {
+    pendingImageLoadTokens.clear();
     if (state?.title) {
       boardTitle = state.title;
     }
@@ -4678,8 +4900,13 @@
 
   function addImageFromNetwork(imgData, shouldRedraw = true) {
     if (findIndexById(images, imgData.id) >= 0) return;
+    const loadToken = ++imageLoadTokenCounter;
+    pendingImageLoadTokens.set(imgData.id, loadToken);
     const img = new Image();
     const finish = () => {
+      if (pendingImageLoadTokens.get(imgData.id) !== loadToken) return;
+      pendingImageLoadTokens.delete(imgData.id);
+      if (findIndexById(images, imgData.id) >= 0) return;
       const imageListOrder =
         typeof imgData.imageListOrder === "number" ? imgData.imageListOrder : bumpImageListOrderCounter();
       images.push({
@@ -4702,6 +4929,8 @@
     };
     img.onload = finish;
     img.onerror = () => {
+      if (pendingImageLoadTokens.get(imgData.id) !== loadToken) return;
+      pendingImageLoadTokens.delete(imgData.id);
       console.error("failed to load image", imgData?.id);
       if (shouldRedraw) redraw();
     };
@@ -4806,15 +5035,16 @@
     } else if (type === "text") {
       const idx = findIndexById(texts, id);
       if (idx >= 0) texts.splice(idx, 1);
-      } else if (type === "image") {
-        const idx = findIndexById(images, id);
-        if (idx >= 0) images.splice(idx, 1);
-        refreshImageList();
-      } else if (type === "link") {
-        const idx = findIndexById(links, id);
-        if (idx >= 0) links.splice(idx, 1);
-        refreshLinkList();
-      }
+    } else if (type === "image") {
+      const idx = findIndexById(images, id);
+      if (idx >= 0) images.splice(idx, 1);
+      invalidatePendingImageLoad(id);
+      refreshImageList();
+    } else if (type === "link") {
+      const idx = findIndexById(links, id);
+      if (idx >= 0) links.splice(idx, 1);
+      refreshLinkList();
+    }
     refreshTextList();
     redraw();
     updateFooterByState();
@@ -8769,6 +8999,18 @@
     return getSelectionItems().some((it) => it.type === "image");
   }
 
+  function getSingleSelectedImageIndex() {
+    const imageItems = getSelectionItems().filter((it) => it.type === "image");
+    if (imageItems.length !== 1) return -1;
+    return imageItems[0].index;
+  }
+
+  function selectionHasImageTabTarget() {
+    const index = getSingleSelectedImageIndex();
+    if (index < 0) return false;
+    return !!images[index];
+  }
+
   function getSelectedImages() {
     return getSelectionItems()
       .filter((it) => it.type === "image")
@@ -8862,9 +9104,6 @@
     const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
     const isSelect = currentTool === "select" && !shapeMode && !pendingTextMode;
-    const isShapeLine = shapeMode === "line";
-    const isShapeRect = shapeMode === "rect";
-    const isShapeGrid = shapeMode === "grid";
     if (penToolBtn) {
       penToolBtn.disabled = creationLocked || isPen;
       penToolBtn.classList.toggle("active", isPen);
@@ -8882,18 +9121,6 @@
     if (selectToolBtn) {
       selectToolBtn.disabled = isSelect;
       selectToolBtn.classList.toggle("active", isSelect);
-    }
-    if (shapeLineBtn) {
-      shapeLineBtn.disabled = creationLocked;
-      shapeLineBtn.classList.toggle("active", isShapeLine);
-    }
-    if (shapeRectBtn) {
-      shapeRectBtn.disabled = creationLocked;
-      shapeRectBtn.classList.toggle("active", isShapeRect);
-    }
-    if (shapeGridBtn) {
-      shapeGridBtn.disabled = creationLocked;
-      shapeGridBtn.classList.toggle("active", isShapeGrid);
     }
     if (textToolBtn) {
       textToolBtn.disabled = creationLocked;
@@ -8976,8 +9203,9 @@
     if (!historyStack.length) return;
     const before = cloneState();
     const snap = historyStack.pop();
-    restoreSnapshot(snap);
-    syncRestoredSnapshot(before, snap);
+    const restored = buildUndoSnapshot(before, snap);
+    restoreSnapshot(restored);
+    syncRestoredSnapshot(before, restored);
   }
 
   colorPicker.addEventListener("input", () => {
@@ -9163,17 +9391,23 @@
     const hasDraftCopyTarget = selectionHasDraftCopyTarget();
     const hasFrameBackgroundMoveTarget = selectionHasFrameBackgroundMoveTarget();
     const hasFrameContentsTarget = selectionHasFrameContentsTarget();
+    const hasImageTabTarget = selectionHasImageTabTarget();
     const frameOnlySelection =
       hasAny && selectionItems.every((item) => item.type === "image" && isFrameContainer(images[item.index]));
 
     contextMenu.querySelectorAll("button").forEach((btn) => {
       btn.classList.remove("disabled");
-      btn.classList.toggle("hidden", frameOnlySelection && btn.getAttribute("data-action") !== "select-frame-contents");
+      const action = btn.getAttribute("data-action");
+      btn.classList.toggle(
+        "hidden",
+        frameOnlySelection && action !== "select-frame-contents" && action !== "add-image-tab"
+      );
     });
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
     const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
     const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
     const moveFrameBackgroundBtn = contextMenu.querySelector('button[data-action="move-frame-background"]');
+    const addImageTabBtn = contextMenu.querySelector('button[data-action="add-image-tab"]');
     const selectFrameContentsBtn = contextMenu.querySelector('button[data-action="select-frame-contents"]');
     const renameImageBtn = contextMenu.querySelector('button[data-action="rename-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
@@ -9186,6 +9420,7 @@
     if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
     if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
     if (moveFrameBackgroundBtn && !hasFrameBackgroundMoveTarget) moveFrameBackgroundBtn.classList.add("disabled");
+    if (addImageTabBtn && !hasImageTabTarget) addImageTabBtn.classList.add("disabled");
     if (selectFrameContentsBtn && !hasFrameContentsTarget) selectFrameContentsBtn.classList.add("disabled");
     if (renameImageBtn && !hasImage) renameImageBtn.classList.add("disabled");
     if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
@@ -9218,6 +9453,8 @@
         moveSelectionToImage();
       } else if (action === "move-frame-background") {
         moveSelectionToFrameBackground();
+      } else if (action === "add-image-tab") {
+        addTabToSelectedImageOrFrame();
       } else if (action === "select-frame-contents") {
         selectSelectedFrameContents();
       } else if (action === "rename-image") {
@@ -9393,25 +9630,6 @@
         }
       });
     }
-  }
-
-  if (shapeLineBtn) {
-    shapeLineBtn.addEventListener("click", () => {
-      startShapeMode("line");
-      updateToolButtons();
-    });
-  }
-  if (shapeRectBtn) {
-    shapeRectBtn.addEventListener("click", () => {
-      startShapeMode("rect");
-      updateToolButtons();
-    });
-  }
-  if (shapeGridBtn) {
-    shapeGridBtn.addEventListener("click", () => {
-      startShapeMode("grid");
-      updateToolButtons();
-    });
   }
 
   function setPendingTextMode(mode) {
