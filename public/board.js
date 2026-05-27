@@ -93,6 +93,7 @@
   let selectionDragCurrent = null;
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
+  const pendingImageAdds = new Map();
   let imageLoadTokenCounter = 0;
   let multiSelection = null;
   let multiDragActive = false;
@@ -5072,6 +5073,7 @@
     socketConnected = true;
     socket.emit("join", { boardId });
     identifyToServer();
+    flushPendingImageAdds();
   });
 
   socket.on("disconnect", () => {
@@ -7534,32 +7536,23 @@
   }
 
   function emitImageAdd(imgObj) {
-    if (!socketConnected) return;
+    const image = imageSnapshotPayload(imgObj);
+    if (!socketConnected) {
+      if (image?.id) pendingImageAdds.set(image.id, image);
+      return;
+    }
     socket.emit("image:add", {
       boardId,
-      image: {
-        id: imgObj.id,
-        src: imgObj.src,
-        x: imgObj.x,
-        y: imgObj.y,
-        width: imgObj.width,
-        height: imgObj.height,
-        layer: imgObj.layer,
-        order: imgObj.order,
-        user: imgObj.user,
-        rotation: imgObj.rotation || 0,
-        mirrored: !!imgObj.mirrored,
-        tagType: imgObj.tagType || null,
-        tagLabel: imgObj.tagLabel || "",
-        imageName: imgObj.imageName || "",
-        imageListOrder:
-          typeof imgObj.imageListOrder === "number" ? imgObj.imageListOrder : imgObj.order || 0,
-        frameId: imgObj.frameId || null,
-        frameTab: imgObj.frameTab || null,
-        frameTabs: imgObj.frameTabs || null,
-        activeFrameTab: imgObj.activeFrameTab || null,
-      },
+      image,
     });
+  }
+
+  function flushPendingImageAdds() {
+    if (!socketConnected || pendingImageAdds.size === 0) return;
+    pendingImageAdds.forEach((image) => {
+      socket.emit("image:add", { boardId, image });
+    });
+    pendingImageAdds.clear();
   }
 
   // --- テキスト入力 ---
@@ -10166,6 +10159,23 @@
     contextFrameTabTarget = null;
   }
 
+  function positionContextMenu(x, y) {
+    if (!contextMenu) return;
+    const margin = 8;
+    contextMenu.style.left = `${x}px`;
+    contextMenu.style.top = `${y}px`;
+    contextMenu.style.visibility = "hidden";
+    contextMenu.classList.remove("hidden");
+    const rect = contextMenu.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const left = Math.min(Math.max(margin, x), maxLeft);
+    const top = Math.min(Math.max(margin, y), maxTop);
+    contextMenu.style.left = `${left}px`;
+    contextMenu.style.top = `${top}px`;
+    contextMenu.style.visibility = "";
+  }
+
   function showContextMenu(x, y, options = {}) {
     if (!contextMenu) return;
     contextFrameTabTarget = options.frameTabTarget || null;
@@ -10178,9 +10188,7 @@
       });
       const tabs = ensureFrameTabs(contextFrameTabTarget.frame);
       if (deleteFrameTabBtn && tabs.length <= 1) deleteFrameTabBtn.classList.add("disabled");
-      contextMenu.style.left = `${x}px`;
-      contextMenu.style.top = `${y}px`;
-      contextMenu.classList.remove("hidden");
+      positionContextMenu(x, y);
       return;
     }
 
@@ -10239,9 +10247,7 @@
     if (dupBtn && !hasAny) dupBtn.classList.add("disabled");
     if (!hasAny) return;
 
-    contextMenu.style.left = `${x}px`;
-    contextMenu.style.top = `${y}px`;
-    contextMenu.classList.remove("hidden");
+    positionContextMenu(x, y);
   }
 
   if (contextMenu) {
