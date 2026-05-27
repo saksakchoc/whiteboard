@@ -3923,7 +3923,6 @@
 
   function getFrameMembershipTabForObject(frame, obj) {
     if (!isFrameContainer(frame)) return null;
-    if (obj?.src && !isFrameContainer(obj)) return "background";
     return getFrameCurrentTargetTab(frame);
   }
 
@@ -4113,6 +4112,21 @@
       if (!owner || frameOrder > owner.order) {
         owner = { frame: img, index, order: frameOrder };
       }
+    });
+    return owner;
+  }
+
+  function findOwningOmoteUraFrameForImage(imgObj) {
+    if (!imgObj || isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj)) return null;
+    const bounds = getImageBoundsWorld(imgObj);
+    if (!bounds) return null;
+    let owner = null;
+    images.forEach((frame, index) => {
+      if (!isOmoteUraTagImage(frame) || !isImageVisible(frame)) return;
+      const frameBounds = getImageBoundsWorld(frame);
+      if (!frameBounds || !rectContainsRect(frameBounds, bounds)) return;
+      const order = getObjectOrderValue("image", frame, index);
+      if (!owner || order > owner.order) owner = { frame, index, order };
     });
     return owner;
   }
@@ -6584,12 +6598,23 @@
             item.frameGroupOrder = getFrameOrder(img);
             item.frameGroupRank = 0;
           }
+        } else if (isOmoteUraTagImage(img)) {
+          item.frameGroupId = img.id;
+          item.frameGroupOrder = getObjectOrderValue("image", img, item.index);
+          item.frameGroupRank = 0;
         } else {
           const owner = findOwningFrameForItem({ type: "image", index: item.index });
           if (owner) {
             item.frameGroupId = owner.frame.id;
             item.frameGroupOrder = owner.order;
             item.frameGroupRank = getFrameMemberDrawRank(images[item.index]);
+          } else {
+            const omoteUraOwner = findOwningOmoteUraFrameForImage(img);
+            if (omoteUraOwner) {
+              item.frameGroupId = omoteUraOwner.frame.id;
+              item.frameGroupOrder = omoteUraOwner.order;
+              item.frameGroupRank = 3;
+            }
           }
         }
       } else if (item.type === "frame-header" || item.type === "frame-scrollbars") {
