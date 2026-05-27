@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   "order" INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   rotation REAL NOT NULL DEFAULT 0,
+  mirrored INTEGER NOT NULL DEFAULT 0,
   tag_type TEXT,
   tag_label TEXT,
   image_name TEXT,
@@ -164,6 +165,11 @@ try {
 }
 try {
   db.exec("ALTER TABLE images_v2 ADD COLUMN rotation REAL NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN mirrored INTEGER NOT NULL DEFAULT 0");
 } catch (e) {
   // ignore
 }
@@ -404,8 +410,8 @@ function deleteText(boardId, id) {
 // --- images_v2 ---
 function saveImage(img) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     img.id,
@@ -420,6 +426,7 @@ function saveImage(img) {
     img.order || 0,
     Date.now(),
     img.rotation || 0,
+    img.mirrored ? 1 : 0,
     img.tagType || null,
     img.tagLabel || null,
     img.imageName || null,
@@ -482,7 +489,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const imagesStmt = db.prepare(`
-    SELECT id, user, src, x, y, width, height, layer, "order", rotation, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab
+    SELECT id, user, src, x, y, width, height, layer, "order", rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab
     FROM images_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -539,6 +546,7 @@ function getBoardState(boardId) {
     layer: row.layer,
     order: row.order,
     rotation: row.rotation || 0,
+    mirrored: !!row.mirrored,
     tagType: row.tag_type || null,
     tagLabel: row.tag_label || "",
     imageName: row.image_name || "",

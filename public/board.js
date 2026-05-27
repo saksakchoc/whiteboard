@@ -54,6 +54,9 @@
   const frameDeleteCancelBtn = document.getElementById("frame-delete-cancel-btn");
 
   const ctx = canvas.getContext("2d");
+  const frameTabTooltipEl = document.createElement("div");
+  frameTabTooltipEl.className = "frame-tab-tooltip hidden";
+  document.body.appendChild(frameTabTooltipEl);
 
   // --- ボードID表示 ---
   const boardId = window.location.pathname.split("/").pop();
@@ -111,6 +114,7 @@
   let insertMenuHideTimer = null;
   let ignoreNextDblClick = false;
   let activeAltSide = null; // "left" | "right" | null
+  let altArrowShortcutUsed = false;
   let pendingImageInsertLayer = null;
 
   function getSquareBoundsFromDrag(start, end) {
@@ -176,6 +180,23 @@
     ].map((p) => rotatePointByDegrees(p, center, normalizeRotation(rotation)));
   }
 
+  function getAxisAlignedBoundsFromPoints(points) {
+    if (!Array.isArray(points) || points.length === 0) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    points.forEach((point) => {
+      if (!point || typeof point.x !== "number" || typeof point.y !== "number") return;
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    });
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
   // テキストの「デフォルト色＆サイズ」（最後に使った文字の色と大きさを記憶）
   let textDefaultColor = "#000000";
   let textDefaultFontSizeWorld = 16; // ホワイトボード座標系でのフォントサイズ
@@ -238,6 +259,7 @@
   let frameDragOffsets = null;
   let frameScrollbarDrag = null;
   let frameScrollIgnoredItemKeys = null;
+  let contextFrameTabTarget = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
 
   // テキスト入力用（HTMLの textarea オーバーレイ）
@@ -343,6 +365,7 @@
         order: img.order,
         user: img.user,
         rotation: img.rotation || 0,
+        mirrored: !!img.mirrored,
         tagType: img.tagType || null,
         tagLabel: img.tagLabel || "",
         imageName: img.imageName || "",
@@ -448,6 +471,7 @@
       order: img.order,
       user: img.user,
       rotation: img.rotation || 0,
+      mirrored: !!img.mirrored,
       tagType: img.tagType || null,
       tagLabel: img.tagLabel || "",
       imageName: img.imageName || "",
@@ -651,6 +675,10 @@
     if (!imgObj) return false;
     const index = images.findIndex((img) => img?.id === imgObj.id);
     if (index >= 0 && !isFrameMemberVisible(imgObj, { type: "image", index })) return false;
+    if (imgObj.frameId && imgObj.frameTab === "background") {
+      const frame = getFrameById(imgObj.frameId);
+      if (frame && frame.activeFrameTab !== "background") return false;
+    }
     if (isFrameContainer(imgObj)) return isImageVisible(imgObj);
     if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
@@ -1393,6 +1421,15 @@
     return Math.min(Math.max(34, worldH * 0.28), 56);
   }
 
+  function getFrameTotalHeightForViewportHeight(viewportHeight) {
+    const bodyH = Math.max(1, Math.abs(viewportHeight || 0));
+    let totalH = bodyH + getFrameHeaderHeightWorld({ height: bodyH });
+    for (let i = 0; i < 4; i += 1) {
+      totalH = bodyH + getFrameHeaderHeightWorld({ height: totalH });
+    }
+    return totalH;
+  }
+
   function getFrameTagColors(imgObj) {
     if (imgObj?.tagColors) return imgObj.tagColors;
     if (imgObj?.tagType === "omoteura") return getOmoteUraFrameColors();
@@ -1740,6 +1777,21 @@
     return frameImg.activeFrameTab === "background" ? "background" : getFrameActiveTab(frameImg);
   }
 
+  function getFrameTabWidth(label) {
+    const text = String(label || "");
+    return Math.max(28, Math.min(108, 22 + text.length * 9));
+  }
+
+  function isFrameTabLabelTruncated(label, width) {
+    const text = String(label || "");
+    if (!text) return false;
+    ctx.save();
+    ctx.font = "12px sans-serif";
+    const truncated = ctx.measureText(text).width > Math.max(0, width - 8);
+    ctx.restore();
+    return truncated;
+  }
+
   function getFrameTabAtWorldPoint(frameImg, worldPoint) {
     if (!isFrameContainer(frameImg) || !worldPoint) return null;
     const header = getFrameHeaderBoundsWorld(frameImg);
@@ -1755,8 +1807,18 @@
     if (pointInRectWorld(addHit, worldPoint)) return addHit;
     x += bgW + gap;
     for (const tab of tabs) {
-      const w = Math.max(28, Math.min(46, 18 + String(tab.name || "").length * 9));
-      const hit = { action: "tab", tabId: tab.id, x, y: tabY, width: w, height: tabH };
+      const label = tab.name || "?";
+      const w = getFrameTabWidth(label);
+      const hit = {
+        action: "tab",
+        tabId: tab.id,
+        label,
+        truncated: isFrameTabLabelTruncated(label, w),
+        x,
+        y: tabY,
+        width: w,
+        height: tabH,
+      };
       if (pointInRectWorld(hit, worldPoint)) return hit;
       x += w + gap;
     }
@@ -1788,7 +1850,8 @@
     };
     drawTab("背景", 42, frameImg.activeFrameTab === "background");
     tabs.forEach((tab) => {
-      drawTab(tab.name || "?", Math.max(28, Math.min(46, 18 + String(tab.name || "").length * 9)), active === tab.id);
+      const label = tab.name || "?";
+      drawTab(label, getFrameTabWidth(label), active === tab.id);
     });
     drawTab("+", 26, false);
   }
@@ -1827,6 +1890,38 @@
     return null;
   }
 
+  function hideFrameTabTooltip() {
+    frameTabTooltipEl.classList.add("hidden");
+    frameTabTooltipEl.textContent = "";
+  }
+
+  function updateFrameTabTooltip(canvasPos, clientX, clientY) {
+    if (
+      typeof clientX !== "number" ||
+      typeof clientY !== "number" ||
+      isDraggingObject ||
+      isResizingObject ||
+      isDrawing ||
+      isDrawingShape ||
+      isPlacingFrame ||
+      isPanning ||
+      isSelectingArea ||
+      frameScrollbarDrag
+    ) {
+      hideFrameTabTooltip();
+      return;
+    }
+    const hit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
+    if (!hit || hit.action !== "tab" || !hit.truncated || !hit.label) {
+      hideFrameTabTooltip();
+      return;
+    }
+    frameTabTooltipEl.textContent = hit.label;
+    frameTabTooltipEl.style.left = `${clientX + 12}px`;
+    frameTabTooltipEl.style.top = `${clientY + 14}px`;
+    frameTabTooltipEl.classList.remove("hidden");
+  }
+
   function activateFrameTab(frameImg, tabId) {
     if (!isFrameContainer(frameImg)) return;
     ensureFrameTabs(frameImg);
@@ -1849,6 +1944,120 @@
     redraw();
   }
 
+  function getObjectForSelectionItem(item) {
+    if (!item) return null;
+    if (item.type === "stroke") return strokes[item.index] || null;
+    if (item.type === "draft") return draftStrokes[item.index] || null;
+    if (item.type === "text") return texts[item.index] || null;
+    if (item.type === "image") return images[item.index] || null;
+    return null;
+  }
+
+  function getFrameTabContentItems(frameImg, tabId) {
+    if (!isFrameContainer(frameImg) || !tabId || tabId === "background") return [];
+    return getFrameContentItems(frameImg).filter((item) => {
+      const obj = getObjectForSelectionItem(item);
+      return obj?.frameId === frameImg.id && obj.frameTab === tabId;
+    });
+  }
+
+  function addItemsToDeleteSets(items, strokeIds, textIds, imageIds, draftIds) {
+    (items || []).forEach((item) => {
+      if (item.type === "stroke") {
+        const st = strokes[item.index];
+        if (st && canDeleteStroke(st)) strokeIds.add(st.id);
+      } else if (item.type === "text") {
+        const t = texts[item.index];
+        if (t && canDeleteText(t)) textIds.add(t.id);
+      } else if (item.type === "image") {
+        const img = images[item.index];
+        if (img && canInteractImage(img)) {
+          if (isFrameContainer(img)) addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
+          imageIds.add(img.id);
+        }
+      } else if (item.type === "draft") {
+        const d = draftStrokes[item.index];
+        if (d && canDeleteDraft(d)) draftIds.add(d.id);
+      }
+    });
+  }
+
+  function removeItemsByDeleteSets(strokeIds, textIds, imageIds, draftIds) {
+    strokeIds.forEach((id) => {
+      const idx = findIndexById(strokes, id);
+      if (idx >= 0 && canDeleteStroke(strokes[idx])) {
+        strokes.splice(idx, 1);
+        if (socketConnected) socket.emit("item:remove", { boardId, type: "stroke", id });
+      }
+    });
+    textIds.forEach((id) => {
+      const idx = findIndexById(texts, id);
+      if (idx >= 0 && canDeleteText(texts[idx])) {
+        texts.splice(idx, 1);
+        if (socketConnected) socket.emit("item:remove", { boardId, type: "text", id });
+      }
+    });
+    imageIds.forEach((id) => {
+      const idx = findIndexById(images, id);
+      if (idx >= 0) {
+        const removed = images.splice(idx, 1)[0];
+        invalidatePendingImageLoad(removed?.id);
+        if (removed && socketConnected) socket.emit("item:remove", { boardId, type: "image", id });
+      } else {
+        invalidatePendingImageLoad(id);
+      }
+    });
+    draftIds.forEach((id) => {
+      const idx = findIndexById(draftStrokes, id);
+      if (idx >= 0 && canDeleteDraft(draftStrokes[idx])) {
+        draftStrokes.splice(idx, 1);
+        if (socketConnected) socket.emit("draft:stroke:remove", { boardId, id });
+      }
+    });
+  }
+
+  function deleteFrameTab(frameImg, tabId) {
+    if (!isFrameContainer(frameImg) || !tabId || tabId === "background") return false;
+    const tabs = ensureFrameTabs(frameImg);
+    const tabIndex = tabs.findIndex((tab) => tab.id === tabId);
+    if (tabIndex < 0) return false;
+    if (tabs.length <= 1) {
+      showTransientFooterMessage("最後のタブは削除できません。", 2500);
+      return true;
+    }
+
+    const tabName = tabs[tabIndex].name || String(tabIndex + 1);
+    const contents = getFrameTabContentItems(frameImg, tabId);
+    const message =
+      contents.length > 0
+        ? `タブ「${tabName}」と中のオブジェクトを削除しますか。`
+        : `タブ「${tabName}」を削除しますか。`;
+    if (!window.confirm(message)) return true;
+
+    ensureSnapshotForAction();
+    const strokeIds = new Set();
+    const textIds = new Set();
+    const imageIds = new Set();
+    const draftIds = new Set();
+    addItemsToDeleteSets(contents, strokeIds, textIds, imageIds, draftIds);
+
+    tabs.splice(tabIndex, 1);
+    if (frameImg.activeFrameTab === tabId) {
+      frameImg.activeFrameTab = tabs[Math.min(tabIndex, tabs.length - 1)]?.id || "background";
+    }
+    emitItemPatch("image", frameImg, {
+      frameTabs: frameImg.frameTabs,
+      activeFrameTab: frameImg.activeFrameTab,
+    });
+    removeItemsByDeleteSets(strokeIds, textIds, imageIds, draftIds);
+    if (textIds.size) refreshTextList();
+    if (imageIds.size) refreshImageList();
+    selected = { type: "image", index: images.findIndex((img) => img?.id === frameImg.id) };
+    multiSelection = null;
+    redraw();
+    return true;
+  }
+
   function estimateFrameHeaderHeightForImage(imgObj) {
     let headerH = getFrameHeaderHeightWorld(imgObj);
     for (let i = 0; i < 3; i += 1) {
@@ -1862,9 +2071,14 @@
     if (!sourceImg || isFrameContainer(sourceImg)) return false;
     ensureSnapshotForAction();
 
-    const headerH = estimateFrameHeaderHeightForImage(sourceImg);
-    const frameWidth = Math.max(80, Math.abs(sourceImg.width || 0));
-    const frameHeight = Math.max(80, Math.abs(sourceImg.height || 0) + headerH);
+    const visualBounds = getRotatedImageVisualBoundsWorld(sourceImg) || getImageBoundsWorld(sourceImg);
+    if (!visualBounds) return false;
+    const headerH = estimateFrameHeaderHeightForImage({
+      ...sourceImg,
+      height: visualBounds.height,
+    });
+    const frameWidth = Math.max(80, Math.abs(visualBounds.width || 0));
+    const frameHeight = Math.max(80, Math.abs(visualBounds.height || 0) + headerH);
     const label = sourceImg.imageName || "フレーム";
     const dataUrl = createFrameTag("free", frameWidth * scale, frameHeight * scale, label);
     const frameImgEl = new Image();
@@ -1874,14 +2088,14 @@
         id: genId(),
         img: frameImgEl,
         src: dataUrl,
-        x: sourceImg.x,
-        y: sourceImg.y - headerH,
+        x: visualBounds.x,
+        y: visualBounds.y - headerH,
         width: frameWidth,
         height: frameHeight,
         layer: "image",
         order: sourceImg.order ?? orderCounter++,
         user: currentUser || sourceImg.user || "",
-        rotation: sourceImg.rotation || 0,
+        rotation: 0,
         tagType: "free",
         tagLabel: label,
         imageName: label,
@@ -3522,6 +3736,14 @@
     return { x: img.x, y: img.y, width: img.width, height: img.height };
   }
 
+  function getRotatedImageVisualBoundsWorld(imgObj) {
+    const bounds = getImageBoundsWorld(imgObj);
+    if (!bounds) return null;
+    const rotation = normalizeRotation(imgObj.rotation || 0);
+    if (!rotation) return bounds;
+    return getAxisAlignedBoundsFromPoints(getRotatedRectCornersWorld(bounds, rotation));
+  }
+
   function isFrameContainer(imgObj) {
     return !!imgObj?.tagType && imgObj.tagType !== "omoteura";
   }
@@ -3545,7 +3767,13 @@
     return images.find((img) => img?.id === frameId && isFrameContainer(img)) || null;
   }
 
-  function getFrameMembershipAtWorldPoint(worldPoint) {
+  function getFrameMembershipTabForObject(frame, obj) {
+    if (!isFrameContainer(frame)) return null;
+    if (obj?.src && !isFrameContainer(obj)) return "background";
+    return getFrameCurrentTargetTab(frame);
+  }
+
+  function getFrameMembershipAtWorldPoint(worldPoint, obj = null) {
     if (!worldPoint) return null;
     let owner = null;
     getFrameImagesForGrouping().forEach(({ img }) => {
@@ -3557,11 +3785,11 @@
     if (!owner) return null;
     return {
       frameId: owner.frame.id,
-      frameTab: getFrameCurrentTargetTab(owner.frame),
+      frameTab: getFrameMembershipTabForObject(owner.frame, obj),
     };
   }
 
-  function getFrameMembershipForBounds(bounds, excludeImageId = null) {
+  function getFrameMembershipForBounds(bounds, excludeImageId = null, obj = null) {
     if (!bounds) return null;
     let owner = null;
     getFrameImagesForGrouping().forEach(({ img }) => {
@@ -3574,12 +3802,12 @@
     if (!owner) return null;
     return {
       frameId: owner.frame.id,
-      frameTab: getFrameCurrentTargetTab(owner.frame),
+      frameTab: getFrameMembershipTabForObject(owner.frame, obj),
     };
   }
 
   function applyFrameMembershipByPoint(obj, worldPoint) {
-    const membership = getFrameMembershipAtWorldPoint(worldPoint);
+    const membership = getFrameMembershipAtWorldPoint(worldPoint, obj);
     if (!membership) return obj;
     obj.frameId = membership.frameId;
     obj.frameTab = membership.frameTab;
@@ -3600,7 +3828,11 @@
         : null;
     if (!obj) return null;
     const bounds = getBoundsForFrameContentCandidate(item);
-    const membership = getFrameMembershipForBounds(bounds, item.type === "image" ? obj.id : null);
+    const membership = getFrameMembershipForBounds(
+      bounds,
+      item.type === "image" ? obj.id : null,
+      obj
+    );
     const nextFrameId = membership?.frameId || null;
     const nextFrameTab = membership?.frameTab || null;
     if ((obj.frameId || null) === nextFrameId && (obj.frameTab || null) === nextFrameTab) return null;
@@ -4136,11 +4368,12 @@
     }
   }
 
-  function assignExistingObjectsToNewFrame(frameImg) {
+  function assignExistingObjectsToNewFrame(frameImg, options = {}) {
     if (!isFrameContainer(frameImg)) return;
     if (frameImg.frameId) return;
     const frameBounds = getImageBoundsWorld(frameImg);
     if (!frameBounds) return;
+    const adoptLayer = options.adoptLayer || null;
     const contentTab = frameImg.frameTabs?.[0]?.id || "tab-1";
     const nestedFrameIds = new Set(
       images
@@ -4157,6 +4390,10 @@
     };
     const applyMembership = (type, obj, patch) => {
       if (!obj) return;
+      if (adoptLayer && type !== "draft" && obj.layer !== adoptLayer) {
+        patch = { ...patch, layer: adoptLayer };
+        obj.layer = adoptLayer;
+      }
       obj.frameId = patch.frameId;
       obj.frameTab = patch.frameTab;
       if (type === "draft") {
@@ -4192,6 +4429,94 @@
       const bounds = getBoundsForFrameContentCandidate({ type: "draft", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
       applyMembership("draft", s, { frameId: frameImg.id, frameTab: contentTab });
+    });
+  }
+
+  function createCroppedFrameBackgroundImage(sourceImg, cropWorldRect, frameImg, options = {}) {
+    if (!sourceImg || !sourceImg.img || !cropWorldRect || !isFrameContainer(frameImg)) return null;
+    if (isFrameContainer(sourceImg)) return null;
+    if (normalizeRotation(sourceImg.rotation || 0) !== 0) return null;
+    const sourceEl = sourceImg.img;
+    if (!sourceEl.complete || !sourceEl.naturalWidth || !sourceEl.naturalHeight) return null;
+    const sourceBounds = getImageBoundsWorld(sourceImg);
+    if (!sourceBounds || sourceBounds.width <= 0 || sourceBounds.height <= 0) return null;
+
+    const scaleX = sourceEl.naturalWidth / sourceBounds.width;
+    const scaleY = sourceEl.naturalHeight / sourceBounds.height;
+    const sx = Math.max(0, Math.round((cropWorldRect.x - sourceBounds.x) * scaleX));
+    const sy = Math.max(0, Math.round((cropWorldRect.y - sourceBounds.y) * scaleY));
+    const sw = Math.min(sourceEl.naturalWidth - sx, Math.round(cropWorldRect.width * scaleX));
+    const sh = Math.min(sourceEl.naturalHeight - sy, Math.round(cropWorldRect.height * scaleY));
+    if (sw <= 0 || sh <= 0) return null;
+
+    try {
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = sw;
+      cropCanvas.height = sh;
+      const cropCtx = cropCanvas.getContext("2d");
+      cropCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, sw, sh);
+      const src = cropCanvas.toDataURL("image/png");
+      const img = new Image();
+      const imgObj = {
+        id: genId(),
+        img,
+        src,
+        x: cropWorldRect.x,
+        y: cropWorldRect.y,
+        width: cropWorldRect.width,
+        height: cropWorldRect.height,
+        layer: options.adoptLayer || frameImg.layer || "image",
+        order: orderCounter++,
+        user: currentUser || sourceImg.user || "",
+        rotation: 0,
+        imageName: sourceImg.imageName ? `${sourceImg.imageName} 切り取り` : "切り取り",
+        imageListOrder: bumpImageListOrderCounter(),
+        frameId: frameImg.id,
+        frameTab: "background",
+      };
+      img.onload = () => redraw();
+      img.src = src;
+      return imgObj;
+    } catch (err) {
+      console.error("failed to crop frame background image", err);
+      return null;
+    }
+  }
+
+  function addCroppedImageBackgroundsToNewFrame(frameImg, options = {}) {
+    if (!isFrameContainer(frameImg) || frameImg.frameId) return 0;
+    const cropTargetBounds = getFrameViewportWorld(frameImg) || getImageBoundsWorld(frameImg);
+    if (!cropTargetBounds) return 0;
+    const sourceImages = images.filter((img) => {
+      if (!img || img.id === frameImg.id || isFrameContainer(img)) return false;
+      if (img.frameId === frameImg.id) return false;
+      if (!img.img || !img.src) return false;
+      const bounds = getImageBoundsWorld(img);
+      if (!bounds || !rectsOverlap(cropTargetBounds, bounds)) return false;
+      return !rectContainsRect(cropTargetBounds, bounds);
+    });
+    let added = 0;
+    sourceImages.forEach((sourceImg) => {
+      const cropWorldRect = getRectIntersection(cropTargetBounds, getImageBoundsWorld(sourceImg));
+      const cropImg = createCroppedFrameBackgroundImage(sourceImg, cropWorldRect, frameImg, options);
+      if (!cropImg) return;
+      images.push(cropImg);
+      registerUser(cropImg.user);
+      emitImageAdd(cropImg);
+      added += 1;
+    });
+    if (added) refreshImageList();
+    return added;
+  }
+
+  function hasCroppedImageBackgroundSource(targetBounds) {
+    if (!targetBounds) return false;
+    return images.some((img) => {
+      if (!img || isFrameContainer(img)) return false;
+      if (!img.img || !img.src) return false;
+      const bounds = getImageBoundsWorld(img);
+      if (!bounds || !rectsOverlap(targetBounds, bounds)) return false;
+      return !rectContainsRect(targetBounds, bounds);
     });
   }
 
@@ -4232,11 +4557,12 @@
       }
       const bounds = getStrokeBoundsWorld(stroke);
       if (!bounds || !pointInRectWorld(bounds, worldPoint)) continue;
-      if (!pointInPolygon(worldPoint, stroke.points)) continue;
-      const area = polygonArea(stroke.points);
+      const fillPoints = getFillPolygonForStrokeAt(stroke, worldPoint);
+      if (!fillPoints) continue;
+      const area = polygonArea(fillPoints);
       if (area <= 1) continue;
       if (!target || area < target.area) {
-        target = { stroke, area };
+        target = { stroke, points: fillPoints, area };
       }
     }
 
@@ -4269,7 +4595,7 @@
       id: genId(),
       color: withAlpha(currentColor, 0.38),
       size: 1,
-      points: source.points.map((p) => ({ x: p.x, y: p.y })),
+      points: target.points.map((p) => ({ x: p.x, y: p.y })),
       user: currentUser,
       layer: activeLayer === "draft" ? "draft" : getShapeTargetLayer(),
       order: activeLayer === "draft" ? (source.order ?? draftOrderCounter++) - 0.1 : (source.order ?? orderCounter++) - 0.1,
@@ -5008,6 +5334,7 @@
       images.push({
         ...imgData,
         rotation: imgData.rotation || 0,
+        mirrored: !!imgData.mirrored,
         imageName: imgData.imageName || "",
         imageListOrder,
         frameId: imgData.frameId || null,
@@ -5210,6 +5537,16 @@
     );
   }
 
+  function getRectIntersection(a, b) {
+    if (!a || !b) return null;
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    const right = Math.min(a.x + a.width, b.x + b.width);
+    const bottom = Math.min(a.y + a.height, b.y + b.height);
+    if (right <= x || bottom <= y) return null;
+    return { x, y, width: right - x, height: bottom - y };
+  }
+
   function pointInRectWorld(rect, p) {
     return (
       p.x >= rect.x &&
@@ -5275,6 +5612,72 @@
       if (intersects) inside = !inside;
     }
     return inside;
+  }
+
+  function getSegmentIntersection(a, b, c, d) {
+    const rX = b.x - a.x;
+    const rY = b.y - a.y;
+    const sX = d.x - c.x;
+    const sY = d.y - c.y;
+    const denom = rX * sY - rY * sX;
+    if (Math.abs(denom) < 1e-9) return null;
+    const qpx = c.x - a.x;
+    const qpy = c.y - a.y;
+    const t = (qpx * sY - qpy * sX) / denom;
+    const u = (qpx * rY - qpy * rX) / denom;
+    const eps = 1e-6;
+    if (t < eps || t > 1 - eps || u < eps || u > 1 - eps) return null;
+    return {
+      point: { x: a.x + t * rX, y: a.y + t * rY },
+      t,
+      u,
+    };
+  }
+
+  function normalizeFillPolygon(points) {
+    const normalized = [];
+    (points || []).forEach((p) => {
+      if (!p || typeof p.x !== "number" || typeof p.y !== "number") return;
+      const prev = normalized[normalized.length - 1];
+      if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 0.01) return;
+      normalized.push({ x: p.x, y: p.y });
+    });
+    if (normalized.length > 2) {
+      const first = normalized[0];
+      const last = normalized[normalized.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) < 0.01) normalized.pop();
+    }
+    return normalized.length >= 3 ? normalized : null;
+  }
+
+  function getFillPolygonForStrokeAt(stroke, worldPoint) {
+    const pts = stroke?.points || [];
+    if (pts.length < 3) return null;
+
+    const candidates = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      for (let j = i + 2; j < pts.length - 1; j++) {
+        if (i === 0 && j === pts.length - 2) continue;
+        const hit = getSegmentIntersection(pts[i], pts[i + 1], pts[j], pts[j + 1]);
+        if (!hit) continue;
+        const loop = normalizeFillPolygon([hit.point, ...pts.slice(i + 1, j + 1), hit.point]);
+        if (loop && pointInPolygon(worldPoint, loop)) {
+          candidates.push(loop);
+        }
+      }
+    }
+
+    if (isClosedStroke(stroke)) {
+      const closed = normalizeFillPolygon(pts);
+      if (closed && pointInPolygon(worldPoint, closed)) candidates.push(closed);
+    }
+
+    if (!candidates.length && pointInPolygon(worldPoint, pts)) {
+      const fallback = normalizeFillPolygon(pts);
+      if (fallback) candidates.push(fallback);
+    }
+
+    return candidates.sort((a, b) => polygonArea(a) - polygonArea(b))[0] || null;
   }
 
   function polygonArea(points) {
@@ -5383,32 +5786,76 @@
     };
   }
 
-  function hitTestImage(screenX, screenY) {
+  function isImageCoveredByHigherFrameAtPoint(imgObj, imageIndex, worldPoint) {
+    if (!imgObj || isFrameContainer(imgObj) || !worldPoint) return false;
+    const owner = findOwningFrameForItem({ type: "image", index: imageIndex });
+    const imageOrder = getObjectOrderValue("image", imgObj, imageIndex);
+    return getFrameImagesForGrouping().some(({ img: frame, index }) => {
+      if (!frame || owner?.frame?.id === frame.id) return false;
+      if (!isImageVisible(frame)) return false;
+      if (!isFrameMemberVisible(frame, { type: "image", index })) return false;
+      if (getFrameOrder(frame) <= imageOrder) return false;
+      const frameBounds = getImageBoundsWorld(frame);
+      return frameBounds && pointInRotatedRectWorld(worldPoint, frameBounds, frame.rotation || 0);
+    });
+  }
+
+  function hitTestImage(screenX, screenY, options = {}) {
+    const includeFrameHeader = options.includeFrameHeader !== false;
+    const includeFrameBody = options.includeFrameBody !== false;
+    const includeNonFrameImages = options.includeNonFrameImages !== false;
     const worldPoint = screenToWorld(screenX, screenY);
-    for (let i = images.length - 1; i >= 0; i--) {
-      const imgObj = images[i];
-      if (!isFrameContainer(imgObj) || !canInteractImage(imgObj)) continue;
-      if (pointInScreenRect({ x: screenX, y: screenY }, getFrameHeaderHitBoundsScreen(imgObj))) {
-        return i;
-      }
-      const bounds = getFrameHeaderBoundsWorld(imgObj);
-      if (!bounds) continue;
-      if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
-        return i;
+    if (includeFrameHeader) {
+      for (let i = images.length - 1; i >= 0; i--) {
+        const imgObj = images[i];
+        if (!isFrameContainer(imgObj) || !canInteractImage(imgObj)) continue;
+        if (pointInScreenRect({ x: screenX, y: screenY }, getFrameHeaderHitBoundsScreen(imgObj))) {
+          return i;
+        }
+        const bounds = getFrameHeaderBoundsWorld(imgObj);
+        if (!bounds) continue;
+        if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
+          return i;
+        }
       }
     }
+    let bestHit = null;
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
+      if (isFrameContainer(imgObj) && !includeFrameBody) continue;
+      if (!isFrameContainer(imgObj) && !includeNonFrameImages) continue;
+      if (
+        !isFrameContainer(imgObj) &&
+        !includeFrameBody &&
+        isImageCoveredByHigherFrameAtPoint(imgObj, i, worldPoint)
+      ) {
+        continue;
+      }
       const bounds = isFrameContainer(imgObj)
-        ? getFrameHeaderBoundsWorld(imgObj)
+        ? getImageBoundsWorld(imgObj)
         : { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
       if (!bounds) continue;
       if (pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
-        return i;
+        const owner = findOwningFrameForItem({ type: "image", index: i });
+        const groupOrder = isFrameContainer(imgObj)
+          ? getFrameOrder(imgObj)
+          : owner
+          ? owner.order
+          : getObjectOrderValue("image", imgObj, i);
+        const rank = isFrameContainer(imgObj) ? 0 : owner ? getFrameMemberDrawRank(imgObj) : 1;
+        const hit = { index: i, groupOrder, rank, arrayIndex: i };
+        if (
+          !bestHit ||
+          hit.groupOrder > bestHit.groupOrder ||
+          (hit.groupOrder === bestHit.groupOrder && hit.rank > bestHit.rank) ||
+          (hit.groupOrder === bestHit.groupOrder && hit.rank === bestHit.rank && hit.arrayIndex > bestHit.arrayIndex)
+        ) {
+          bestHit = hit;
+        }
       }
     }
-    return -1;
+    return bestHit ? bestHit.index : -1;
   }
 
   function collectTextTagsAtWorldPoint(worldPoint) {
@@ -5974,15 +6421,18 @@
           } else {
             ctx.save();
             try {
-              if (rotation) {
-                ctx.translate(p.x + w / 2, p.y + h / 2);
-                ctx.rotate((rotation * Math.PI) / 180);
-                ctx.drawImage(imgEl, -w / 2, -h / 2, w, h);
-              } else {
-                ctx.drawImage(imgEl, p.x, p.y, w, h);
-              }
+              ctx.translate(p.x + w / 2, p.y + h / 2);
+              if (imgObj.mirrored) ctx.scale(-1, 1);
+              if (rotation) ctx.rotate((rotation * Math.PI) / 180);
+              ctx.drawImage(imgEl, -w / 2, -h / 2, w, h);
             } finally {
               ctx.restore();
+            }
+            if (imgObj.mirrored) {
+              drawMirroredImageGlow(
+                { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+                rotation
+              );
             }
           }
         } catch (err) {
@@ -6313,6 +6763,30 @@
       ctx.fill();
       ctx.stroke();
     });
+    ctx.restore();
+  }
+
+  function drawMirroredImageGlow(bounds, rotation = 0) {
+    const p = worldToScreen(bounds.x, bounds.y);
+    const w = bounds.width * scale;
+    const h = bounds.height * scale;
+    ctx.save();
+    ctx.translate(p.x + w / 2, p.y + h / 2);
+    ctx.scale(-1, 1);
+    const normalizedRotation = normalizeRotation(rotation);
+    if (normalizedRotation) ctx.rotate((normalizedRotation * Math.PI) / 180);
+    ctx.strokeStyle = "#22a7ff";
+    ctx.shadowColor = "rgba(34, 167, 255, 0.95)";
+    ctx.shadowBlur = Math.max(10, 14 * scale);
+    ctx.lineWidth = Math.max(3, 4 * scale);
+    ctx.beginPath();
+    ctx.rect(-w / 2, -h / 2, w, h);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = Math.max(1, 1.5 * scale);
+    ctx.strokeStyle = "#d8f1ff";
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -6773,9 +7247,9 @@
       refreshImageList();
       emitImageAdd(imgObj);
 
-      currentTool = "select";
-      updateToolButtons();
       selected = { type: "image", index: images.length - 1 };
+      multiSelection = null;
+      updateFooterByState();
       redraw();
     } catch (err) {
       console.error("failed to load image", err);
@@ -6841,8 +7315,8 @@
       }
     }
 
-    currentTool = "select";
-    updateToolButtons();
+    multiSelection = null;
+    updateFooterByState();
     redraw();
   }
 
@@ -6918,9 +7392,9 @@
       refreshImageList();
       emitImageAdd(imgObj);
 
-      currentTool = "select";
-      updateToolButtons();
       selected = { type: "image", index: images.length - 1 };
+      multiSelection = null;
+      updateFooterByState();
       redraw();
     };
     img.src = src;
@@ -6959,9 +7433,9 @@
       registerUser(currentUser);
       refreshImageList();
       emitImageAdd(imgObj);
-      currentTool = "select";
-      updateToolButtons();
       selected = { type: "image", index: images.length - 1 };
+      multiSelection = null;
+      updateFooterByState();
       redraw();
     };
     img.src = dataUrl;
@@ -6997,6 +7471,7 @@
         order: imgObj.order,
         user: imgObj.user,
         rotation: imgObj.rotation || 0,
+        mirrored: !!imgObj.mirrored,
         tagType: imgObj.tagType || null,
         tagLabel: imgObj.tagLabel || "",
         imageName: imgObj.imageName || "",
@@ -7180,9 +7655,9 @@
         textDefaultColor = created[created.length - 1].color;
         textDefaultFontSizeWorld = created[created.length - 1].fontSize;
 
-        currentTool = "select";
-        updateToolButtons();
         selected = { type: "text", index: texts.length - 1 };
+        multiSelection = null;
+        updateFooterByState();
         redraw();
       }
     };
@@ -7335,8 +7810,8 @@
     }
     refreshLinkList();
     selected = { type: "link", index: links.length - 1 };
-    currentTool = "select";
-    updateToolButtons();
+    multiSelection = null;
+    updateFooterByState();
     redraw();
   }
 
@@ -7379,9 +7854,9 @@
     textDefaultColor = t.color;
     textDefaultFontSizeWorld = t.fontSize;
 
-    currentTool = "select";
-    updateToolButtons();
     selected = { type: "text", index: texts.length - 1 };
+    multiSelection = null;
+    updateFooterByState();
     redraw();
   }
 
@@ -7791,8 +8266,7 @@
     }
 
     // 画像本体ヒット → ドラッグ移動
-    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y);
-    if (imgIndex >= 0) {
+    const startImageDrag = (imgIndex) => {
       ensureSnapshotForAction();
       selected = { type: "image", index: imgIndex };
       multiSelection = null;
@@ -7806,6 +8280,10 @@
       };
       isDraggingObject = true;
       redraw();
+    };
+    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y, { includeFrameBody: false });
+    if (imgIndex >= 0) {
+      startImageDrag(imgIndex);
       return;
     }
 
@@ -7878,6 +8356,7 @@
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
+    updateFrameTabTooltip(canvasPos, e.clientX, e.clientY);
 
     if (frameScrollbarDrag) {
       const scroll = getFrameScroll(frameScrollbarDrag.frame);
@@ -8478,6 +8957,18 @@
     if (wasRightButton) {
       if (!isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
         hideContextMenu();
+        const tabHit = hitTestFrameTabControl(
+          rightButtonStart?.canvas?.x ?? canvasPos.x,
+          rightButtonStart?.canvas?.y ?? canvasPos.y
+        );
+        if (tabHit?.action === "tab") {
+          selected = { type: "image", index: tabHit.index };
+          multiSelection = null;
+          showContextMenu(e.clientX, e.clientY, { frameTabTarget: tabHit });
+          rightButtonDown = false;
+          rightButtonStart = null;
+          return;
+        }
         let hasSel = getSelectionItems().length > 0;
         if (!hasSel) {
           hasSel = selectAtPoint(rightButtonStart?.canvas || canvasPos);
@@ -8501,8 +8992,16 @@
       const upPos = getCanvasPointFromEvent(e);
       const worldPos = screenToWorld(upPos.x, upPos.y);
       const layer = shapeTargetLayer || getShapeTargetLayer();
+      const createdStrokeIndices = [];
+      const addShapeStroke = (points, opts = {}) => {
+        const stroke = createStroke(points, layer, opts);
+        if (!stroke) return null;
+        const index = strokes.findIndex((item) => item?.id === stroke.id);
+        if (index >= 0) createdStrokeIndices.push(index);
+        return stroke;
+      };
       if (shapeMode === "line") {
-        createStroke(
+        addShapeStroke(
           [
             { x: shapeStart.x, y: shapeStart.y },
             { x: worldPos.x, y: worldPos.y },
@@ -8514,7 +9013,7 @@
         const x1 = Math.max(shapeStart.x, worldPos.x);
         const y0 = Math.min(shapeStart.y, worldPos.y);
         const y1 = Math.max(shapeStart.y, worldPos.y);
-        createStroke(
+        addShapeStroke(
           [
             { x: x0, y: y0 },
             { x: x1, y: y0 },
@@ -8531,7 +9030,7 @@
         const groupId = genId();
         for (let i = 0; i <= n; i++) {
           const y = y0 + step * i;
-          createStroke(
+          addShapeStroke(
             [
               { x: x0, y },
               { x: x1, y },
@@ -8542,7 +9041,7 @@
         }
         for (let j = 0; j <= n; j++) {
           const x = x0 + step * j;
-          createStroke(
+          addShapeStroke(
             [
               { x, y: y0 },
               { x, y: y1 },
@@ -8552,12 +9051,22 @@
           );
         }
       }
+      if (createdStrokeIndices.length === 1) {
+        selected = { type: "stroke", index: createdStrokeIndices[0] };
+        multiSelection = null;
+      } else if (createdStrokeIndices.length > 1) {
+        const firstStroke = strokes[createdStrokeIndices[0]];
+        selected = null;
+        multiSelection = {
+          items: [{ type: "stroke-group", groupId: firstStroke?.groupId || null, indices: createdStrokeIndices }],
+          rectWorld: getSelectionWorldBounds([{ type: "stroke-group", indices: createdStrokeIndices }]),
+        };
+      }
       isDrawingShape = false;
       shapeStart = null;
       shapePreview = null;
-      shapeGridRows = 0;
-      shapeGridCols = 0;
       shapeTargetLayer = null;
+      updateFooterByState();
       redraw();
     }
 
@@ -8580,6 +9089,17 @@
       const placeX = Math.min(x0, x1);
       const placeY = Math.min(y0, y1);
       const placedFrameType = framePlaceType || "free";
+      const bodyBounds = { x: placeX, y: placeY, width, height };
+      const shouldFitViewportToDrag =
+        placedFrameType !== "omoteura" && hasCroppedImageBackgroundSource(bodyBounds);
+      const frameHeight = shouldFitViewportToDrag
+        ? getFrameTotalHeightForViewportHeight(height)
+        : height;
+      const frameHeaderH = shouldFitViewportToDrag
+        ? getFrameHeaderHeightWorld({ height: frameHeight })
+        : 0;
+      const frameX = placeX;
+      const frameY = shouldFitViewportToDrag ? placeY - frameHeaderH : placeY;
       const label =
         placedFrameType === "free"
           ? `フレーム${frameCounter}`
@@ -8591,18 +9111,19 @@
       if (placedFrameType === "free") {
         frameCounter += 1;
       }
-      const dataUrl = createFrameTag(placedFrameType, width * scale, height * scale, label);
+      const dataUrl = createFrameTag(placedFrameType, width * scale, frameHeight * scale, label);
       const img = new Image();
+      const frameContentOptions = activeLayer === "user" ? { adoptLayer: "user" } : {};
       img.onload = () => {
         const isOmoteUraImage = placedFrameType === "omoteura";
         const imgObj = {
           id: genId(),
           img,
           src: dataUrl,
-          x: placeX,
-          y: placeY,
+          x: frameX,
+          y: frameY,
           width,
-          height,
+          height: frameHeight,
           layer: "image",
           order: orderCounter++,
           user: currentUser,
@@ -8620,19 +9141,20 @@
           imgObj.frameTab = parentMembership.frameTab;
         }
         images.push(imgObj);
+        const frameIndex = images.length - 1;
         registerUser(currentUser);
         refreshImageList();
         emitImageAdd(imgObj);
-        assignExistingObjectsToNewFrame(imgObj);
-        currentTool = "select";
-        updateToolButtons();
-        selected = { type: "image", index: images.length - 1 };
+        addCroppedImageBackgroundsToNewFrame(imgObj, frameContentOptions);
+        assignExistingObjectsToNewFrame(imgObj, frameContentOptions);
+        selected = { type: "image", index: frameIndex };
+        multiSelection = null;
+        updateFooterByState();
         redraw();
       };
       img.src = dataUrl;
 
       isPlacingFrame = false;
-      framePlaceType = null;
       framePlaceStart = null;
       framePlacePreview = null;
     }
@@ -8819,6 +9341,7 @@
 
   canvas.addEventListener("mousedown", handlePointerDown);
   canvas.addEventListener("mousemove", handlePointerMove);
+  canvas.addEventListener("mouseleave", hideFrameTabTooltip);
   window.addEventListener("mouseup", handlePointerUp);
   window.addEventListener("mousemove", (e) => {
     if (!attentionActive) return;
@@ -8885,15 +9408,16 @@
     }
 
     if (
-      e.key === "Alt" &&
-      !e.repeat &&
+      e.altKey &&
       !e.ctrlKey &&
       !e.shiftKey &&
       !e.metaKey &&
-      getSelectionItems().length > 0
+      (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+      selectionHasMirrorTarget()
     ) {
       e.preventDefault();
-      handleAltSelectionAction(activeAltSide === "right" ? "ccw" : "cw");
+      altArrowShortcutUsed = true;
+      toggleSelectedImageMirror();
       return;
     }
 
@@ -8968,7 +9492,26 @@
   window.addEventListener("keyup", (e) => {
     if (e.key === "Alt") {
       const releasedSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
+      const shouldRotateOnAltRelease =
+        activeAltSide === releasedSide &&
+        !altArrowShortcutUsed &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !textEditor &&
+        getSelectionItems().length > 0;
+      if (shouldRotateOnAltRelease) {
+        const target = e.target;
+        const isInputTarget =
+          target &&
+          (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+        if (!isInputTarget) {
+          e.preventDefault();
+          handleAltSelectionAction(releasedSide === "right" ? "ccw" : "cw");
+        }
+      }
       if (activeAltSide === releasedSide) activeAltSide = null;
+      altArrowShortcutUsed = false;
     }
     if (attentionActive && !(e.ctrlKey && e.altKey && e.shiftKey)) {
       endAttention();
@@ -8977,6 +9520,7 @@
 
   window.addEventListener("blur", () => {
     activeAltSide = null;
+    altArrowShortcutUsed = false;
     if (attentionActive) {
       // 少し猶予をもって終了
       clearTimeout(attentionTimeout);
@@ -9047,7 +9591,7 @@
     const textIndex = hitTestText(canvasPos.x, canvasPos.y);
     if (textIndex >= 0) return { type: "text", index: textIndex };
 
-    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y);
+    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y, { includeFrameBody: false });
     if (imgIndex >= 0) return { type: "image", index: imgIndex };
 
     const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
@@ -9186,6 +9730,23 @@
     refreshImageList();
   }
 
+  function selectionHasMirrorTarget() {
+    return getSelectionItems().some((it) => it.type === "image" && images[it.index] && !isFrameContainer(images[it.index]));
+  }
+
+  function toggleSelectedImageMirror() {
+    const targets = getSelectedImages().filter((img) => !isFrameContainer(img));
+    if (!targets.length) return false;
+    ensureSnapshotForAction();
+    const nextMirrored = !targets.every((img) => !!img.mirrored);
+    targets.forEach((imgObj) => {
+      imgObj.mirrored = nextMirrored;
+      emitItemPatch("image", imgObj, { mirrored: imgObj.mirrored });
+    });
+    redraw();
+    return true;
+  }
+
   function selectionHasOrderable() {
     return collectOrderableSelectionItems().length > 0;
   }
@@ -9252,7 +9813,7 @@
     const isPen = currentTool === "pen";
     const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
-    const isSelect = currentTool === "select" && !shapeMode && !pendingTextMode;
+    const isSelect = currentTool === "select" && !shapeMode && !pendingTextMode && !framePlaceType;
     if (penToolBtn) {
       penToolBtn.disabled = creationLocked || isPen;
       penToolBtn.classList.toggle("active", isPen);
@@ -9525,14 +10086,32 @@
     if (contextMenu) {
       contextMenu.classList.add("hidden");
     }
+    contextFrameTabTarget = null;
   }
 
-  function showContextMenu(x, y) {
+  function showContextMenu(x, y, options = {}) {
     if (!contextMenu) return;
+    contextFrameTabTarget = options.frameTabTarget || null;
+    const deleteFrameTabBtn = contextMenu.querySelector('button[data-action="delete-frame-tab"]');
+    if (contextFrameTabTarget) {
+      contextMenu.querySelectorAll("button").forEach((btn) => {
+        const isDeleteTab = btn.getAttribute("data-action") === "delete-frame-tab";
+        btn.classList.toggle("hidden", !isDeleteTab);
+        btn.classList.remove("disabled");
+      });
+      const tabs = ensureFrameTabs(contextFrameTabTarget.frame);
+      if (deleteFrameTabBtn && tabs.length <= 1) deleteFrameTabBtn.classList.add("disabled");
+      contextMenu.style.left = `${x}px`;
+      contextMenu.style.top = `${y}px`;
+      contextMenu.classList.remove("hidden");
+      return;
+    }
+
     const hasDraft = selectionHasDraft();
     const selectionItems = getSelectionItems();
     const hasAny = selectionItems.length > 0;
     const hasImage = selectionHasImage();
+    const hasMirrorTarget = selectionHasMirrorTarget();
     const hasMoveTarget = selectionHasBaseMoveTarget();
     const hasMoveImageTarget = hasImage && isAdminUser();
     const hasOrderable = selectionHasOrderable();
@@ -9549,7 +10128,8 @@
       const action = btn.getAttribute("data-action");
       btn.classList.toggle(
         "hidden",
-        frameOnlySelection && action !== "select-frame-contents" && action !== "add-image-tab"
+        action === "delete-frame-tab" ||
+          (frameOnlySelection && action !== "select-frame-contents" && action !== "add-image-tab")
       );
     });
     const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
@@ -9559,6 +10139,7 @@
     const addImageTabBtn = contextMenu.querySelector('button[data-action="add-image-tab"]');
     const selectFrameContentsBtn = contextMenu.querySelector('button[data-action="select-frame-contents"]');
     const renameImageBtn = contextMenu.querySelector('button[data-action="rename-image"]');
+    const mirrorImageBtn = contextMenu.querySelector('button[data-action="mirror-image"]');
     const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
     const frontBtn = contextMenu.querySelector('button[data-action="bring-front"]');
     const backBtn = contextMenu.querySelector('button[data-action="send-back"]');
@@ -9572,6 +10153,7 @@
     if (addImageTabBtn && !hasImageTabTarget) addImageTabBtn.classList.add("disabled");
     if (selectFrameContentsBtn && !hasFrameContentsTarget) selectFrameContentsBtn.classList.add("disabled");
     if (renameImageBtn && !hasImage) renameImageBtn.classList.add("disabled");
+    if (mirrorImageBtn && !hasMirrorTarget) mirrorImageBtn.classList.add("disabled");
     if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
     if (backBtn && !hasOrderable) backBtn.classList.add("disabled");
     if (rotateRightBtn && !hasRotatable) rotateRightBtn.classList.add("disabled");
@@ -9604,10 +10186,16 @@
         moveSelectionToFrameBackground();
       } else if (action === "add-image-tab") {
         addTabToSelectedImageOrFrame();
+      } else if (action === "delete-frame-tab") {
+        if (contextFrameTabTarget) {
+          deleteFrameTab(contextFrameTabTarget.frame, contextFrameTabTarget.tabId);
+        }
       } else if (action === "select-frame-contents") {
         selectSelectedFrameContents();
       } else if (action === "rename-image") {
         setSelectedImageName();
+      } else if (action === "mirror-image") {
+        toggleSelectedImageMirror();
       } else if (action === "bring-front") {
         moveSelectionOrder("front");
       } else if (action === "send-back") {
@@ -9657,6 +10245,25 @@
     }
 
     // 選択ツールの選択あり／なしを優先
+    if (framePlaceType) {
+      setFooterMessage("フレーム挿入：ドラッグして同じ種類のフレームを続けて配置できます。");
+      return;
+    }
+
+    if (shapeMode) {
+      setFooterMessage("図形挿入：ドラッグして同じ種類の図形を続けて配置できます。");
+      return;
+    }
+
+    if (pendingTextMode) {
+      setFooterMessage(
+        pendingTextMode === "grid"
+          ? "方眼紙用入力：配置したい場所をクリックしてください。"
+          : "通常入力：配置したい場所をクリックしてください。"
+      );
+      return;
+    }
+
     if (currentTool === "select") {
       const hasSelection = getSelectionItems().length > 0;
       if (hasSelection) {
@@ -9786,6 +10393,7 @@
     if (!canCreateOnCurrentLayer()) return;
     if (activeLayer === "image") return;
     pendingTextMode = mode === "grid" ? "grid" : "normal";
+    resetShapeMode();
     currentTool = "select";
     selected = null;
     multiSelection = null;
@@ -9899,7 +10507,7 @@
   }
 
   function createStroke(points, layer, opts = {}) {
-    if (!canCreateOnCurrentLayer()) return;
+    if (!canCreateOnCurrentLayer()) return null;
     const stroke = {
       id: genId(),
       color: currentColor,
@@ -9916,12 +10524,17 @@
     if (socketConnected) {
       socket.emit("stroke:add", { boardId, stroke });
     }
+    return stroke;
   }
 
   function startShapeMode(kind) {
     if (!requireUser()) return;
     if (!canCreateOnCurrentLayer()) return;
     pendingTextMode = null;
+    framePlaceType = null;
+    framePlaceStart = null;
+    framePlacePreview = null;
+    isPlacingFrame = false;
     shapeMode = kind; // "line" | "rect" | "grid"
     if (currentTool !== "select") {
       currentTool = "select";
@@ -9969,6 +10582,8 @@
   function startFramePlacement(type) {
     if (!requireUser()) return;
     if (!canCreateOnCurrentLayer()) return;
+    pendingTextMode = null;
+    resetShapeMode();
     framePlaceType = type; // "omoteura" | "free"
     framePlaceStart = null;
     framePlacePreview = null;
@@ -10111,6 +10726,10 @@
     shapeGridRows = 0;
     shapeGridCols = 0;
     shapeTargetLayer = null;
+    framePlaceType = null;
+    framePlaceStart = null;
+    framePlacePreview = null;
+    isPlacingFrame = false;
     updateToolButtons();
   }
 

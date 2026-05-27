@@ -778,6 +778,26 @@ body.mobile-menu-open #toolbar {
   border-color: #eebc44;
 }
 
+.frame-tab-tooltip {
+  position: fixed;
+  z-index: 1200;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(23, 35, 43, 0.94);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+.frame-tab-tooltip.hidden {
+  display: none;
+}
+
 /* レスポンシブ調整 */
 @media (max-width: 1024px) {
   #toolbar {
