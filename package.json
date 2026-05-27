@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "materialize-images": "node scripts/materialize-images.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.6.0",

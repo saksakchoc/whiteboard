@@ -67,6 +67,34 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+function safeFilePart(value, fallback = "file") {
+  return String(value || fallback).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || fallback;
+}
+
+function dataUrlExtension(mime) {
+  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/gif") return "gif";
+  return "png";
+}
+
+function materializeImageSrc(boardId, image) {
+  if (!image || typeof image.src !== "string") return image;
+  const match = image.src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return image;
+
+  const boardDir = path.join(uploadsDir, safeFilePart(boardId, "board"));
+  fs.mkdirSync(boardDir, { recursive: true });
+  const ext = dataUrlExtension(match[1].toLowerCase());
+  const filename = `${safeFilePart(image.id, `image_${Date.now()}`)}.${ext}`;
+  const filePath = path.join(boardDir, filename);
+  fs.writeFileSync(filePath, Buffer.from(match[2], "base64"));
+  return {
+    ...image,
+    src: `/uploads/${safeFilePart(boardId, "board")}/${filename}`,
+  };
+}
+
 // ランダムなボードID生成
 function generateBoardId(length = 8) {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -395,11 +423,18 @@ function dedupeById(list) {
 function ensureBoardState(boardId) {
   if (!boardStates.has(boardId)) {
     const dbState = getBoardState(boardId);
+    const images = (dbState.images || []).map((img) => {
+      const materialized = materializeImageSrc(boardId, img);
+      if (materialized.src !== img.src) {
+        saveImage({ ...materialized, board_id: boardId });
+      }
+      return materialized;
+    });
     boardStates.set(boardId, {
       title: dbState.title || boardId,
       strokes: (dbState.strokes || []).map((s) => ({ ...s, layer: s.layer || "user" })),
       texts: (dbState.texts || []).map((t) => ({ ...t, layer: t.layer || "user" })),
-      images: dbState.images || [],
+      images,
       links: dbState.links || [],
     });
   }
@@ -475,10 +510,11 @@ io.on("connection", (socket) => {
       return;
     }
     try {
-      saveImage({ ...image, board_id: boardId });
+      const storedImage = materializeImageSrc(boardId, image);
+      saveImage({ ...storedImage, board_id: boardId });
       const state = ensureBoardState(boardId);
-      upsertById(state.images, image);
-      socket.to(boardId).emit("image:add", image);
+      upsertById(state.images, storedImage);
+      socket.to(boardId).emit("image:add", storedImage);
       if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       notifyPersistenceError(socket, "save image", err);
@@ -518,6 +554,11 @@ io.on("connection", (socket) => {
         } else if (type === "text") {
           saveText({ ...updated, board_id: boardId });
         } else if (type === "image") {
+          const storedImage = materializeImageSrc(boardId, updated);
+          if (storedImage.src !== updated.src) {
+            patch = { ...patch, src: storedImage.src };
+          }
+          Object.assign(updated, storedImage);
           saveImage({ ...updated, board_id: boardId });
         } else if (type === "link") {
           saveLink({ ...updated, board_id: boardId });
