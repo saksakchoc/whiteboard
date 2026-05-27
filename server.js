@@ -371,6 +371,19 @@ function removeAllById(list, id) {
   return removed;
 }
 
+function getItemsByType(state, type) {
+  if (type === "stroke") return state.strokes;
+  if (type === "text") return state.texts;
+  if (type === "image") return state.images;
+  if (type === "link") return state.links;
+  return null;
+}
+
+function notifyPersistenceError(socket, action, err) {
+  console.error(`Failed to ${action}`, err);
+  socket.emit("error-message", "保存に失敗しました。再読み込み前にサーバのログとディスク容量を確認してください。");
+}
+
 function dedupeById(list) {
   const byId = new Map();
   list.forEach((item) => {
@@ -423,82 +436,97 @@ io.on("connection", (socket) => {
 
   socket.on("stroke:add", ({ boardId, stroke }) => {
     if (boardId !== currentBoardId) return;
-    const state = ensureBoardState(boardId);
-    upsertById(state.strokes, stroke);
-    saveStroke({ ...stroke, board_id: boardId });
-    socket.to(boardId).emit("stroke:add", stroke);
+    try {
+      saveStroke({ ...stroke, board_id: boardId });
+      const state = ensureBoardState(boardId);
+      upsertById(state.strokes, stroke);
+      socket.to(boardId).emit("stroke:add", stroke);
+    } catch (err) {
+      notifyPersistenceError(socket, "save stroke", err);
+    }
   });
 
   socket.on("text:add", ({ boardId, text }) => {
     if (boardId !== currentBoardId) return;
-    const state = ensureBoardState(boardId);
     const t = text.createdAt ? text : { ...text, createdAt: Date.now() };
-    upsertById(state.texts, t);
-    saveText({ ...t, board_id: boardId });
-    socket.to(boardId).emit("text:add", t);
+    try {
+      saveText({ ...t, board_id: boardId });
+      const state = ensureBoardState(boardId);
+      upsertById(state.texts, t);
+      socket.to(boardId).emit("text:add", t);
+    } catch (err) {
+      notifyPersistenceError(socket, "save text", err);
+    }
   });
 
   socket.on("image:add", ({ boardId, image }) => {
     if (boardId !== currentBoardId) return;
-    const state = ensureBoardState(boardId);
-    upsertById(state.images, image);
-    saveImage({ ...image, board_id: boardId });
-    socket.to(boardId).emit("image:add", image);
+    try {
+      saveImage({ ...image, board_id: boardId });
+      const state = ensureBoardState(boardId);
+      upsertById(state.images, image);
+      socket.to(boardId).emit("image:add", image);
+    } catch (err) {
+      notifyPersistenceError(socket, "save image", err);
+    }
   });
 
   socket.on("link:add", ({ boardId, link }) => {
     if (boardId !== currentBoardId) return;
-    const state = ensureBoardState(boardId);
     const l = link.createdAt ? link : { ...link, createdAt: Date.now() };
-    upsertById(state.links, l);
-    saveLink({ ...l, board_id: boardId });
-    socket.to(boardId).emit("link:add", l);
+    try {
+      saveLink({ ...l, board_id: boardId });
+      const state = ensureBoardState(boardId);
+      upsertById(state.links, l);
+      socket.to(boardId).emit("link:add", l);
+    } catch (err) {
+      notifyPersistenceError(socket, "save link", err);
+    }
   });
 
   socket.on("item:update", ({ boardId, type, id, patch }) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
-    const list =
-      type === "stroke"
-        ? state.strokes
-        : type === "text"
-        ? state.texts
-        : type === "image"
-        ? state.images
-        : state.links;
+    const list = getItemsByType(state, type);
+    if (!list) return;
     const idx = list.findIndex((x) => x.id === id);
     if (idx >= 0) {
-      list[idx] = { ...list[idx], ...patch };
-      if (type === "stroke") {
-        saveStroke({ ...list[idx], board_id: boardId });
-      } else if (type === "text") {
-        saveText({ ...list[idx], board_id: boardId });
-      } else if (type === "image") {
-        saveImage({ ...list[idx], board_id: boardId });
-      } else if (type === "link") {
-        saveLink({ ...list[idx], board_id: boardId });
+      const updated = { ...list[idx], ...patch };
+      try {
+        if (type === "stroke") {
+          saveStroke({ ...updated, board_id: boardId });
+        } else if (type === "text") {
+          saveText({ ...updated, board_id: boardId });
+        } else if (type === "image") {
+          saveImage({ ...updated, board_id: boardId });
+        } else if (type === "link") {
+          saveLink({ ...updated, board_id: boardId });
+        }
+        list[idx] = updated;
+        socket.to(boardId).emit("item:update", { type, id, patch });
+      } catch (err) {
+        notifyPersistenceError(socket, `update ${type}`, err);
       }
-      socket.to(boardId).emit("item:update", { type, id, patch });
     }
   });
 
   socket.on("item:remove", ({ boardId, type, id }) => {
     if (boardId !== currentBoardId) return;
     const state = ensureBoardState(boardId);
-    const list =
-      type === "stroke"
-        ? state.strokes
-        : type === "text"
-        ? state.texts
-        : type === "image"
-        ? state.images
-        : state.links;
-    if (removeAllById(list, id)) {
-      if (type === "stroke") deleteStroke(boardId, id);
-      else if (type === "text") deleteText(boardId, id);
-      else if (type === "image") deleteImage(boardId, id);
-      else if (type === "link") deleteLink(boardId, id);
-      socket.to(boardId).emit("item:remove", { type, id });
+    const list = getItemsByType(state, type);
+    if (!list) return;
+    if (list.some((item) => item?.id === id)) {
+      try {
+        if (type === "stroke") deleteStroke(boardId, id);
+        else if (type === "text") deleteText(boardId, id);
+        else if (type === "image") deleteImage(boardId, id);
+        else if (type === "link") deleteLink(boardId, id);
+        if (removeAllById(list, id)) {
+          socket.to(boardId).emit("item:remove", { type, id });
+        }
+      } catch (err) {
+        notifyPersistenceError(socket, `remove ${type}`, err);
+      }
     }
   });
 

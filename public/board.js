@@ -3884,6 +3884,22 @@
     };
   }
 
+  function getBackOrderForFrameContainingExistingFrames(frameImg) {
+    if (!isFrameContainer(frameImg)) return null;
+    const frameBounds = getImageBoundsWorld(frameImg);
+    if (!frameBounds) return null;
+    const containedOrders = getFrameImagesForGrouping()
+      .filter(({ img }) => {
+        if (!img || img.id === frameImg.id) return false;
+        const bounds = getImageBoundsWorld(img);
+        return bounds && rectContainsRect(frameBounds, bounds);
+      })
+      .map(({ img }) => getFrameOrder(img))
+      .filter((order) => typeof order === "number");
+    if (!containedOrders.length) return null;
+    return Math.min(...containedOrders) - 1;
+  }
+
   function applyFrameMembershipByPoint(obj, worldPoint) {
     const membership = getFrameMembershipAtWorldPoint(worldPoint, obj);
     if (!membership) return obj;
@@ -4495,6 +4511,7 @@
     });
     images.forEach((img, index) => {
       if (!img || img.id === frameImg.id) return;
+      if (belongsToNestedFrame({ type: "image", index })) return;
       const bounds = getBoundsForFrameContentCandidate({ type: "image", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
       applyMembership("image", img, {
@@ -5066,7 +5083,9 @@
   }
 
   // --- ソケット接続 ---
-  const socket = io();
+  const socket = io({
+    transports: ["websocket", "polling"],
+  });
   let socketConnected = false;
   let socketReady = false;
 
@@ -5080,6 +5099,10 @@
   socket.on("disconnect", () => {
     socketConnected = false;
     socketReady = false;
+  });
+
+  socket.on("error-message", (message) => {
+    if (message) showTransientFooterMessage(message, 6000);
   });
 
   function identifyToServer() {
@@ -9218,6 +9241,10 @@
           frameTabs: isOmoteUraImage ? null : [{ id: "tab-1", name: "1" }],
           activeFrameTab: isOmoteUraImage ? null : "tab-1",
         };
+        const backOrder = getBackOrderForFrameContainingExistingFrames(imgObj);
+        if (typeof backOrder === "number") {
+          imgObj.order = backOrder;
+        }
         const parentMembership = getFrameMembershipForBounds(getImageBoundsWorld(imgObj), imgObj.id);
         if (parentMembership) {
           imgObj.frameId = parentMembership.frameId;
