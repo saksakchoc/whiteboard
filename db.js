@@ -251,6 +251,38 @@ function getBoard(id) {
   return stmt.get(id);
 }
 
+function listBoards() {
+  const stmt = db.prepare(`
+    SELECT
+      b.id,
+      b.created_at,
+      COALESCE(m.title, b.id) AS title,
+      (SELECT COUNT(*) FROM strokes_v2 WHERE board_id = b.id) AS stroke_count,
+      (SELECT COUNT(*) FROM texts_v2 WHERE board_id = b.id) AS text_count,
+      (SELECT COUNT(*) FROM images_v2 WHERE board_id = b.id) AS image_count,
+      (SELECT COUNT(*) FROM links_v1 WHERE board_id = b.id) AS link_count
+    FROM boards b
+    LEFT JOIN board_meta m ON m.board_id = b.id
+    ORDER BY b.created_at DESC
+  `);
+  return stmt.all();
+}
+
+function deleteBoard(boardId) {
+  const run = db.transaction((id) => {
+    db.prepare("DELETE FROM draft_strokes WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM links_v1 WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM images_v2 WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM texts_v2 WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM strokes_v2 WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM board_users WHERE board_id = ?").run(id);
+    db.prepare("DELETE FROM board_meta WHERE board_id = ?").run(id);
+    const result = db.prepare("DELETE FROM boards WHERE id = ?").run(id);
+    return result.changes;
+  });
+  return run(boardId);
+}
+
 function getBoardTitle(boardId) {
   const stmt = db.prepare("SELECT title FROM board_meta WHERE board_id = ?");
   const row = stmt.get(boardId);
@@ -581,6 +613,8 @@ function getBoardState(boardId) {
 module.exports = {
   createBoard,
   getBoard,
+  listBoards,
+  deleteBoard,
   getBoardTitle,
   setBoardTitle,
   saveStroke,

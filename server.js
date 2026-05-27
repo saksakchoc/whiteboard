@@ -9,6 +9,8 @@ const multer = require("multer");
 const {
   createBoard,
   getBoard,
+  listBoards,
+  deleteBoard,
   getBoardTitle,
   setBoardTitle,
   saveStroke,
@@ -95,6 +97,13 @@ function materializeImageSrc(boardId, image) {
   };
 }
 
+function removeBoardUploads(boardId) {
+  const boardDir = path.resolve(uploadsDir, safeFilePart(boardId, "board"));
+  const uploadsRoot = path.resolve(uploadsDir);
+  if (!boardDir.startsWith(`${uploadsRoot}${path.sep}`)) return;
+  fs.rmSync(boardDir, { recursive: true, force: true });
+}
+
 // ランダムなボードID生成
 function generateBoardId(length = 8) {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -119,6 +128,44 @@ app.get("/new", (req, res) => {
 
   createBoard(id);
   res.redirect(`/b/${id}`);
+});
+
+app.get("/api/boards", (req, res) => {
+  try {
+    res.json(
+      listBoards().map((board) => ({
+        id: board.id,
+        title: board.title || board.id,
+        createdAt: board.created_at,
+        counts: {
+          strokes: board.stroke_count || 0,
+          texts: board.text_count || 0,
+          images: board.image_count || 0,
+          links: board.link_count || 0,
+        },
+      }))
+    );
+  } catch (err) {
+    console.error("Failed to list boards", err);
+    res.status(500).json({ error: "failed to list boards" });
+  }
+});
+
+app.delete("/api/boards/:boardId", (req, res) => {
+  const boardId = req.params.boardId;
+  if (!boardId) return res.status(400).json({ error: "boardId is required" });
+  try {
+    const deleted = deleteBoard(boardId);
+    if (!deleted) return res.status(404).json({ error: "board not found" });
+    boardStates.delete(boardId);
+    io.to(boardId).emit("error-message", "このボードは削除されました。");
+    io.in(boardId).disconnectSockets(true);
+    removeBoardUploads(boardId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to delete board", err);
+    res.status(500).json({ error: "failed to delete board" });
+  }
 });
 
 // ボード画面

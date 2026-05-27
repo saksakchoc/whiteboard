@@ -7,15 +7,283 @@
     content="width=device-width, initial-scale=1, viewport-fit=cover"
   />
   <title>シンプルホワイトボード</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #202124;
+      background: #f6f7f9;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    main {
+      width: min(960px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    button,
+    a.button {
+      min-height: 38px;
+      border: 1px solid #c8ced8;
+      border-radius: 6px;
+      padding: 8px 14px;
+      background: #ffffff;
+      color: #202124;
+      font: inherit;
+      line-height: 1.2;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: #1a73e8;
+      background: #1a73e8;
+      color: #ffffff;
+    }
+
+    button.danger {
+      border-color: #d93025;
+      color: #d93025;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .panel {
+      border: 1px solid #d9dde5;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid #e4e7ec;
+    }
+
+    .panel-title {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .status {
+      color: #5f6368;
+      font-size: 14px;
+    }
+
+    .board-list {
+      display: grid;
+    }
+
+    .board-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid #edf0f4;
+    }
+
+    .board-row:last-child {
+      border-bottom: 0;
+    }
+
+    .board-title {
+      display: block;
+      color: #202124;
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .board-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 6px;
+      color: #5f6368;
+      font-size: 13px;
+    }
+
+    .board-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .empty {
+      padding: 28px 16px;
+      color: #5f6368;
+      text-align: center;
+    }
+
+    @media (max-width: 640px) {
+      main {
+        width: min(100% - 20px, 960px);
+        padding: 18px 0;
+      }
+
+      header,
+      .panel-head,
+      .board-row {
+        align-items: stretch;
+        grid-template-columns: 1fr;
+        flex-direction: column;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+
+      .board-actions {
+        justify-content: flex-start;
+      }
+    }
+  </style>
 </head>
 <body>
-  <h1>シンプルホワイトボード</h1>
-  <button id="new-board">新しいボードを作成</button>
+  <main>
+    <header>
+      <h1>シンプルホワイトボード</h1>
+      <button id="new-board" class="primary">新しいボードを作成</button>
+    </header>
+
+    <section class="panel" aria-label="ホワイトボード一覧">
+      <div class="panel-head">
+        <div class="panel-title">ホワイトボード一覧</div>
+        <div id="status" class="status">読み込み中...</div>
+      </div>
+      <div id="board-list" class="board-list"></div>
+    </section>
+  </main>
 
   <script>
-    document.getElementById("new-board").addEventListener("click", () => {
+    const newBoardBtn = document.getElementById("new-board");
+    const boardListEl = document.getElementById("board-list");
+    const statusEl = document.getElementById("status");
+
+    newBoardBtn.addEventListener("click", () => {
       window.location.href = "/new";
     });
+
+    function formatDate(timestamp) {
+      if (!timestamp) return "";
+      return new Intl.DateTimeFormat("ja-JP", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(timestamp));
+    }
+
+    function countText(counts) {
+      const c = counts || {};
+      return `線 ${c.strokes || 0} / テキスト ${c.texts || 0} / 画像 ${c.images || 0} / リンク ${c.links || 0}`;
+    }
+
+    async function deleteBoard(board) {
+      const label = board.title || board.id;
+      if (!window.confirm(`「${label}」を削除します。元に戻せません。`)) return;
+      const res = await fetch(`/api/boards/${encodeURIComponent(board.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        window.alert("削除に失敗しました。");
+        return;
+      }
+      await loadBoards();
+    }
+
+    function renderBoards(boards) {
+      boardListEl.innerHTML = "";
+      statusEl.textContent = `${boards.length}件`;
+      if (!boards.length) {
+        boardListEl.innerHTML = '<div class="empty">まだボードがありません。</div>';
+        return;
+      }
+
+      boards.forEach((board) => {
+        const row = document.createElement("div");
+        row.className = "board-row";
+
+        const info = document.createElement("div");
+        const title = document.createElement("a");
+        title.className = "board-title";
+        title.href = `/b/${encodeURIComponent(board.id)}`;
+        title.textContent = board.title || board.id;
+
+        const meta = document.createElement("div");
+        meta.className = "board-meta";
+        meta.append(
+          `ID: ${board.id}`,
+          `作成: ${formatDate(board.createdAt)}`,
+          countText(board.counts)
+        );
+        info.append(title, meta);
+
+        const actions = document.createElement("div");
+        actions.className = "board-actions";
+        const open = document.createElement("a");
+        open.className = "button";
+        open.href = `/b/${encodeURIComponent(board.id)}`;
+        open.textContent = "開く";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger";
+        remove.textContent = "削除";
+        remove.addEventListener("click", () => deleteBoard(board));
+        actions.append(open, remove);
+
+        row.append(info, actions);
+        boardListEl.appendChild(row);
+      });
+    }
+
+    async function loadBoards() {
+      statusEl.textContent = "読み込み中...";
+      try {
+        const res = await fetch("/api/boards");
+        if (!res.ok) throw new Error("failed to load boards");
+        renderBoards(await res.json());
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "読み込み失敗";
+        boardListEl.innerHTML = '<div class="empty">一覧を読み込めませんでした。</div>';
+      }
+    }
+
+    loadBoards();
   </script>
 </body>
 </html>

@@ -2251,6 +2251,7 @@
     if (next === null) return true;
     const label = next.trim() || current;
     imgObj.tagLabel = label;
+    imgObj.imageName = label;
     updateTextTagsForRenamedImage(imgObj, current, label);
     refreshFrameImageForCurrentSize(imgObj, { emit: true });
     return true;
@@ -2287,6 +2288,7 @@
             height: imgObj.height,
             tagLabel: imgObj.tagLabel,
             tagType: imgObj.tagType,
+            imageName: imgObj.imageName || "",
           },
         });
       }
@@ -2860,6 +2862,7 @@
           img.imageName = imageName;
           emitItemPatch("image", img, { imageName });
           updateTextTagsForRenamedImage(img, oldName, imageName);
+          syncImageNameToLinkedFrames(img, imageName);
         }
       }
       refreshImageList();
@@ -4561,7 +4564,8 @@
         order: orderCounter++,
         user: currentUser || sourceImg.user || "",
         rotation: 0,
-        imageName: sourceImg.imageName ? `${sourceImg.imageName} 切り取り` : "切り取り",
+        tagLabel: getCropSourceTag(sourceImg.id),
+        imageName: getFrameFollowName(sourceImg.imageName),
         imageListOrder: bumpImageListOrderCounter(),
         frameId: frameImg.id,
         frameTab: "background",
@@ -4588,16 +4592,21 @@
       return !rectContainsRect(cropTargetBounds, bounds);
     });
     let added = 0;
+    let followName = "";
     sourceImages.forEach((sourceImg) => {
       const cropWorldRect = getRectIntersection(cropTargetBounds, getImageBoundsWorld(sourceImg));
       const cropImg = createCroppedFrameBackgroundImage(sourceImg, cropWorldRect, frameImg, options);
       if (!cropImg) return;
+      if (!followName && sourceImg.imageName) followName = sourceImg.imageName;
       images.push(cropImg);
       registerUser(cropImg.user);
       emitImageAdd(cropImg);
       added += 1;
     });
-    if (added) refreshImageList();
+    if (added) {
+      if (followName) updateFrameNameFromImage(frameImg, followName);
+      refreshImageList();
+    }
     return added;
   }
 
@@ -6018,6 +6027,58 @@
       emitItemPatch("text", text, { label });
     });
     if (changed) refreshTextList();
+  }
+
+  function getFrameFollowName(imageName) {
+    return String(imageName || "").trim() || "フレーム";
+  }
+
+  function getCropSourceTag(sourceId) {
+    return sourceId ? `crop-source:${sourceId}` : "";
+  }
+
+  function updateFrameNameFromImage(frameImg, imageName) {
+    if (!isFrameContainer(frameImg)) return false;
+    if (frameImg.tagType === "omoteura") return false;
+    const nextName = getFrameFollowName(imageName);
+    const oldName = getFrameDisplayName(frameImg);
+    if (frameImg.tagLabel === nextName && frameImg.imageName === nextName) return false;
+    frameImg.tagLabel = nextName;
+    frameImg.imageName = nextName;
+    updateTextTagsForRenamedImage(frameImg, oldName, nextName);
+    refreshFrameImageForCurrentSize(frameImg, { emit: true });
+    return true;
+  }
+
+  function syncImageNameToLinkedFrames(imgObj, newName) {
+    if (!imgObj || isFrameContainer(imgObj)) return false;
+    let changed = false;
+
+    if (imgObj.frameId && imgObj.frameTab === "background") {
+      const frameImg = getFrameById(imgObj.frameId);
+      changed = updateFrameNameFromImage(frameImg, newName) || changed;
+    }
+
+    const sourceTag = getCropSourceTag(imgObj.id);
+    images.forEach((cropImg) => {
+      if (!cropImg || cropImg === imgObj || isFrameContainer(cropImg)) return;
+      if (cropImg.tagLabel !== sourceTag) return;
+      const cropOldName = cropImg.imageName || "";
+      const cropNewName = getFrameFollowName(newName);
+      if (cropOldName !== cropNewName) {
+        cropImg.imageName = cropNewName;
+        emitItemPatch("image", cropImg, { imageName: cropImg.imageName });
+        updateTextTagsForRenamedImage(cropImg, cropOldName, cropImg.imageName);
+        changed = true;
+      }
+      if (cropImg.frameId && cropImg.frameTab === "background") {
+        const frameImg = getFrameById(cropImg.frameId);
+        changed = updateFrameNameFromImage(frameImg, cropImg.imageName) || changed;
+      }
+    });
+
+    if (changed) refreshImageList();
+    return changed;
   }
 
   function hitTestImageResizeHandle(screenX, screenY, radius = 12) {
@@ -9453,7 +9514,18 @@
   });
 
   // --- イベント登録 ---
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  function suppressBoardContextMenu(e) {
+    const target = e.target;
+    const isBoardContext =
+      target === canvas ||
+      (container && container.contains(target)) ||
+      (contextMenu && contextMenu.contains(target));
+    if (!isBoardContext) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  window.addEventListener("contextmenu", suppressBoardContextMenu, true);
   canvas.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.preventDefault();
   });
@@ -9893,6 +9965,7 @@
       imgObj.imageName = imageName;
       emitItemPatch("image", imgObj, { imageName });
       updateTextTagsForRenamedImage(imgObj, oldName, imageName);
+      syncImageNameToLinkedFrames(imgObj, imageName);
     });
     refreshImageList();
   }
