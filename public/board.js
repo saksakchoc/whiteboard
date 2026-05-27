@@ -5068,16 +5068,18 @@
   // --- ソケット接続 ---
   const socket = io();
   let socketConnected = false;
+  let socketReady = false;
 
   socket.on("connect", () => {
     socketConnected = true;
+    socketReady = false;
     socket.emit("join", { boardId });
     identifyToServer();
-    flushPendingImageAdds();
   });
 
   socket.on("disconnect", () => {
     socketConnected = false;
+    socketReady = false;
   });
 
   function identifyToServer() {
@@ -5466,6 +5468,9 @@
 
   socket.on("init", (state) => {
     applyInitialState(state);
+    socketReady = true;
+    restorePendingImageAdds();
+    flushPendingImageAdds();
     refreshUserDatalist();
     updateFavButtons();
     refreshTextList();
@@ -7537,7 +7542,7 @@
 
   function emitImageAdd(imgObj) {
     const image = imageSnapshotPayload(imgObj);
-    if (!socketConnected) {
+    if (!socketConnected || !socketReady) {
       if (image?.id) pendingImageAdds.set(image.id, image);
       return;
     }
@@ -7547,8 +7552,16 @@
     });
   }
 
+  function restorePendingImageAdds() {
+    if (pendingImageAdds.size === 0) return;
+    pendingImageAdds.forEach((image) => {
+      if (!image?.id || findIndexById(images, image.id) >= 0) return;
+      addImageFromNetwork(image, false, { redrawOnLoad: true });
+    });
+  }
+
   function flushPendingImageAdds() {
-    if (!socketConnected || pendingImageAdds.size === 0) return;
+    if (!socketConnected || !socketReady || pendingImageAdds.size === 0) return;
     pendingImageAdds.forEach((image) => {
       socket.emit("image:add", { boardId, image });
     });
