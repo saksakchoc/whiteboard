@@ -683,7 +683,7 @@
       const frame = getFrameById(imgObj.frameId);
       if (frame && frame.activeFrameTab !== "background") return false;
     }
-    if (isFrameContainer(imgObj)) return isImageVisible(imgObj);
+    if (isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj)) return isImageVisible(imgObj);
     if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
     if (activeLayer === "draft") return layer === "draft" && imgObj.user === currentUser;
@@ -2142,6 +2142,7 @@
     const frameImgEl = new Image();
 
     frameImgEl.onload = () => {
+      const normalizedPatch = normalizeImageAsFrameBackground(sourceImg, visualBounds);
       const frameObj = {
         id: genId(),
         img: frameImgEl,
@@ -2173,6 +2174,7 @@
         frameId: sourceImg.frameId,
         frameTab: sourceImg.frameTab,
         rotation: sourceImg.rotation,
+        ...normalizedPatch,
       });
       selected = { type: "image", index: images.length - 1 };
       currentTool = "select";
@@ -2182,6 +2184,80 @@
 
     frameImgEl.src = dataUrl;
     return true;
+  }
+
+  function normalizeImageAsFrameBackground(sourceImg, visualBounds) {
+    if (!sourceImg || !sourceImg.img || !visualBounds) return {};
+    const rotation = normalizeRotation(sourceImg.rotation || 0);
+    const mirrored = !!sourceImg.mirrored;
+    const bounds = getImageBoundsWorld(sourceImg);
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return {};
+    const alreadyAligned =
+      !rotation &&
+      !mirrored &&
+      Math.abs(bounds.x - visualBounds.x) < 0.001 &&
+      Math.abs(bounds.y - visualBounds.y) < 0.001 &&
+      Math.abs(bounds.width - visualBounds.width) < 0.001 &&
+      Math.abs(bounds.height - visualBounds.height) < 0.001;
+    if (alreadyAligned) return {};
+
+    const sourceEl = sourceImg.img;
+    if (!sourceEl.complete || !sourceEl.naturalWidth || !sourceEl.naturalHeight) return {};
+
+    const maxDimension = 4096;
+    const sourceRatio = Math.max(
+      sourceEl.naturalWidth / Math.max(1, Math.abs(bounds.width)),
+      sourceEl.naturalHeight / Math.max(1, Math.abs(bounds.height))
+    );
+    const capRatio = Math.min(
+      maxDimension / Math.max(1, Math.abs(visualBounds.width)),
+      maxDimension / Math.max(1, Math.abs(visualBounds.height))
+    );
+    const pixelRatio = Math.max(1, Math.min(4, sourceRatio, capRatio));
+    const canvasTag = document.createElement("canvas");
+    canvasTag.width = Math.max(1, Math.round(Math.abs(visualBounds.width) * pixelRatio));
+    canvasTag.height = Math.max(1, Math.round(Math.abs(visualBounds.height) * pixelRatio));
+    const canvasCtx = canvasTag.getContext("2d");
+    if (!canvasCtx) return {};
+
+    const center = getRectCenter(bounds);
+    canvasCtx.save();
+    canvasCtx.translate(
+      (center.x - visualBounds.x) * pixelRatio,
+      (center.y - visualBounds.y) * pixelRatio
+    );
+    if (mirrored) canvasCtx.scale(-1, 1);
+    if (rotation) canvasCtx.rotate((rotation * Math.PI) / 180);
+    canvasCtx.drawImage(
+      sourceEl,
+      (-bounds.width / 2) * pixelRatio,
+      (-bounds.height / 2) * pixelRatio,
+      bounds.width * pixelRatio,
+      bounds.height * pixelRatio
+    );
+    canvasCtx.restore();
+
+    const src = canvasTag.toDataURL("image/png");
+    const imgEl = new Image();
+    imgEl.onload = () => redraw();
+    imgEl.src = src;
+    sourceImg.img = imgEl;
+    sourceImg.src = src;
+    sourceImg.x = visualBounds.x;
+    sourceImg.y = visualBounds.y;
+    sourceImg.width = visualBounds.width;
+    sourceImg.height = visualBounds.height;
+    sourceImg.rotation = 0;
+    sourceImg.mirrored = false;
+    return {
+      src,
+      x: sourceImg.x,
+      y: sourceImg.y,
+      width: sourceImg.width,
+      height: sourceImg.height,
+      rotation: sourceImg.rotation,
+      mirrored: sourceImg.mirrored,
+    };
   }
 
   function addTabToSelectedImageOrFrame() {
@@ -3900,6 +3976,21 @@
     return Math.min(...containedOrders) - 1;
   }
 
+  function getBackOrderBehindOverlappingImages(imgObj) {
+    const bounds = getImageBoundsWorld(imgObj);
+    if (!bounds) return null;
+    const overlappingOrders = images
+      .filter((img) => {
+        if (!img || img.id === imgObj.id || isFrameContainer(img) || isOmoteUraTagImage(img)) return false;
+        const imageBounds = getImageBoundsWorld(img);
+        return imageBounds && rectsOverlap(bounds, imageBounds);
+      })
+      .map((img) => getObjectOrderValue("image", img, 0))
+      .filter((order) => typeof order === "number");
+    if (!overlappingOrders.length) return null;
+    return Math.min(...overlappingOrders) - 1;
+  }
+
   function applyFrameMembershipByPoint(obj, worldPoint) {
     const membership = getFrameMembershipAtWorldPoint(worldPoint, obj);
     if (!membership) return obj;
@@ -3935,17 +4026,32 @@
     return { frameId: nextFrameId, frameTab: nextFrameTab };
   }
 
+  function isFrameVisibleInAncestorTabs(frameImg, seenFrameIds = new Set()) {
+    if (!isFrameContainer(frameImg)) return false;
+    if (!frameImg.frameId) return true;
+    if (seenFrameIds.has(frameImg.id)) return false;
+    seenFrameIds.add(frameImg.id);
+
+    const parentFrame = getFrameById(frameImg.frameId);
+    if (!parentFrame || !isImageVisible(parentFrame)) return false;
+    if (!isFrameVisibleInAncestorTabs(parentFrame, seenFrameIds)) return false;
+
+    const tab = frameImg.frameTab || getFrameActiveTab(parentFrame);
+    return tab === "background" || tab === getFrameActiveTab(parentFrame);
+  }
+
   function isFrameMemberVisible(obj, fallbackItem = null) {
     if (!obj) return false;
     if (obj.frameId) {
       const frame = getFrameById(obj.frameId);
       if (!frame || !isImageVisible(frame)) return false;
+      if (!isFrameVisibleInAncestorTabs(frame)) return false;
       const tab = obj.frameTab || getFrameActiveTab(frame);
       return tab === "background" || tab === getFrameActiveTab(frame);
     }
     if (fallbackItem) {
       const owner = findOwningFrameForItem(fallbackItem);
-      if (owner) return owner.frame.activeFrameTab !== "background";
+      if (owner) return owner.frame.activeFrameTab !== "background" && isFrameVisibleInAncestorTabs(owner.frame);
     }
     if (obj.tagType) return true;
     return true;
@@ -4286,7 +4392,7 @@
       frameY: frameImg.y,
       items: [],
     };
-    getFrameContentItems(frameImg).forEach((item) => {
+    getFrameContentItemsDeep(frameImg).forEach((item) => {
       if (item.type === "stroke") {
         const s = strokes[item.index];
         if (s) {
@@ -9348,7 +9454,7 @@
           y: frameY,
           width,
           height: frameHeight,
-          layer: isOmoteUraImage ? getImageTargetLayer() : "image",
+          layer: "image",
           order: orderCounter++,
           user: currentUser,
           rotation: 0,
@@ -9362,6 +9468,12 @@
         const backOrder = getBackOrderForFrameContainingExistingFrames(imgObj);
         if (typeof backOrder === "number") {
           imgObj.order = backOrder;
+        }
+        if (isOmoteUraImage) {
+          const imageBackOrder = getBackOrderBehindOverlappingImages(imgObj);
+          if (typeof imageBackOrder === "number") {
+            imgObj.order = imageBackOrder;
+          }
         }
         const parentMembership = getFrameMembershipForBounds(getImageBoundsWorld(imgObj), imgObj.id);
         if (parentMembership) {
@@ -10053,7 +10165,8 @@
     const isPen = currentTool === "pen";
     const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
-    const isSelect = currentTool === "select" && !shapeMode && !pendingTextMode && !framePlaceType;
+    const isInsertMode = !!shapeMode || !!framePlaceType;
+    const isSelect = currentTool === "select" && !isInsertMode && !pendingTextMode;
     if (penToolBtn) {
       penToolBtn.disabled = creationLocked || isPen;
       penToolBtn.classList.toggle("active", isPen);
@@ -10079,7 +10192,11 @@
     }
     if (insertMenuBtn) {
       insertMenuBtn.disabled = creationLocked;
+      insertMenuBtn.classList.toggle("active", isInsertMode);
       insertMenuBtn.title = creationLocked ? "このレイヤーでは挿入は使えません" : "挿入";
+    }
+    if (otherMenuBtn) {
+      otherMenuBtn.classList.toggle("active", isInsertMode);
     }
     if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill") {
       canvas.style.cursor = "crosshair";
@@ -10796,10 +10913,12 @@
     shapeGridRows = 0;
     shapeGridCols = 0;
     shapeTargetLayer = null;
+    updateToolButtons();
     if (kind === "grid") {
       let n = window.prompt("マス目の数 n を入力してください", "5");
       if (n === null) {
         shapeMode = null;
+        updateToolButtons();
         return;
       }
       n = parseInt(n, 10);
@@ -10839,6 +10958,7 @@
     framePlaceStart = null;
     framePlacePreview = null;
     showTransientFooterMessage("ドラッグしてフレームの大きさを指定してください。", 4000);
+    updateToolButtons();
     closeInsertMenu();
   }
 

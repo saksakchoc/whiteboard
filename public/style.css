@@ -578,6 +578,12 @@ button:hover {
   border-color: #0b4ea2;
 }
 
+#insert-menu-btn.active {
+  background: #0b4ea2;
+  color: #fff;
+  border-color: #0b4ea2;
+}
+
 .side-others,
 .side-text-tool {
   position: relative;
