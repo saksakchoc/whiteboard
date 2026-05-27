@@ -93,7 +93,10 @@
   let selectionDragCurrent = null;
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
+  const pendingStrokeAdds = new Map();
+  const pendingTextAdds = new Map();
   const pendingImageAdds = new Map();
+  const pendingLinkAdds = new Map();
   let imageLoadTokenCounter = 0;
   let multiSelection = null;
   let multiDragActive = false;
@@ -506,11 +509,11 @@
         if (options.add) {
           options.add(afterItem);
         } else if (type === "text") {
-          socket.emit("text:add", { boardId, text: afterItem });
+          emitTextAdd(afterItem);
         } else if (type === "stroke") {
-          socket.emit("stroke:add", { boardId, stroke: afterItem });
+          emitStrokeAdd(afterItem);
         } else if (type === "image") {
-          socket.emit("image:add", { boardId, image: imageSnapshotPayload(afterItem) });
+          emitImageAdd(afterItem);
         }
       } else if (snapshotItemChanged(beforeItem, afterItem)) {
         if (options.update) {
@@ -528,7 +531,7 @@
     syncUndoCollection("text", before.texts, after.texts);
     syncUndoCollection("image", before.images, after.images);
     syncUndoCollection("link", before.links, after.links, {
-      add: (link) => socket.emit("link:add", { boardId, link }),
+      add: (link) => emitLinkAdd(link),
     });
     syncUndoCollection("draft", before.draftStrokes, after.draftStrokes, {
       add: (stroke) => socket.emit("draft:stroke:add", { boardId, stroke }),
@@ -1031,9 +1034,7 @@
       }
     } else if (activeStrokeId) {
       const stroke = strokes.find((s) => s.id === activeStrokeId);
-      if (stroke && socketConnected) {
-        socket.emit("stroke:add", { boardId, stroke });
-      }
+      if (stroke) emitStrokeAdd(stroke);
     }
     isDrawing = false;
     isDrawingDraft = false;
@@ -3672,9 +3673,7 @@
       };
       strokes.push(clone);
       clonedStrokeIds.add(s.id);
-      if (socketConnected) {
-        socket.emit("stroke:add", { boardId, stroke: clone });
-      }
+      emitStrokeAdd(clone);
     };
     const cloneFrameStroke = (s, idxOffset = 1, targetFrameId = null) => {
       if (!s || clonedStrokeIds.has(s.id)) return;
@@ -3689,7 +3688,7 @@
       };
       strokes.push(clone);
       clonedStrokeIds.add(s.id);
-      if (socketConnected) socket.emit("stroke:add", { boardId, stroke: clone });
+      emitStrokeAdd(clone);
     };
     const cloneFrameDraft = (s, idxOffset = 1, targetFrameId = null) => {
       if (!s || clonedDraftIds.has(s.id)) return;
@@ -3720,7 +3719,7 @@
       texts.push(clone);
       clonedTextIds.add(t.id);
       refreshTextList();
-      if (socketConnected) socket.emit("text:add", { boardId, text: clone });
+      emitTextAdd(clone);
     };
     const cloneFrameImage = (imgObj, idxOffset = 1, targetFrameId = null) => {
       if (!imgObj || clonedImageIds.has(imgObj.id)) return null;
@@ -3797,9 +3796,7 @@
         };
         texts.push(clone);
         refreshTextList();
-        if (socketConnected) {
-          socket.emit("text:add", { boardId, text: clone });
-        }
+        emitTextAdd(clone);
       }
     });
     redraw();
@@ -4711,12 +4708,12 @@
       strokes.push(fillStroke);
     }
     registerUser(currentUser);
-    if (socketConnected) {
-      if (activeLayer === "draft") {
+    if (activeLayer === "draft") {
+      if (socketConnected) {
         socket.emit("draft:stroke:add", { boardId, stroke: fillStroke });
-      } else {
-        socket.emit("stroke:add", { boardId, stroke: fillStroke });
       }
+    } else {
+      emitStrokeAdd(fillStroke);
     }
     redraw();
     return true;
@@ -4784,9 +4781,7 @@
         texts.push(clone);
         copied = true;
         refreshTextList();
-        if (socketConnected) {
-          socket.emit("text:add", { boardId, text: clone });
-        }
+        emitTextAdd(clone);
       }
     });
 
@@ -4841,9 +4836,7 @@
       };
       strokes.push(stroke);
       registerUser(currentUser);
-      if (socketConnected) {
-        socket.emit("stroke:add", { boardId, stroke });
-      }
+      emitStrokeAdd(stroke);
     });
 
     unique.forEach((draft) => {
@@ -5099,6 +5092,7 @@
   socket.on("disconnect", () => {
     socketConnected = false;
     socketReady = false;
+    showTransientFooterMessage("サーバとの接続が切れました。再接続を待っています。", 6000);
   });
 
   socket.on("error-message", (message) => {
@@ -5492,8 +5486,8 @@
   socket.on("init", (state) => {
     applyInitialState(state);
     socketReady = true;
-    restorePendingImageAdds();
-    flushPendingImageAdds();
+    restorePendingAdds();
+    flushPendingAdds();
     refreshUserDatalist();
     updateFavButtons();
     refreshTextList();
@@ -7575,20 +7569,73 @@
     });
   }
 
-  function restorePendingImageAdds() {
-    if (pendingImageAdds.size === 0) return;
+  function emitStrokeAdd(stroke) {
+    if (!stroke?.id) return;
+    if (!socketConnected || !socketReady) {
+      pendingStrokeAdds.set(stroke.id, stableSnapshotValue(stroke));
+      showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
+      return;
+    }
+    socket.emit("stroke:add", { boardId, stroke });
+  }
+
+  function emitTextAdd(text) {
+    if (!text?.id) return;
+    if (!socketConnected || !socketReady) {
+      pendingTextAdds.set(text.id, stableSnapshotValue(text));
+      showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
+      return;
+    }
+    socket.emit("text:add", { boardId, text });
+  }
+
+  function emitLinkAdd(link) {
+    if (!link?.id) return;
+    if (!socketConnected || !socketReady) {
+      pendingLinkAdds.set(link.id, stableSnapshotValue(link));
+      showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
+      return;
+    }
+    socket.emit("link:add", { boardId, link });
+  }
+
+  function restorePendingAdds() {
+    pendingStrokeAdds.forEach((stroke) => {
+      if (!stroke?.id || findIndexById(strokes, stroke.id) >= 0) return;
+      addStrokeFromNetwork(stroke, false);
+    });
+    pendingTextAdds.forEach((text) => {
+      if (!text?.id || findIndexById(texts, text.id) >= 0) return;
+      addTextFromNetwork(text, false);
+    });
     pendingImageAdds.forEach((image) => {
       if (!image?.id || findIndexById(images, image.id) >= 0) return;
       addImageFromNetwork(image, false, { redrawOnLoad: true });
     });
+    pendingLinkAdds.forEach((link) => {
+      if (!link?.id || findIndexById(links, link.id) >= 0) return;
+      addLinkFromNetwork(link, false);
+    });
   }
 
-  function flushPendingImageAdds() {
-    if (!socketConnected || !socketReady || pendingImageAdds.size === 0) return;
+  function flushPendingAdds() {
+    if (!socketConnected || !socketReady) return;
+    pendingStrokeAdds.forEach((stroke) => {
+      socket.emit("stroke:add", { boardId, stroke });
+    });
+    pendingStrokeAdds.clear();
+    pendingTextAdds.forEach((text) => {
+      socket.emit("text:add", { boardId, text });
+    });
+    pendingTextAdds.clear();
     pendingImageAdds.forEach((image) => {
       socket.emit("image:add", { boardId, image });
     });
     pendingImageAdds.clear();
+    pendingLinkAdds.forEach((link) => {
+      socket.emit("link:add", { boardId, link });
+    });
+    pendingLinkAdds.clear();
   }
 
   // --- テキスト入力 ---
@@ -7605,9 +7652,7 @@
   function addTextObject(textData) {
     texts.push(textData);
     registerUser(currentUser);
-    if (socketConnected) {
-      socket.emit("text:add", { boardId, text: textData });
-    }
+    emitTextAdd(textData);
   }
 
   function autosizeTextEditor(textarea) {
@@ -7911,9 +7956,7 @@
     };
     links.push(link);
     registerUser(currentUser);
-    if (socketConnected) {
-      socket.emit("link:add", { boardId, link });
-    }
+    emitLinkAdd(link);
     refreshLinkList();
     selected = { type: "link", index: links.length - 1 };
     multiSelection = null;
@@ -7951,9 +7994,7 @@
     applyFrameMembershipByPoint(t, { x: worldX, y: worldY });
     texts.push(t);
     registerUser(currentUser);
-    if (socketConnected) {
-      socket.emit("text:add", { boardId, text: t });
-    }
+    emitTextAdd(t);
     refreshTextList();
 
     // このテキストをデフォルトとして記憶
@@ -8765,9 +8806,7 @@
         }
       } else if (activeStrokeId) {
         const stroke = strokes.find((s) => s.id === activeStrokeId);
-        if (stroke && socketConnected) {
-          socket.emit("stroke:add", { boardId, stroke });
-        }
+        if (stroke) emitStrokeAdd(stroke);
       }
     }
 
@@ -10644,9 +10683,7 @@
     applyFrameMembershipByPoint(stroke, points[0]);
     strokes.push(stroke);
     registerUser(currentUser);
-    if (socketConnected) {
-      socket.emit("stroke:add", { boardId, stroke });
-    }
+    emitStrokeAdd(stroke);
     return stroke;
   }
 
