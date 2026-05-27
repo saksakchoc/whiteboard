@@ -2673,7 +2673,7 @@
   function sortImagesForList() {
     return images
       .map((img, index) => ({ img, index }))
-      .filter(({ img }) => !isFrameContainer(img))
+      .filter(({ img }) => !isFrameContainer(img) && !isOmoteUraTagImage(img))
       .sort((a, b) => {
         const ao = typeof a.img.imageListOrder === "number" ? a.img.imageListOrder : a.img.order ?? a.index;
         const bo = typeof b.img.imageListOrder === "number" ? b.img.imageListOrder : b.img.order ?? b.index;
@@ -9444,9 +9444,7 @@
       const placeX = Math.min(x0, x1);
       const placeY = Math.min(y0, y1);
       const placedFrameType = framePlaceType || "free";
-      const bodyBounds = { x: placeX, y: placeY, width, height };
-      const shouldFitViewportToDrag =
-        placedFrameType !== "omoteura" && hasCroppedImageBackgroundSource(bodyBounds);
+      const shouldFitViewportToDrag = placedFrameType !== "omoteura";
       const frameHeight = shouldFitViewportToDrag
         ? getFrameTotalHeightForViewportHeight(height)
         : height;
