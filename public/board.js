@@ -98,6 +98,7 @@
   const pendingImageAdds = new Map();
   const pendingLinkAdds = new Map();
   let imageLoadTokenCounter = 0;
+  let frameRenderCache = null;
   let multiSelection = null;
   let multiDragActive = false;
   let multiDragStartWorld = null;
@@ -3916,8 +3917,23 @@
 
   function isImageNearViewport(imgObj, marginScreen = 512) {
     if (!imgObj) return false;
-    if (imgObj.frameId) return true;
+    if (imgObj.frameId) {
+      const owner = getFrameById(imgObj.frameId);
+      return owner ? isWorldRectNearViewport(getRotatedImageVisualBoundsWorld(owner), marginScreen) : true;
+    }
     return isWorldRectNearViewport(getRotatedImageVisualBoundsWorld(imgObj), marginScreen);
+  }
+
+  function isFramedObjectNearViewport(obj, fallbackItem = null, marginScreen = 512) {
+    if (!obj) return false;
+    if (obj.frameId) {
+      const owner = getFrameById(obj.frameId);
+      return owner ? isWorldRectNearViewport(getRotatedImageVisualBoundsWorld(owner), marginScreen) : true;
+    }
+    const owner = fallbackItem ? findOwningFrameForItem(fallbackItem) : null;
+    if (owner?.frame) return isWorldRectNearViewport(getRotatedImageVisualBoundsWorld(owner.frame), marginScreen);
+    const bounds = fallbackItem ? getBoundsForFrameContentCandidate(fallbackItem) : null;
+    return bounds ? isWorldRectNearViewport(bounds, marginScreen) : true;
   }
 
   function ensureImageElementForImage(imgObj, options = {}) {
@@ -3977,6 +3993,7 @@
   }
 
   function getFrameImagesForGrouping() {
+    if (frameRenderCache?.framesForGrouping) return frameRenderCache.framesForGrouping;
     return images
       .map((img, index) => ({ img, index }))
       .filter(({ img }) => isFrameContainer(img))
@@ -3985,7 +4002,36 @@
 
   function getFrameById(frameId) {
     if (!frameId) return null;
+    if (frameRenderCache?.frameById) return frameRenderCache.frameById.get(frameId) || null;
     return images.find((img) => img?.id === frameId && isFrameContainer(img)) || null;
+  }
+
+  function getFrameIndexById(frameId) {
+    if (!frameId) return -1;
+    if (frameRenderCache?.frameIndexById) return frameRenderCache.frameIndexById.get(frameId) ?? -1;
+    return images.findIndex((img) => img?.id === frameId && isFrameContainer(img));
+  }
+
+  function createFrameRenderCache() {
+    const framesForGrouping = images
+      .map((img, index) => ({ img, index }))
+      .filter(({ img }) => isFrameContainer(img))
+      .sort((a, b) => getFrameOrder(a.img) - getFrameOrder(b.img));
+    const frameById = new Map();
+    const frameIndexById = new Map();
+    framesForGrouping.forEach(({ img, index }) => {
+      if (!img?.id) return;
+      frameById.set(img.id, img);
+      frameIndexById.set(img.id, index);
+    });
+    return {
+      framesForGrouping,
+      frameById,
+      frameIndexById,
+      ownerByItemKey: new Map(),
+      frameContentById: new Map(),
+      frameMetricsById: new Map(),
+    };
   }
 
   function getFrameMembershipTabForObject(frame, obj) {
@@ -4148,6 +4194,10 @@
   }
 
   function findOwningFrameForItem(item) {
+    const cacheKey = item ? `${item.type}:${item.index}` : "";
+    if (cacheKey && frameRenderCache?.ownerByItemKey?.has(cacheKey)) {
+      return frameRenderCache.ownerByItemKey.get(cacheKey);
+    }
     const bounds = getBoundsForFrameContentCandidate(item);
     if (!bounds) return null;
 
@@ -4164,7 +4214,9 @@
     if (storedFrameId) {
       const frame = getFrameById(storedFrameId);
       if (frame) {
-        return { frame, index: images.findIndex((img) => img?.id === frame.id), order: getFrameOrder(frame) };
+        const owner = { frame, index: getFrameIndexById(frame.id), order: getFrameOrder(frame) };
+        if (cacheKey && frameRenderCache?.ownerByItemKey) frameRenderCache.ownerByItemKey.set(cacheKey, owner);
+        return owner;
       }
     }
 
@@ -4180,6 +4232,7 @@
         owner = { frame: img, index, order: frameOrder };
       }
     });
+    if (cacheKey && frameRenderCache?.ownerByItemKey) frameRenderCache.ownerByItemKey.set(cacheKey, owner);
     return owner;
   }
 
@@ -4200,6 +4253,9 @@
 
   function getFrameContentItems(frameImg) {
     if (!isFrameContainer(frameImg)) return [];
+    if (!frameScrollIgnoredItemKeys && frameRenderCache?.frameContentById?.has(frameImg.id)) {
+      return frameRenderCache.frameContentById.get(frameImg.id);
+    }
     const frameBounds = getImageBoundsWorld(frameImg);
     if (!frameBounds) return [];
     const items = [];
@@ -4231,6 +4287,9 @@
       }
     });
 
+    if (!frameScrollIgnoredItemKeys && frameRenderCache?.frameContentById) {
+      frameRenderCache.frameContentById.set(frameImg.id, items);
+    }
     return items;
   }
 
@@ -4294,15 +4353,23 @@
   }
 
   function getFrameScrollMetrics(frameImg) {
+    if (!frameScrollIgnoredItemKeys && frameRenderCache?.frameMetricsById?.has(frameImg.id)) {
+      return frameRenderCache.frameMetricsById.get(frameImg.id);
+    }
     const viewport = getFrameViewportWorld(frameImg);
     const content = getVisibleFrameContentBounds(frameImg);
-    if (!viewport || !content) return { viewport, content, maxX: 0, maxY: 0 };
-    return {
+    const metrics = !viewport || !content
+      ? { viewport, content, maxX: 0, maxY: 0 }
+      : {
       viewport,
       content,
       maxX: Math.max(0, content.x + content.width - (viewport.x + viewport.width)),
       maxY: Math.max(0, content.y + content.height - (viewport.y + viewport.height)),
     };
+    if (!frameScrollIgnoredItemKeys && frameRenderCache?.frameMetricsById) {
+      frameRenderCache.frameMetricsById.set(frameImg.id, metrics);
+    }
+    return metrics;
   }
 
   function clampFrameScroll(frameImg) {
@@ -6568,11 +6635,14 @@
   // --- 描画処理 ---
   function redraw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    frameRenderCache = createFrameRenderCache();
 
     // 1. すべての描画オブジェクトを統合して並び替え
     const combined = [];
     strokes.forEach((s, idx) => {
-      if (!isFrameMemberVisible(s, { type: "stroke", index: idx })) return;
+      const item = { type: "stroke", index: idx };
+      if (!isFramedObjectNearViewport(s, item)) return;
+      if (!isFrameMemberVisible(s, item)) return;
       combined.push({
         type: "stroke",
         order: s.order ?? idx,
@@ -6581,7 +6651,9 @@
       });
     });
     draftStrokes.forEach((s, idx) => {
-      if (!isFrameMemberVisible(s, { type: "draft", index: idx })) return;
+      const item = { type: "draft", index: idx };
+      if (!isFramedObjectNearViewport(s, item)) return;
+      if (!isFrameMemberVisible(s, item)) return;
       combined.push({
         type: "draft-stroke",
         order: s.order ?? draftStrokes.length + idx,
@@ -6616,7 +6688,9 @@
       }
     });
     texts.forEach((t, idx) => {
-      if (!isFrameMemberVisible(t, { type: "text", index: idx })) return;
+      const item = { type: "text", index: idx };
+      if (!isFramedObjectNearViewport(t, item)) return;
+      if (!isFrameMemberVisible(t, item)) return;
       combined.push({
         type: "text",
         order: t.order ?? strokes.length + idx,
@@ -6626,6 +6700,7 @@
     });
     links.forEach((link, idx) => {
       if (!isLinkVisible(link)) return;
+      if (!isWorldRectNearViewport(getLinkBoundsWorld(link), 512)) return;
       combined.push({
         type: "link",
         order: link.order ?? orderCounter + idx,
@@ -7044,6 +7119,7 @@
 
     // 3. 最前面オーバーレイ：レーザーポインタ
     drawAttentionPointers();
+    frameRenderCache = null;
   }
 
   function drawSelectionRect(x, y, w, h) {
