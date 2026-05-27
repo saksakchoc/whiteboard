@@ -1333,7 +1333,7 @@
     const w = Math.max(minW, Math.abs(width));
     const h = Math.max(minH, Math.abs(height));
     if (type === "omoteura") {
-      return createOmoteUraFrameTag(w, h);
+      return createOmoteUraFrameTag(w, h, label === "horizontal" ? "horizontal" : "vertical");
     }
     const spec =
       type === "omote"
@@ -1384,25 +1384,38 @@
     };
   }
 
-  function createOmoteUraFrameTag(width, height) {
+  function createOmoteUraFrameTag(width, height, orientation = "vertical") {
     const w = Math.max(120, Math.abs(width));
     const h = Math.max(80, Math.abs(height));
     const colors = getOmoteUraFrameColors();
     const barW = Math.min(28, Math.max(18, w * 0.1));
+    const isHorizontal = orientation === "horizontal";
     const midY = h / 2;
+    const midX = w / 2;
     const canvasTag = document.createElement("canvas");
     canvasTag.width = w;
     canvasTag.height = h;
     const c = canvasTag.getContext("2d");
 
-    c.fillStyle = colors.omoteBody;
-    c.fillRect(0, 0, w, midY);
-    c.fillStyle = colors.uraBody;
-    c.fillRect(0, midY, w, h - midY);
-    c.fillStyle = colors.omoteBar;
-    c.fillRect(0, 0, barW, midY);
-    c.fillStyle = colors.uraBar;
-    c.fillRect(0, midY, barW, h - midY);
+    if (isHorizontal) {
+      c.fillStyle = colors.omoteBody;
+      c.fillRect(0, 0, midX, h);
+      c.fillStyle = colors.uraBody;
+      c.fillRect(midX, 0, w - midX, h);
+      c.fillStyle = colors.omoteBar;
+      c.fillRect(0, 0, midX, barW);
+      c.fillStyle = colors.uraBar;
+      c.fillRect(midX, 0, w - midX, barW);
+    } else {
+      c.fillStyle = colors.omoteBody;
+      c.fillRect(0, 0, w, midY);
+      c.fillStyle = colors.uraBody;
+      c.fillRect(0, midY, w, h - midY);
+      c.fillStyle = colors.omoteBar;
+      c.fillRect(0, 0, barW, midY);
+      c.fillStyle = colors.uraBar;
+      c.fillRect(0, midY, barW, h - midY);
+    }
     c.strokeStyle = colors.border;
     c.lineWidth = 2;
     c.strokeRect(1, 1, w - 2, h - 2);
@@ -1411,8 +1424,13 @@
     c.font = "18px sans-serif";
     c.textBaseline = "middle";
     c.textAlign = "center";
-    c.fillText("表", barW / 2, midY / 2);
-    c.fillText("裏", barW / 2, midY + (h - midY) / 2);
+    if (isHorizontal) {
+      c.fillText("表", midX / 2, barW / 2);
+      c.fillText("裏", midX + (w - midX) / 2, barW / 2);
+    } else {
+      c.fillText("表", barW / 2, midY / 2);
+      c.fillText("裏", barW / 2, midY + (h - midY) / 2);
+    }
     return canvasTag.toDataURL("image/png");
   }
 
@@ -1632,7 +1650,9 @@
     const worldW = imgObj.width;
     const worldH = imgObj.height;
     const barW = Math.min(28, Math.max(18, worldW * 0.1));
+    const isHorizontal = getOmoteUraOrientation(imgObj) === "horizontal";
     const midY = worldH / 2;
+    const midX = worldW / 2;
 
     ctx.save();
     const screenPos = worldToScreen(imgObj.x, imgObj.y);
@@ -1649,37 +1669,68 @@
     roundedRectPath(ctx, 0, 0, worldW, worldH, radius);
     ctx.clip();
 
-    const omoteGradient = ctx.createLinearGradient(0, 0, worldW, midY);
-    omoteGradient.addColorStop(0, lightenColor(colors.omoteBody, 0.3));
-    omoteGradient.addColorStop(1, colors.omoteBody);
-    ctx.fillStyle = omoteGradient;
-    ctx.fillRect(0, 0, worldW, midY);
+    if (isHorizontal) {
+      const omoteGradient = ctx.createLinearGradient(0, 0, midX, worldH);
+      omoteGradient.addColorStop(0, lightenColor(colors.omoteBody, 0.3));
+      omoteGradient.addColorStop(1, colors.omoteBody);
+      ctx.fillStyle = omoteGradient;
+      ctx.fillRect(0, 0, midX, worldH);
 
-    const uraGradient = ctx.createLinearGradient(0, midY, worldW, worldH);
-    uraGradient.addColorStop(0, lightenColor(colors.uraBody, 0.28));
-    uraGradient.addColorStop(1, colors.uraBody);
-    ctx.fillStyle = uraGradient;
-    ctx.fillRect(0, midY, worldW, worldH - midY);
+      const uraGradient = ctx.createLinearGradient(midX, 0, worldW, worldH);
+      uraGradient.addColorStop(0, lightenColor(colors.uraBody, 0.28));
+      uraGradient.addColorStop(1, colors.uraBody);
+      ctx.fillStyle = uraGradient;
+      ctx.fillRect(midX, 0, worldW - midX, worldH);
 
-    const omoteBarGradient = ctx.createLinearGradient(0, 0, barW, 0);
-    omoteBarGradient.addColorStop(0, lightenColor(colors.omoteBar, 0.18));
-    omoteBarGradient.addColorStop(1, colors.omoteBar);
-    ctx.fillStyle = omoteBarGradient;
-    ctx.fillRect(0, 0, barW, midY);
+      const omoteBarGradient = ctx.createLinearGradient(0, 0, 0, barW);
+      omoteBarGradient.addColorStop(0, lightenColor(colors.omoteBar, 0.18));
+      omoteBarGradient.addColorStop(1, colors.omoteBar);
+      ctx.fillStyle = omoteBarGradient;
+      ctx.fillRect(0, 0, midX, barW);
 
-    const uraBarGradient = ctx.createLinearGradient(0, midY, barW, midY);
-    uraBarGradient.addColorStop(0, lightenColor(colors.uraBar, 0.18));
-    uraBarGradient.addColorStop(1, colors.uraBar);
-    ctx.fillStyle = uraBarGradient;
-    ctx.fillRect(0, midY, barW, worldH - midY);
+      const uraBarGradient = ctx.createLinearGradient(midX, 0, midX, barW);
+      uraBarGradient.addColorStop(0, lightenColor(colors.uraBar, 0.18));
+      uraBarGradient.addColorStop(1, colors.uraBar);
+      ctx.fillStyle = uraBarGradient;
+      ctx.fillRect(midX, 0, worldW - midX, barW);
+    } else {
+      const omoteGradient = ctx.createLinearGradient(0, 0, worldW, midY);
+      omoteGradient.addColorStop(0, lightenColor(colors.omoteBody, 0.3));
+      omoteGradient.addColorStop(1, colors.omoteBody);
+      ctx.fillStyle = omoteGradient;
+      ctx.fillRect(0, 0, worldW, midY);
+
+      const uraGradient = ctx.createLinearGradient(0, midY, worldW, worldH);
+      uraGradient.addColorStop(0, lightenColor(colors.uraBody, 0.28));
+      uraGradient.addColorStop(1, colors.uraBody);
+      ctx.fillStyle = uraGradient;
+      ctx.fillRect(0, midY, worldW, worldH - midY);
+
+      const omoteBarGradient = ctx.createLinearGradient(0, 0, barW, 0);
+      omoteBarGradient.addColorStop(0, lightenColor(colors.omoteBar, 0.18));
+      omoteBarGradient.addColorStop(1, colors.omoteBar);
+      ctx.fillStyle = omoteBarGradient;
+      ctx.fillRect(0, 0, barW, midY);
+
+      const uraBarGradient = ctx.createLinearGradient(0, midY, barW, midY);
+      uraBarGradient.addColorStop(0, lightenColor(colors.uraBar, 0.18));
+      uraBarGradient.addColorStop(1, colors.uraBar);
+      ctx.fillStyle = uraBarGradient;
+      ctx.fillRect(0, midY, barW, worldH - midY);
+    }
 
     ctx.fillStyle = "rgba(255,255,255,0.38)";
     ctx.fillRect(0, 0, worldW, Math.max(1, worldH * 0.035));
     ctx.strokeStyle = "rgba(15,23,42,0.22)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, midY);
-    ctx.lineTo(worldW, midY);
+    if (isHorizontal) {
+      ctx.moveTo(midX, 0);
+      ctx.lineTo(midX, worldH);
+    } else {
+      ctx.moveTo(0, midY);
+      ctx.lineTo(worldW, midY);
+    }
     ctx.stroke();
     ctx.restore();
 
@@ -1687,8 +1738,13 @@
     ctx.font = "18px sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
-    ctx.fillText("表", barW / 2, midY / 2);
-    ctx.fillText("裏", barW / 2, midY + (worldH - midY) / 2);
+    if (isHorizontal) {
+      ctx.fillText("表", midX / 2, barW / 2);
+      ctx.fillText("裏", midX + (worldW - midX) / 2, barW / 2);
+    } else {
+      ctx.fillText("表", barW / 2, midY / 2);
+      ctx.fillText("裏", barW / 2, midY + (worldH - midY) / 2);
+    }
     ctx.restore();
   }
 
@@ -2201,14 +2257,14 @@
   function refreshFrameImageForCurrentSize(imgObj, { emit = false } = {}) {
     if (!imgObj?.tagType) return false;
     const label =
-      imgObj.tagLabel ||
-      (imgObj.tagType === "omoteura"
-        ? "表裏"
-        : imgObj.tagType === "omote"
-        ? "表"
-        : imgObj.tagType === "ura"
-        ? "裏"
-        : "フレーム");
+      imgObj.tagType === "omoteura"
+        ? getOmoteUraOrientation(imgObj)
+        : imgObj.tagLabel ||
+          (imgObj.tagType === "omote"
+            ? "表"
+            : imgObj.tagType === "ura"
+            ? "裏"
+            : "フレーム");
     const pixelW = Math.max(120, Math.round(Math.abs(imgObj.width) * scale));
     const pixelH = Math.max(80, Math.round(Math.abs(imgObj.height) * scale));
     const colors = getFrameTagColors(imgObj);
@@ -2217,7 +2273,7 @@
     img.onload = () => {
       imgObj.img = img;
       imgObj.src = dataUrl;
-      imgObj.tagLabel = label;
+      imgObj.tagLabel = imgObj.tagType === "omoteura" ? label : label;
       if (emit && socketConnected) {
         socket.emit("item:update", {
           boardId,
@@ -2376,12 +2432,11 @@
 
   function getFrameDisplayName(imgObj) {
     if (!imgObj?.tagType) return "";
+    if (imgObj.tagType === "omoteura") return "表裏";
     return (
       imgObj.tagLabel ||
       imgObj.imageName ||
-      (imgObj.tagType === "omoteura"
-        ? "表裏"
-        : imgObj.tagType === "omote"
+      (imgObj.tagType === "omote"
         ? "表"
         : imgObj.tagType === "ura"
         ? "裏"
@@ -3314,7 +3369,25 @@
 
   function handleAltSelectionAction(direction) {
     if (toggleTextWritingModeSelection()) return true;
+    if (toggleOmoteUraOrientationSelection()) return true;
     return rotateSelection(direction);
+  }
+
+  function toggleOmoteUraOrientationSelection() {
+    const items = getSelectionItems();
+    const targets = items
+      .filter((item) => item.type === "image")
+      .map((item) => images[item.index])
+      .filter((img) => isOmoteUraTagImage(img));
+    if (!targets.length || targets.length !== items.length) return false;
+    ensureSnapshotForAction();
+    targets.forEach((img) => {
+      img.tagType = "omoteura";
+      img.tagLabel = getOmoteUraOrientation(img) === "horizontal" ? "vertical" : "horizontal";
+      refreshFrameImageForCurrentSize(img, { emit: true });
+    });
+    redraw();
+    return true;
   }
 
   function rotateSelection(direction) {
@@ -3751,8 +3824,12 @@
   function isOmoteUraTagImage(imgObj) {
     return (
       imgObj?.tagType === "omoteura" ||
-      (!imgObj?.tagType && imgObj?.tagLabel === "表裏" && imgObj?.imageName === "表裏")
+      (!imgObj?.tagType && imgObj?.tagLabel === "表裏")
     );
+  }
+
+  function getOmoteUraOrientation(imgObj) {
+    return imgObj?.tagLabel === "horizontal" ? "horizontal" : "vertical";
   }
 
   function getFrameImagesForGrouping() {
@@ -8573,7 +8650,7 @@
         const anchorX = resizeInfo.anchorX ?? imgObj.x;
         const anchorY = resizeInfo.anchorY ?? imgObj.y;
         const handle = resizeInfo.handle || "br";
-        if (isFrameContainer(imgObj)) {
+        if (isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj)) {
           const minW = 16;
           const minH = 16;
           const newW = Math.max(Math.abs(worldPos.x - anchorX), minW);
@@ -9124,13 +9201,13 @@
           y: frameY,
           width,
           height: frameHeight,
-          layer: "image",
+          layer: isOmoteUraImage ? getImageTargetLayer() : "image",
           order: orderCounter++,
           user: currentUser,
           rotation: 0,
-          tagType: isOmoteUraImage ? null : placedFrameType,
-          tagLabel: label,
-          imageName: isOmoteUraImage ? "" : label,
+          tagType: placedFrameType,
+          tagLabel: isOmoteUraImage ? "vertical" : label,
+          imageName: label,
           imageListOrder: bumpImageListOrderCounter(),
           frameTabs: isOmoteUraImage ? null : [{ id: "tab-1", name: "1" }],
           activeFrameTab: isOmoteUraImage ? null : "tab-1",
