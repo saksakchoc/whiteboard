@@ -405,8 +405,8 @@
     pendingImageLoadTokens.clear();
     const rebuildImages = (arr = []) =>
       arr.map((img) => {
-        const el = new Image();
-        el.src = img.src;
+        const cached = imageElementCache.get(img.id);
+        const el = cached?.src === img.src ? cached.img : null;
         return {
           ...img,
           img: el,
@@ -3425,6 +3425,19 @@
     });
   }
 
+  function applyStoredImagePatch(id, storedImage) {
+    if (!id || !storedImage?.src) return;
+    const idx = findIndexById(images, id);
+    if (idx < 0) return;
+    const current = images[idx];
+    if (current.src === storedImage.src) return;
+    invalidatePendingImageLoad(id);
+    images[idx] = { ...current, ...storedImage, img: null };
+    ensureImageElementForImage(images[idx], { redrawOnLoad: true });
+    refreshImageList();
+    redraw();
+  }
+
   function getSelectedTextItems() {
     return getSelectionItems()
       .filter((item) => item.type === "text")
@@ -3884,6 +3897,60 @@
   function getImageBoundsWorld(img) {
     if (!img) return null;
     return { x: img.x, y: img.y, width: img.width, height: img.height };
+  }
+
+  function getVisibleWorldRect(marginScreen = 256) {
+    const margin = marginScreen / Math.max(scale, 0.001);
+    return {
+      x: -offsetX / scale - margin,
+      y: -offsetY / scale - margin,
+      width: canvas.width / scale + margin * 2,
+      height: canvas.height / scale + margin * 2,
+    };
+  }
+
+  function isWorldRectNearViewport(rect, marginScreen = 256) {
+    if (!rect) return false;
+    return rectsOverlap(getVisibleWorldRect(marginScreen), getNormalizedRect(rect));
+  }
+
+  function isImageNearViewport(imgObj, marginScreen = 512) {
+    if (!imgObj) return false;
+    if (imgObj.frameId) return true;
+    return isWorldRectNearViewport(getRotatedImageVisualBoundsWorld(imgObj), marginScreen);
+  }
+
+  function ensureImageElementForImage(imgObj, options = {}) {
+    if (!imgObj?.id || !imgObj.src) return null;
+    if (imgObj.img?.complete && imgObj.img.naturalWidth > 0 && imgObj.img.naturalHeight > 0) {
+      return imgObj.img;
+    }
+
+    const cached = imageElementCache.get(imgObj.id);
+    if (cached?.src === imgObj.src && cached.img) {
+      imgObj.img = cached.img;
+      return imgObj.img;
+    }
+
+    if (pendingImageLoadTokens.has(imgObj.id)) return imgObj.img || null;
+
+    const loadToken = ++imageLoadTokenCounter;
+    const img = imgObj.img || new Image();
+    imgObj.img = img;
+    pendingImageLoadTokens.set(imgObj.id, loadToken);
+    img.onload = () => {
+      if (pendingImageLoadTokens.get(imgObj.id) !== loadToken) return;
+      pendingImageLoadTokens.delete(imgObj.id);
+      imageElementCache.set(imgObj.id, { src: imgObj.src, img });
+      if (options.redrawOnLoad !== false) redraw();
+    };
+    img.onerror = () => {
+      if (pendingImageLoadTokens.get(imgObj.id) !== loadToken) return;
+      pendingImageLoadTokens.delete(imgObj.id);
+      console.error("failed to load image", imgObj?.id);
+    };
+    img.src = imgObj.src;
+    return img;
   }
 
   function getRotatedImageVisualBoundsWorld(imgObj) {
@@ -5503,7 +5570,7 @@
       state.texts.forEach((t) => addTextFromNetwork(t, false));
     }
     if (state?.images) {
-      state.images.forEach((img) => addImageFromNetwork(img, false, { redrawOnLoad: true }));
+      state.images.forEach((img) => addImageFromNetwork(img, false, { deferLoad: true }));
     }
     if (state?.links) {
       state.links.forEach((link) => addLinkFromNetwork(link, false));
@@ -5547,48 +5614,32 @@
 
   function addImageFromNetwork(imgData, shouldRedraw = true, options = {}) {
     if (findIndexById(images, imgData.id) >= 0) return;
-    const loadToken = ++imageLoadTokenCounter;
-    pendingImageLoadTokens.set(imgData.id, loadToken);
     const cached = imageElementCache.get(imgData.id);
-    const img = cached?.src === imgData.src && cached.img ? cached.img : new Image();
-    const finish = () => {
-      if (pendingImageLoadTokens.get(imgData.id) !== loadToken) return;
-      pendingImageLoadTokens.delete(imgData.id);
-      if (findIndexById(images, imgData.id) >= 0) return;
-      imageElementCache.set(imgData.id, { src: imgData.src, img });
-      const imageListOrder =
-        typeof imgData.imageListOrder === "number" ? imgData.imageListOrder : bumpImageListOrderCounter();
-      images.push({
-        ...imgData,
-        rotation: imgData.rotation || 0,
-        mirrored: !!imgData.mirrored,
-        imageName: imgData.imageName || "",
-        imageListOrder,
-        frameId: imgData.frameId || null,
-        frameTab: imgData.frameTab || null,
-        frameTabs: imgData.frameTabs || null,
-        activeFrameTab: imgData.activeFrameTab || null,
-        img,
-      });
-      if (isFrameContainer(images[images.length - 1])) ensureFrameTabs(images[images.length - 1]);
-      bumpImageListOrderCounter(imageListOrder);
-      bumpOrderCounter(imgData.order);
-      registerUser(imgData.user);
-      refreshImageList();
-      if (shouldRedraw || options.redrawOnLoad) redraw();
+    const img = cached?.src === imgData.src && cached.img ? cached.img : null;
+    const imageListOrder =
+      typeof imgData.imageListOrder === "number" ? imgData.imageListOrder : bumpImageListOrderCounter();
+    const imageObj = {
+      ...imgData,
+      rotation: imgData.rotation || 0,
+      mirrored: !!imgData.mirrored,
+      imageName: imgData.imageName || "",
+      imageListOrder,
+      frameId: imgData.frameId || null,
+      frameTab: imgData.frameTab || null,
+      frameTabs: imgData.frameTabs || null,
+      activeFrameTab: imgData.activeFrameTab || null,
+      img,
     };
-    img.onload = finish;
-    img.onerror = () => {
-      if (pendingImageLoadTokens.get(imgData.id) !== loadToken) return;
-      pendingImageLoadTokens.delete(imgData.id);
-      console.error("failed to load image", imgData?.id);
-      if (shouldRedraw) redraw();
-    };
-    if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
-      finish();
-    } else {
-      img.src = imgData.src;
+    images.push(imageObj);
+    if (isFrameContainer(imageObj)) ensureFrameTabs(imageObj);
+    bumpImageListOrderCounter(imageListOrder);
+    bumpOrderCounter(imgData.order);
+    registerUser(imgData.user);
+    refreshImageList();
+    if (!options.deferLoad || isImageNearViewport(imageObj)) {
+      ensureImageElementForImage(imageObj, { redrawOnLoad: shouldRedraw || options.redrawOnLoad });
     }
+    if (shouldRedraw) redraw();
   }
 
   function addLinkFromNetwork(linkData, shouldRedraw = true) {
@@ -5718,12 +5769,9 @@
         const currentImgEl = list[idx].img;
         list[idx] = { ...list[idx], ...patch, img: currentImgEl };
         if (patch.src && patch.src !== currentImgEl?.src) {
-          const img = new Image();
-          img.onload = () => {
-            list[idx].img = img;
-            redraw();
-          };
-          img.src = patch.src;
+          invalidatePendingImageLoad(id);
+          list[idx].img = null;
+          ensureImageElementForImage(list[idx], { redrawOnLoad: true });
         }
       } else {
         list[idx] = { ...list[idx], ...patch };
@@ -6544,6 +6592,7 @@
     images.forEach((img, idx) => {
       if (!isImageVisible(img)) return;
       if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
+      if (!isImageNearViewport(img)) return;
       combined.push({
         type: "image",
         order: img.order ?? orderCounter + idx,
@@ -6700,7 +6749,7 @@
       try {
       if (item.type === "image") {
         const imgObj = images[item.index];
-        const imgEl = imgObj?.img;
+        const imgEl = ensureImageElementForImage(imgObj);
         if (!imgObj || !imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
           continue;
         }
@@ -7638,7 +7687,7 @@
   }
 
   function resizeImageForStorage(img, src, mimeType = "") {
-    const maxSide = 2400;
+    const maxSide = 1600;
     const width = img.naturalWidth || img.width;
     const height = img.naturalHeight || img.height;
     if (!width || !height || Math.max(width, height) <= maxSide) return src;
@@ -7650,9 +7699,9 @@
     const canvasCtx = canvasEl.getContext("2d");
     canvasCtx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
     const outputType = mimeType === "image/png" ? "image/png" : "image/jpeg";
-    const resizedSrc = canvasEl.toDataURL(outputType, 0.86);
+    const resizedSrc = canvasEl.toDataURL(outputType, 0.82);
     if (outputType === "image/png" && resizedSrc.length > 12 * 1024 * 1024) {
-      return canvasEl.toDataURL("image/jpeg", 0.86);
+      return canvasEl.toDataURL("image/jpeg", 0.82);
     }
     return resizedSrc;
   }
@@ -7761,6 +7810,7 @@
         showTransientFooterMessage("画像の保存確認が取れません。再接続後に再送します。", 6000);
         return;
       }
+      if (res.image) applyStoredImagePatch(image.id, res.image);
       pendingImageAdds.delete(image.id);
     });
   }

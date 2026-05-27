@@ -562,7 +562,7 @@ io.on("connection", (socket) => {
       const state = ensureBoardState(boardId);
       upsertById(state.images, storedImage);
       socket.to(boardId).emit("image:add", storedImage);
-      if (typeof ack === "function") ack({ ok: true });
+      if (typeof ack === "function") ack({ ok: true, image: storedImage });
     } catch (err) {
       notifyPersistenceError(socket, "save image", err);
       if (typeof ack === "function") ack({ ok: false, error: err.message });
