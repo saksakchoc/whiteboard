@@ -434,53 +434,73 @@ io.on("connection", (socket) => {
     socket.emit("draft:init", drafts);
   });
 
-  socket.on("stroke:add", ({ boardId, stroke }) => {
-    if (boardId !== currentBoardId) return;
+  socket.on("stroke:add", ({ boardId, stroke }, ack) => {
+    if (boardId !== currentBoardId) {
+      if (typeof ack === "function") ack({ ok: false, error: "board mismatch" });
+      return;
+    }
     try {
       saveStroke({ ...stroke, board_id: boardId });
       const state = ensureBoardState(boardId);
       upsertById(state.strokes, stroke);
       socket.to(boardId).emit("stroke:add", stroke);
+      if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       notifyPersistenceError(socket, "save stroke", err);
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
     }
   });
 
-  socket.on("text:add", ({ boardId, text }) => {
-    if (boardId !== currentBoardId) return;
+  socket.on("text:add", ({ boardId, text }, ack) => {
+    if (boardId !== currentBoardId) {
+      if (typeof ack === "function") ack({ ok: false, error: "board mismatch" });
+      return;
+    }
     const t = text.createdAt ? text : { ...text, createdAt: Date.now() };
     try {
       saveText({ ...t, board_id: boardId });
       const state = ensureBoardState(boardId);
       upsertById(state.texts, t);
       socket.to(boardId).emit("text:add", t);
+      if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       notifyPersistenceError(socket, "save text", err);
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
     }
   });
 
-  socket.on("image:add", ({ boardId, image }) => {
-    if (boardId !== currentBoardId) return;
+  socket.on("image:add", ({ boardId, image }, ack) => {
+    if (boardId !== currentBoardId) {
+      if (typeof ack === "function") ack({ ok: false, error: "board mismatch" });
+      return;
+    }
     try {
       saveImage({ ...image, board_id: boardId });
       const state = ensureBoardState(boardId);
       upsertById(state.images, image);
       socket.to(boardId).emit("image:add", image);
+      if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       notifyPersistenceError(socket, "save image", err);
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
     }
   });
 
-  socket.on("link:add", ({ boardId, link }) => {
-    if (boardId !== currentBoardId) return;
+  socket.on("link:add", ({ boardId, link }, ack) => {
+    if (boardId !== currentBoardId) {
+      if (typeof ack === "function") ack({ ok: false, error: "board mismatch" });
+      return;
+    }
     const l = link.createdAt ? link : { ...link, createdAt: Date.now() };
     try {
       saveLink({ ...l, board_id: boardId });
       const state = ensureBoardState(boardId);
       upsertById(state.links, l);
       socket.to(boardId).emit("link:add", l);
+      if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       notifyPersistenceError(socket, "save link", err);
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
     }
   });
 

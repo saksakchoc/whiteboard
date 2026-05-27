@@ -7559,44 +7559,66 @@
 
   function emitImageAdd(imgObj) {
     const image = imageSnapshotPayload(imgObj);
+    if (image?.id) pendingImageAdds.set(image.id, image);
     if (!socketConnected || !socketReady) {
-      if (image?.id) pendingImageAdds.set(image.id, image);
+      showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
       return;
     }
-    socket.emit("image:add", {
-      boardId,
-      image,
+    socket.timeout(5000).emit("image:add", { boardId, image }, (err, res) => {
+      if (err || !res?.ok) {
+        showTransientFooterMessage("画像の保存確認が取れません。再接続後に再送します。", 6000);
+        return;
+      }
+      pendingImageAdds.delete(image.id);
     });
   }
 
   function emitStrokeAdd(stroke) {
     if (!stroke?.id) return;
+    pendingStrokeAdds.set(stroke.id, stableSnapshotValue(stroke));
     if (!socketConnected || !socketReady) {
-      pendingStrokeAdds.set(stroke.id, stableSnapshotValue(stroke));
       showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
       return;
     }
-    socket.emit("stroke:add", { boardId, stroke });
+    socket.timeout(5000).emit("stroke:add", { boardId, stroke }, (err, res) => {
+      if (err || !res?.ok) {
+        showTransientFooterMessage("線の保存確認が取れません。再接続後に再送します。", 6000);
+        return;
+      }
+      pendingStrokeAdds.delete(stroke.id);
+    });
   }
 
   function emitTextAdd(text) {
     if (!text?.id) return;
+    pendingTextAdds.set(text.id, stableSnapshotValue(text));
     if (!socketConnected || !socketReady) {
-      pendingTextAdds.set(text.id, stableSnapshotValue(text));
       showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
       return;
     }
-    socket.emit("text:add", { boardId, text });
+    socket.timeout(5000).emit("text:add", { boardId, text }, (err, res) => {
+      if (err || !res?.ok) {
+        showTransientFooterMessage("テキストの保存確認が取れません。再接続後に再送します。", 6000);
+        return;
+      }
+      pendingTextAdds.delete(text.id);
+    });
   }
 
   function emitLinkAdd(link) {
     if (!link?.id) return;
+    pendingLinkAdds.set(link.id, stableSnapshotValue(link));
     if (!socketConnected || !socketReady) {
-      pendingLinkAdds.set(link.id, stableSnapshotValue(link));
       showTransientFooterMessage("接続が不安定です。再接続後に保存します。", 4000);
       return;
     }
-    socket.emit("link:add", { boardId, link });
+    socket.timeout(5000).emit("link:add", { boardId, link }, (err, res) => {
+      if (err || !res?.ok) {
+        showTransientFooterMessage("リンクの保存確認が取れません。再接続後に再送します。", 6000);
+        return;
+      }
+      pendingLinkAdds.delete(link.id);
+    });
   }
 
   function restorePendingAdds() {
@@ -7621,21 +7643,17 @@
   function flushPendingAdds() {
     if (!socketConnected || !socketReady) return;
     pendingStrokeAdds.forEach((stroke) => {
-      socket.emit("stroke:add", { boardId, stroke });
+      emitStrokeAdd(stroke);
     });
-    pendingStrokeAdds.clear();
     pendingTextAdds.forEach((text) => {
-      socket.emit("text:add", { boardId, text });
+      emitTextAdd(text);
     });
-    pendingTextAdds.clear();
     pendingImageAdds.forEach((image) => {
-      socket.emit("image:add", { boardId, image });
+      emitImageAdd(image);
     });
-    pendingImageAdds.clear();
     pendingLinkAdds.forEach((link) => {
-      socket.emit("link:add", { boardId, link });
+      emitLinkAdd(link);
     });
-    pendingLinkAdds.clear();
   }
 
   // --- テキスト入力 ---
