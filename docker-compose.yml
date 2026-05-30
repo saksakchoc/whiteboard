@@ -8,8 +8,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3001
       # Enable direct HTTPS by mounting certs below and setting both paths.
-      # SSL_KEY_PATH: /app/certs/privkey.pem
-      # SSL_CERT_PATH: /app/certs/fullchain.pem
+      SSL_KEY_PATH: /app/certs/privkey.pem
+      SSL_CERT_PATH: /app/certs/fullchain.pem
     ports:
       - "3001:3001"
     volumes:
