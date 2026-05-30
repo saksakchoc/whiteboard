@@ -29,8 +29,9 @@ body {
   font-size: 14px;
   position: fixed;
   top: 0;
-  left: 0;
+  left: var(--side-toolbar-width);
   right: 0;
+  width: auto;
   min-height: var(--top-toolbar-height);
   height: auto;
   box-sizing: border-box;
@@ -628,7 +629,7 @@ button:hover {
 /* サイドツールバー（機能アイコン） */
 #side-toolbar {
   position: fixed;
-  top: var(--top-toolbar-height);
+  top: 0;
   left: 0;
   bottom: 0;
   width: var(--side-toolbar-width);

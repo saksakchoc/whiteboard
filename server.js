@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const http = require("http");
+const https = require("https");
 const { Server } = require("socket.io");
 const multer = require("multer");
 
@@ -30,15 +31,36 @@ const {
   getBoardUsers,
 } = require("./db");
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  maxHttpBufferSize: Number(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE || 50 * 1024 * 1024),
-});
-
 // 設定
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || "0.0.0.0";
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH || "";
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH || "";
+const SSL_CA_PATH = process.env.SSL_CA_PATH || "";
+
+const app = express();
+
+function createHttpServer(app) {
+  if (!SSL_KEY_PATH && !SSL_CERT_PATH) {
+    return { server: http.createServer(app), protocol: "http" };
+  }
+  if (!SSL_KEY_PATH || !SSL_CERT_PATH) {
+    throw new Error("SSL_KEY_PATH and SSL_CERT_PATH must both be set to enable HTTPS.");
+  }
+  const options = {
+    key: fs.readFileSync(SSL_KEY_PATH),
+    cert: fs.readFileSync(SSL_CERT_PATH),
+  };
+  if (SSL_CA_PATH) {
+    options.ca = fs.readFileSync(SSL_CA_PATH);
+  }
+  return { server: https.createServer(options, app), protocol: "https" };
+}
+
+const { server, protocol } = createHttpServer(app);
+const io = new Server(server, {
+  maxHttpBufferSize: Number(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE || 50 * 1024 * 1024),
+});
 
 // JSON / 静的ファイル
 app.use(express.json());
@@ -734,5 +756,5 @@ io.on("connection", (socket) => {
 
 // サーバ起動
 server.listen(PORT, HOST, () => {
-  console.log(`Whiteboard server running on http://${HOST}:${PORT}`);
+  console.log(`Whiteboard server running on ${protocol}://${HOST}:${PORT}`);
 });
