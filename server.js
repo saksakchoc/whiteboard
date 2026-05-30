@@ -424,6 +424,25 @@ app.get("/api/link-image", async (req, res) => {
 // 各ボードごとに簡易なメモリ上の状態を持つ
 // { strokes:[], texts:[], images:[] }
 const boardStates = new Map();
+const boardScreenShares = new Map();
+
+function getBoardScreenShares(boardId) {
+  if (!boardScreenShares.has(boardId)) {
+    boardScreenShares.set(boardId, new Map());
+  }
+  return boardScreenShares.get(boardId);
+}
+
+function stopSocketScreenShare(socket, boardId) {
+  if (!boardId) return;
+  const shares = boardScreenShares.get(boardId);
+  if (!shares || !shares.delete(socket.id)) return;
+  if (shares.size === 0) boardScreenShares.delete(boardId);
+  socket.to(boardId).emit("screen-share:status", {
+    socketId: socket.id,
+    active: false,
+  });
+}
 
 function upsertById(list, item) {
   if (!item?.id) return;
@@ -506,6 +525,12 @@ io.on("connection", (socket) => {
     state.images = dedupeById(state.images);
     state.links = dedupeById(state.links);
     socket.emit("init", state);
+    const shares = boardScreenShares.get(boardId);
+    const activeShares = shares ? Array.from(shares.entries()).map(([socketId, info]) => ({
+      socketId,
+      user: info.user || "",
+    })) : [];
+    socket.emit("screen-share:active", activeShares);
   });
 
   socket.on("user:identify", ({ boardId, user }) => {
@@ -662,6 +687,32 @@ io.on("connection", (socket) => {
     socket.to(boardId).emit("attention:end", { user });
   });
 
+  socket.on("screen-share:status", ({ boardId, active, user }) => {
+    if (boardId !== currentBoardId) return;
+    if (active) {
+      getBoardScreenShares(boardId).set(socket.id, {
+        user: user || currentUserName || "",
+      });
+    } else {
+      stopSocketScreenShare(socket, boardId);
+      return;
+    }
+    socket.to(boardId).emit("screen-share:status", {
+      socketId: socket.id,
+      user: user || currentUserName || "",
+      active: true,
+    });
+  });
+
+  socket.on("screen-share:signal", ({ boardId, to, data }) => {
+    if (boardId !== currentBoardId || !to || !data) return;
+    io.to(to).emit("screen-share:signal", {
+      from: socket.id,
+      user: currentUserName || "",
+      data,
+    });
+  });
+
   // --- Draft strokes (private) ---
   socket.on("draft:stroke:add", ({ boardId, stroke }) => {
     if (boardId !== currentBoardId) return;
@@ -676,6 +727,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    stopSocketScreenShare(socket, currentBoardId);
     currentBoardId = null;
   });
 });

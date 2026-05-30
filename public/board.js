@@ -52,6 +52,10 @@
   const frameDeleteContentsBtn = document.getElementById("frame-delete-contents-btn");
   const frameDeleteFrameOnlyBtn = document.getElementById("frame-delete-frame-only-btn");
   const frameDeleteCancelBtn = document.getElementById("frame-delete-cancel-btn");
+  const screenShareView = document.getElementById("screen-share-view");
+  const screenShareVideo = document.getElementById("screen-share-video");
+  const screenShareLabel = document.getElementById("screen-share-label");
+  const screenShareToggleBtn = document.getElementById("screen-share-toggle-btn");
 
   const ctx = canvas.getContext("2d");
   const frameTabTooltipEl = document.createElement("div");
@@ -121,6 +125,15 @@
   let activeAltSide = null; // "left" | "right" | null
   let altArrowShortcutUsed = false;
   let pendingImageInsertLayer = null;
+  let hiddenCommandBuffer = "";
+  let localScreenStream = null;
+  let localScreenShareActive = false;
+  let activeScreenShareSocketId = null;
+  let activeScreenShareUser = "";
+  let screenShareFocus = false;
+  const screenSharePeers = new Map();
+  const remoteScreenStreams = new Map();
+  const knownScreenSharers = new Map();
 
   function getSquareBoundsFromDrag(start, end) {
     const dx = end.x - start.x;
@@ -3159,6 +3172,10 @@
     updateFavButtons();
     updateLayerToggleUI();
     identifyToServer();
+    if (localScreenShareActive && localScreenStream && socketConnected) {
+      socket.emit("screen-share:status", { boardId, active: true, user: currentUser });
+      if (screenShareLabel) screenShareLabel.textContent = `${currentUser || "画面共有"} の画面共有`;
+    }
   }
 
   function requireUser() {
@@ -5367,6 +5384,209 @@
     socket.emit("user:identify", { boardId, user: currentUser });
   }
 
+  function updateScreenShareLayout() {
+    document.body.classList.toggle("screen-share-focus", screenShareFocus && !!activeScreenShareSocketId);
+    resizeCanvas();
+  }
+
+  function showScreenShareStream(socketId, user, stream) {
+    if (!screenShareView || !screenShareVideo || !stream) return;
+    activeScreenShareSocketId = socketId;
+    activeScreenShareUser = user || "画面共有";
+    screenShareVideo.srcObject = stream;
+    if (screenShareLabel) {
+      screenShareLabel.textContent = `${activeScreenShareUser} の画面共有`;
+    }
+    screenShareView.classList.remove("hidden");
+    screenShareVideo.play().catch(() => {});
+    updateLocalScreenShareButton();
+    updateScreenShareLayout();
+  }
+
+  function updateLocalScreenShareButton() {
+    if (!screenShareToggleBtn) return;
+    const isLocalPreview = !!localScreenStream && activeScreenShareSocketId === socket.id;
+    screenShareToggleBtn.classList.toggle("hidden", !isLocalPreview);
+    screenShareToggleBtn.classList.toggle("is-on", localScreenShareActive);
+    screenShareToggleBtn.textContent = localScreenShareActive ? "OFF" : "ON";
+  }
+
+  function showLocalScreenSharePreview() {
+    if (!localScreenStream) return;
+    showScreenShareStream(socket.id, currentUser || "自分", localScreenStream);
+    if (screenShareLabel) {
+      screenShareLabel.textContent = localScreenShareActive
+        ? `${currentUser || "自分"} の画面共有`
+        : "画面共有準備中";
+    }
+    updateLocalScreenShareButton();
+  }
+
+  function hideScreenShareStream(socketId) {
+    if (socketId && activeScreenShareSocketId !== socketId) return;
+    activeScreenShareSocketId = null;
+    activeScreenShareUser = "";
+    screenShareFocus = false;
+    if (screenShareVideo) screenShareVideo.srcObject = null;
+    if (screenShareView) screenShareView.classList.add("hidden");
+    updateLocalScreenShareButton();
+    updateScreenShareLayout();
+  }
+
+  function closeScreenSharePeer(peerId) {
+    const peer = screenSharePeers.get(peerId);
+    if (peer) peer.close();
+    screenSharePeers.delete(peerId);
+  }
+
+  function createScreenSharePeer(peerId) {
+    closeScreenSharePeer(peerId);
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    screenSharePeers.set(peerId, peer);
+    if (localScreenShareActive && localScreenStream) {
+      localScreenStream.getTracks().forEach((track) => peer.addTrack(track, localScreenStream));
+    }
+    peer.onicecandidate = (event) => {
+      if (!event.candidate || !socketConnected) return;
+      socket.emit("screen-share:signal", {
+        boardId,
+        to: peerId,
+        data: { type: "candidate", candidate: event.candidate },
+      });
+    };
+    peer.ontrack = (event) => {
+      const stream = event.streams && event.streams[0];
+      if (!stream) return;
+      const info = knownScreenSharers.get(peerId) || {};
+      remoteScreenStreams.set(peerId, stream);
+      showScreenShareStream(peerId, info.user || "画面共有", stream);
+    };
+    peer.onconnectionstatechange = () => {
+      if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+        closeScreenSharePeer(peerId);
+      }
+    };
+    return peer;
+  }
+
+  async function requestScreenShareFrom(socketId) {
+    if (!socketConnected || !socketId || socketId === socket.id || screenSharePeers.has(socketId)) return;
+    const peer = createScreenSharePeer(socketId);
+    try {
+      if (peer.addTransceiver) {
+        peer.addTransceiver("video", { direction: "recvonly" });
+      }
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      socket.emit("screen-share:signal", {
+        boardId,
+        to: socketId,
+        data: { type: "offer", sdp: peer.localDescription },
+      });
+    } catch (err) {
+      console.warn("Failed to request screen share", err);
+      closeScreenSharePeer(socketId);
+    }
+  }
+
+  async function prepareScreenShare() {
+    if (localScreenStream) {
+      showLocalScreenSharePreview();
+      return;
+    }
+    if (!requireUser()) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      showTransientFooterMessage("このブラウザでは画面共有を使えません。", 5000);
+      return;
+    }
+    try {
+      localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      const [track] = localScreenStream.getVideoTracks();
+      if (track) {
+        track.applyConstraints({
+          frameRate: { max: 12 },
+          width: { max: 1280 },
+          height: { max: 720 },
+        }).catch(() => {});
+        track.addEventListener("ended", () => stopScreenShare());
+      }
+      localScreenShareActive = false;
+      showLocalScreenSharePreview();
+      showTransientFooterMessage("共有対象を選びました。右下のONボタンで画面共有を開始します。", 5000);
+    } catch (err) {
+      localScreenStream = null;
+      if (err?.name !== "NotAllowedError") {
+        showTransientFooterMessage("画面共有を開始できませんでした。", 5000);
+      }
+    }
+  }
+
+  function startScreenShareBroadcast() {
+    if (!localScreenStream) {
+      prepareScreenShare();
+      return;
+    }
+    if (localScreenShareActive) return;
+    localScreenShareActive = true;
+    Array.from(screenSharePeers.keys()).forEach(closeScreenSharePeer);
+    showLocalScreenSharePreview();
+    if (socketConnected) {
+      socket.emit("screen-share:status", { boardId, active: true, user: currentUser });
+    }
+    showTransientFooterMessage("画面共有を開始しました。右下のOFFボタンで停止できます。", 5000);
+  }
+
+  function stopScreenShareBroadcast() {
+    if (!localScreenShareActive) return;
+    localScreenShareActive = false;
+    Array.from(screenSharePeers.keys()).forEach(closeScreenSharePeer);
+    if (socketConnected) {
+      socket.emit("screen-share:status", { boardId, active: false });
+    }
+    showLocalScreenSharePreview();
+    showTransientFooterMessage("画面共有を停止しました。右下のONボタンで再開できます。", 4000);
+  }
+
+  function stopScreenShare() {
+    if (!localScreenStream) return;
+    const stream = localScreenStream;
+    localScreenStream = null;
+    const wasActive = localScreenShareActive;
+    localScreenShareActive = false;
+    stream.getTracks().forEach((track) => track.stop());
+    Array.from(screenSharePeers.keys()).forEach(closeScreenSharePeer);
+    if (wasActive && socketConnected) {
+      socket.emit("screen-share:status", { boardId, active: false });
+    }
+    hideScreenShareStream(socket.id);
+    showTransientFooterMessage("画面共有を終了しました。", 4000);
+  }
+
+  function toggleScreenShareBroadcast() {
+    if (localScreenShareActive) {
+      stopScreenShareBroadcast();
+    } else {
+      startScreenShareBroadcast();
+    }
+  }
+
+  function handleHiddenCommandKey(e) {
+    if (e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1) return false;
+    hiddenCommandBuffer = (hiddenCommandBuffer + e.key.toLowerCase()).slice(-24);
+    if (hiddenCommandBuffer.endsWith("screenshare")) {
+      hiddenCommandBuffer = "";
+      e.preventDefault();
+      prepareScreenShare();
+      return true;
+    }
+    return false;
+  }
+
   // --- テキストのバウンディングボックス ---
   function getTextBoundsWorld(t) {
     const fontSize = t.fontSize || 16;
@@ -5852,6 +6072,56 @@
       }
       redraw();
       updateFooterByState();
+    }
+  });
+
+  socket.on("screen-share:active", (shares) => {
+    (shares || []).forEach((share) => {
+      if (!share?.socketId || share.socketId === socket.id) return;
+      knownScreenSharers.set(share.socketId, { user: share.user || "" });
+      requestScreenShareFrom(share.socketId);
+    });
+  });
+
+  socket.on("screen-share:status", ({ socketId, user, active }) => {
+    if (!socketId || socketId === socket.id) return;
+    if (active) {
+      knownScreenSharers.set(socketId, { user: user || "" });
+      requestScreenShareFrom(socketId);
+    } else {
+      knownScreenSharers.delete(socketId);
+      remoteScreenStreams.delete(socketId);
+      closeScreenSharePeer(socketId);
+      hideScreenShareStream(socketId);
+    }
+  });
+
+  socket.on("screen-share:signal", async ({ from, user, data }) => {
+    if (!from || !data) return;
+    if (user) knownScreenSharers.set(from, { user });
+    let peer = screenSharePeers.get(from);
+    try {
+      if (data.type === "offer") {
+        if (!localScreenShareActive || !localScreenStream) return;
+        peer = createScreenSharePeer(from);
+        await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        socket.emit("screen-share:signal", {
+          boardId,
+          to: from,
+          data: { type: "answer", sdp: peer.localDescription },
+        });
+      } else if (data.type === "answer") {
+        if (!peer) return;
+        await peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      } else if (data.type === "candidate") {
+        if (!peer || !data.candidate) return;
+        await peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    } catch (err) {
+      console.warn("Failed to handle screen share signal", err);
+      closeScreenSharePeer(from);
     }
   });
 
@@ -8345,7 +8615,17 @@
 
   // --- ポインタ操作 ---
 
+  function handleScreenShareBoardPreviewInput(e) {
+    if (!screenShareFocus) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    screenShareFocus = false;
+    updateScreenShareLayout();
+    return true;
+  }
+
   function handlePointerDown(e) {
+    if (handleScreenShareBoardPreviewInput(e)) return;
     actionSnapshotTaken = false;
     closeMobileToolbarIfNeeded(e);
     if (e.touches && e.touches.length >= 2) {
@@ -8822,6 +9102,10 @@
   }
 
   function handlePointerMove(e) {
+    if (screenShareFocus) {
+      e.preventDefault();
+      return;
+    }
     if (!pinchActive && e.touches && e.touches.length === 1) {
       closeMobileToolbarIfNeeded(e);
     }
@@ -9107,6 +9391,10 @@
   }
 
   function handlePointerUp(e) {
+    if (screenShareFocus) {
+      e.preventDefault();
+      return;
+    }
     if (pinchActive) {
       if (!e.touches || e.touches.length < 2) {
         pinchActive = false;
@@ -9842,6 +10130,24 @@
   canvas.addEventListener("mousedown", handlePointerDown);
   canvas.addEventListener("mousemove", handlePointerMove);
   canvas.addEventListener("mouseleave", hideFrameTabTooltip);
+  if (screenShareView) {
+    screenShareView.addEventListener("click", () => {
+      if (!activeScreenShareSocketId) return;
+      screenShareFocus = !screenShareFocus;
+      updateScreenShareLayout();
+    });
+  }
+  if (screenShareToggleBtn) {
+    screenShareToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleScreenShareBroadcast();
+    });
+  }
+  container.addEventListener("click", () => {
+    if (!screenShareFocus) return;
+    screenShareFocus = false;
+    updateScreenShareLayout();
+  });
   window.addEventListener("mouseup", handlePointerUp);
   window.addEventListener("mousemove", (e) => {
     if (!attentionActive) return;
@@ -9907,6 +10213,8 @@
       return;
     }
 
+    if (handleHiddenCommandKey(e)) return;
+
     if (
       e.altKey &&
       !e.ctrlKey &&
@@ -9946,6 +10254,7 @@
   });
 
   canvas.addEventListener("dblclick", (e) => {
+    if (handleScreenShareBoardPreviewInput(e)) return;
     if (ignoreNextDblClick) {
       ignoreNextDblClick = false;
       e.preventDefault();
