@@ -614,7 +614,14 @@ button:hover {
 .text-list-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.text-list-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .text-list-body {
@@ -765,6 +772,11 @@ body.mobile-menu-open #toolbar {
   border-color: #bcdfff;
 }
 
+.text-list-item.selected {
+  background: #eef6ff;
+  border-color: #7bb7f0;
+}
+
 .image-list-item {
   display: grid;
   grid-template-columns: 42px 56px minmax(0, 1fr);
@@ -879,6 +891,13 @@ body.mobile-menu-open #toolbar {
 .text-list-content {
   font-size: 13px;
   white-space: pre-line;
+}
+
+.text-list-checkbox {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 .text-label-row {

@@ -709,6 +709,36 @@ io.on("connection", (socket) => {
     socket.to(boardId).emit("attention:end", { user });
   });
 
+  socket.on("presence:writing:start", ({ boardId, data }) => {
+    if (boardId !== currentBoardId || !data) return;
+    if (!Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+    socket.to(boardId).emit("presence:writing:start", {
+      socketId: socket.id,
+      user: currentUserName || data.user || "",
+      x: data.x,
+      y: data.y,
+    });
+  });
+
+  socket.on("presence:writing:update", ({ boardId, data }) => {
+    if (boardId !== currentBoardId || !data) return;
+    if (!Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+    socket.to(boardId).emit("presence:writing:update", {
+      socketId: socket.id,
+      user: currentUserName || data.user || "",
+      x: data.x,
+      y: data.y,
+    });
+  });
+
+  socket.on("presence:writing:end", ({ boardId }) => {
+    if (boardId !== currentBoardId) return;
+    socket.to(boardId).emit("presence:writing:end", {
+      socketId: socket.id,
+      user: currentUserName || "",
+    });
+  });
+
   socket.on("screen-share:status", ({ boardId, active, user }) => {
     if (boardId !== currentBoardId) return;
     if (active) {
@@ -750,6 +780,12 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     stopSocketScreenShare(socket, currentBoardId);
+    if (currentBoardId) {
+      socket.to(currentBoardId).emit("presence:writing:end", {
+        socketId: socket.id,
+        user: currentUserName || "",
+      });
+    }
     currentBoardId = null;
   });
 });
