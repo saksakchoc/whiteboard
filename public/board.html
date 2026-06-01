@@ -24,17 +24,23 @@
             <button data-text-mode="grid">方眼紙用入力</button>
           </div>
         </div>
-        <button id="text-list-btn" class="side-button" title="テキスト一覧">📝</button>
-        <button id="image-list-btn" class="side-button" title="画像一覧">🖼️</button>
-        <button id="link-list-btn" class="side-button" title="リンク集">🔗</button>
-        <button id="stroke-alpha-toggle-btn" class="side-button" title="半透明">🧊</button>
+        <div class="side-list-tool">
+          <button id="list-menu-btn" class="side-button" title="一覧">📝</button>
+          <div id="list-menu" class="side-menu hidden">
+            <button id="text-list-btn">文字一覧</button>
+            <button id="image-list-btn">画像一覧</button>
+            <button id="link-list-btn">リンク集</button>
+          </div>
+        </div>
         <button id="undo-btn" class="side-button" title="一手戻す">⟲</button>
         <div class="side-others">
           <button id="other-menu-btn" class="side-button" title="その他">⋯</button>
           <div id="other-menu" class="side-menu hidden">
-          <button id="insert-menu-btn">挿入</button>
-          <div id="insert-menu" class="insert-menu hidden"></div>
-          <button id="change-user-btn">ユーザー名変更</button>
+            <button id="insert-menu-btn">挿入</button>
+            <div id="insert-menu" class="insert-menu hidden"></div>
+            <button id="stroke-alpha-toggle-btn">半透明</button>
+            <button id="change-user-btn">ユーザー名変更</button>
+          </div>
         </div>
       </div>
     </div>

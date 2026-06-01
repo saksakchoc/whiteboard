@@ -16,6 +16,8 @@
   const toolbarEl = document.getElementById("toolbar");
   const insertMenuBtn = document.getElementById("insert-menu-btn");
   const insertMenu = document.getElementById("insert-menu");
+  const listMenuBtn = document.getElementById("list-menu-btn");
+  const listMenu = document.getElementById("list-menu");
   const textListBtn = document.getElementById("text-list-btn");
   const imageListBtn = document.getElementById("image-list-btn");
   const linkListBtn = document.getElementById("link-list-btn");
@@ -10535,12 +10537,22 @@
     }
   }
 
+  function closeListMenu() {
+    if (listMenu) listMenu.classList.add("hidden");
+  }
+
+  function openListMenu() {
+    if (listMenu) listMenu.classList.remove("hidden");
+  }
+
   function openOtherMenu() {
     if (otherMenu) {
       if (otherMenu._closeTimer) {
         clearTimeout(otherMenu._closeTimer);
         otherMenu._closeTimer = null;
       }
+      if (textToolMenu) textToolMenu.classList.add("hidden");
+      closeListMenu();
       closeInsertMenu();
       otherMenu.classList.remove("hidden");
     }
@@ -11576,7 +11588,7 @@
   function toggleStrokeAlpha() {
     strokesDimmed = !strokesDimmed;
     if (strokeAlphaToggleBtn) {
-      strokeAlphaToggleBtn.textContent = "🧊";
+      strokeAlphaToggleBtn.textContent = "半透明";
     }
     redraw();
     showTransientFooterMessage(
@@ -11587,6 +11599,7 @@
 
   strokeAlphaToggleBtn.addEventListener("click", () => {
     toggleStrokeAlpha();
+    closeOtherMenu();
   });
 
   if (changeUserBtn) {
@@ -11686,6 +11699,8 @@
   if (textToolBtn) {
     textToolBtn.addEventListener("mouseenter", () => {
       if (isCreationLockedLayer()) return;
+      closeListMenu();
+      closeOtherMenu();
       if (textToolMenu) textToolMenu.classList.remove("hidden");
     });
     textToolBtn.addEventListener("click", (e) => {
@@ -11694,7 +11709,7 @@
         showCreationLockedMessage();
         return;
       }
-      if (textToolMenu) textToolMenu.classList.toggle("hidden");
+      setPendingTextMode("normal");
     });
   }
   if (textToolMenu) {
@@ -11707,6 +11722,25 @@
       if (!canCreateOnCurrentLayer()) return;
       setPendingTextMode(btn.getAttribute("data-text-mode"));
     });
+  }
+
+  if (listMenuBtn) {
+    listMenuBtn.addEventListener("mouseenter", () => {
+      if (textToolMenu) textToolMenu.classList.add("hidden");
+      closeOtherMenu();
+      openListMenu();
+    });
+    listMenuBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!listMenu) return;
+      if (listMenu.classList.contains("hidden")) openListMenu();
+      else closeListMenu();
+    });
+  }
+  if (listMenu) {
+    listMenu.addEventListener("mouseenter", () => openListMenu());
+    listMenu.addEventListener("mouseleave", () => closeListMenu());
+    listMenu.addEventListener("click", () => closeListMenu());
   }
 
   if (otherMenuBtn) {
@@ -11735,6 +11769,10 @@
       otherMenu &&
       otherMenuBtn &&
       (otherMenu.contains(target) || otherMenuBtn.contains(target));
+    const insideList =
+      listMenu &&
+      listMenuBtn &&
+      (listMenu.contains(target) || listMenuBtn.contains(target));
     const insideTextTool =
       textToolMenu &&
       textToolBtn &&
@@ -11742,6 +11780,7 @@
 
     if (!insideInsert) closeInsertMenu();
     if (!insideOther) closeOtherMenu();
+    if (!insideList) closeListMenu();
     if (!insideTextTool && textToolMenu) textToolMenu.classList.add("hidden");
   });
   window.addEventListener("resize", () => {
