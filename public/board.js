@@ -1865,6 +1865,19 @@
     return frameImg.activeFrameTab === "background" ? "background" : getFrameActiveTab(frameImg);
   }
 
+  function getFrameTabLabelSourceId(frameImg, tabId) {
+    if (!frameImg?.id || !tabId) return null;
+    return `${frameImg.id}:${tabId}`;
+  }
+
+  function getFrameTabDisplayName(frameImg, tabId = getFrameCurrentTargetTab(frameImg)) {
+    if (!isFrameContainer(frameImg) || !tabId) return "";
+    if (tabId === "background") return "背景";
+    const tabs = ensureFrameTabs(frameImg);
+    const tab = tabs.find((item) => item.id === tabId);
+    return String(tab?.name || "").trim();
+  }
+
   function getFrameTabWidth(label) {
     const text = String(label || "");
     return Math.max(28, Math.min(108, 22 + text.length * 9));
@@ -2339,9 +2352,12 @@
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return false;
     const current = String(tab.name || "");
+    const oldLabel = getFrameTabDisplayName(frameImg, tabId);
     const next = window.prompt("タブ名を入力", current);
     if (next === null) return true;
-    tab.name = next.trim() || current || "1";
+    const nextLabel = next.trim() || current || "1";
+    tab.name = nextLabel;
+    updateTextTagsForRenamedFrameTab(frameImg, tabId, oldLabel, nextLabel);
     emitItemPatch("image", frameImg, { frameTabs: frameImg.frameTabs });
     redraw();
     return true;
@@ -2593,8 +2609,10 @@
   }
 
   function updateTextListDuplicateButton() {
-    if (!textListDuplicateGridBtn) return;
-    textListDuplicateGridBtn.disabled = textListSelectedIds.size === 0;
+    const disabled = textListSelectedIds.size === 0;
+    if (textListDuplicateGridBtn) textListDuplicateGridBtn.disabled = disabled;
+    if (textListCopyPlainBtn) textListCopyPlainBtn.disabled = disabled;
+    if (textListCopyTaggedBtn) textListCopyTaggedBtn.disabled = disabled;
   }
 
   function clearTextListSelection() {
@@ -2780,7 +2798,7 @@
   }
 
   function buildTextListPlainText() {
-    const list = sortTextsByCreated().filter((t) => t.layer !== "draft");
+    const list = getSelectedTextListItems();
     if (!list.length) return "";
     return list
       .map((t) => (t.lines || []).join("\n"))
@@ -2788,7 +2806,7 @@
   }
 
   function buildTextListTaggedText() {
-    const list = sortTextsByCreated().filter((t) => t.layer !== "draft");
+    const list = getSelectedTextListItems();
     if (!list.length) return "";
     return list
       .map((t) => {
@@ -6629,6 +6647,17 @@
         sourceType: isFrameContainer(img) ? "frame" : "image",
       });
     };
+    const addFrameTabTag = (frameImg) => {
+      const tabId = getFrameCurrentTargetTab(frameImg);
+      const tag = getFrameTabDisplayName(frameImg, tabId);
+      const sourceId = getFrameTabLabelSourceId(frameImg, tabId);
+      if (!tag || !sourceId) return;
+      tags.push({
+        label: tag,
+        sourceId,
+        sourceType: "frame-tab",
+      });
+    };
     images
       .map((img, index) => ({ img, index }))
       .filter(({ img }) => img && isImageVisible(img))
@@ -6640,6 +6669,7 @@
           : { x: img.x, y: img.y, width: img.width, height: img.height };
         if (!bounds || !pointInRotatedRectWorld(worldPoint, bounds, img.rotation || 0)) return;
         addTag(img);
+        if (isFrameContainer(img)) addFrameTabTag(img);
       });
     return tags;
   }
@@ -6665,6 +6695,41 @@
             label: to,
             sourceId: tag.sourceId || sourceId,
             sourceType: tag.sourceType || sourceType,
+          };
+        })
+        .filter((tag) => tag.label);
+      if (!updated) return;
+      const label = serializeTextTags(nextTags);
+      if (label === text.label) return;
+      text.label = label;
+      changed = true;
+      emitItemPatch("text", text, { label });
+    });
+    if (changed) refreshTextList();
+  }
+
+  function updateTextTagsForRenamedFrameTab(frameImg, tabId, oldName, newName) {
+    const from = String(oldName || "").trim();
+    const to = String(newName || "").trim();
+    if (!from || !to || from === to) return;
+    const sourceId = getFrameTabLabelSourceId(frameImg, tabId);
+    if (!sourceId) return;
+    let changed = false;
+    texts.forEach((text) => {
+      const tags = parseTextTagEntries(text.label);
+      let updated = false;
+      const nextTags = tags
+        .map((tag) => {
+          const sourceMatches = tag.sourceId === sourceId;
+          const legacyMatches =
+            !tag.sourceId && tag.label === from && text.frameId === frameImg.id && text.frameTab === tabId;
+          if (!sourceMatches && !legacyMatches) return tag;
+          updated = true;
+          return {
+            ...tag,
+            label: to,
+            sourceId: tag.sourceId || sourceId,
+            sourceType: tag.sourceType || "frame-tab",
           };
         })
         .filter((tag) => tag.label);
