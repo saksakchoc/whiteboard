@@ -9186,15 +9186,9 @@
       if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
         return;
       }
-      const textIndex = hitTestText(canvasPos.x, canvasPos.y);
-      if (textIndex >= 0) {
-        editTextAt(textIndex);
+      if (hitTestText(canvasPos.x, canvasPos.y) >= 0) {
         return;
       }
-      if (activeLayer !== "image" && requireUser() && canCreateOnCurrentLayer()) {
-        createTextEditorAt(canvasPos.x, canvasPos.y, "", "normal");
-      }
-      return;
     }
 
     if (isMiddleButton) {
@@ -10734,16 +10728,6 @@
       window.open(links[linkIndex].url, "_blank", "noopener");
       return;
     }
-    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
-    if (textIndex >= 0) {
-      editTextAt(textIndex);
-      return;
-    }
-    if (activeLayer === "image") return;
-    if (!requireUser()) return;
-    if (!canCreateOnCurrentLayer()) return;
-    e.preventDefault();
-    createTextEditorAt(canvasPos.x, canvasPos.y, "", "normal");
   });
 
   window.addEventListener("keyup", (e) => {
