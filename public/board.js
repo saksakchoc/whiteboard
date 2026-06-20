@@ -27,6 +27,7 @@
   const textListCopyTaggedBtn = document.getElementById("text-list-copy-tagged-btn");
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
   const textListDuplicateGridBtn = document.getElementById("text-list-duplicate-grid-btn");
+  const textListStarOnly = document.getElementById("text-list-star-only");
   const imageListPanel = document.getElementById("image-list-panel");
   const imageListBody = document.getElementById("image-list-body");
   const imageListCloseBtn = document.getElementById("image-list-close-btn");
@@ -236,6 +237,8 @@
   const draftStrokes = []; // { id, color, size, points, user, order, createdAt }
   let textListOpen = false;
   const textListSelectedIds = new Set();
+  let textListStarOnlyEnabled = false;
+  let textListOrderCounter = 0;
   let imageListOpen = false;
   let linkListOpen = false;
   let imageListOrderCounter = 0;
@@ -955,6 +958,15 @@
       imageListOrderCounter += 1;
     }
     return imageListOrderCounter;
+  }
+
+  function bumpTextListOrderCounter(orderValue) {
+    if (typeof orderValue === "number") {
+      textListOrderCounter = Math.max(textListOrderCounter, orderValue);
+    } else {
+      textListOrderCounter += 1;
+    }
+    return textListOrderCounter;
   }
 
   // --- レイアウト計測 ---
@@ -2421,10 +2433,12 @@
     return true;
   }
 
-  function sortTextsByCreated() {
-    return texts
-      .slice()
-      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  function sortTextsForList(list = texts) {
+    return list.slice().sort((a, b) => {
+      const ao = typeof a.textListOrder === "number" ? a.textListOrder : a.createdAt || 0;
+      const bo = typeof b.textListOrder === "number" ? b.textListOrder : b.createdAt || 0;
+      return ao - bo;
+    });
   }
 
   function escapeHtml(str) {
@@ -2626,7 +2640,7 @@
 
   function getSelectedTextListItems() {
     const selectedIds = new Set(textListSelectedIds);
-    return sortTextsByCreated().filter((t) => t.layer !== "draft" && selectedIds.has(t.id));
+    return sortTextsForList().filter((t) => t.layer !== "draft" && selectedIds.has(t.id));
   }
 
   function duplicateSelectedTextListAsGrid() {
@@ -2718,17 +2732,15 @@
   function renderTextList() {
     if (!textListOpen) return;
     textListBody.innerHTML = "";
-    const visibleTextIds = new Set();
-    const sorted = sortTextsByCreated();
+    const availableTextIds = new Set(texts.filter((t) => t.layer !== "draft").map((t) => t.id));
+    const sorted = sortTextsForList().filter(
+      (t) => t.layer !== "draft" && (!textListStarOnlyEnabled || textHasStarLabel(t))
+    );
     sorted.forEach((t, idx) => {
       const item = document.createElement("div");
       item.className = "text-list-item";
-      if (t.layer === "draft") {
-        // 下書きは一覧に表示しない
-        return;
-      }
+      item.draggable = true;
       item.dataset.id = t.id;
-      visibleTextIds.add(t.id);
 
       const labelRow = document.createElement("div");
       labelRow.className = "text-label-row";
@@ -2749,6 +2761,10 @@
       const meta = document.createElement("span");
       meta.className = "text-list-meta";
       meta.textContent = `#${idx + 1}`;
+      const dragHandle = document.createElement("span");
+      dragHandle.className = "text-list-drag-handle";
+      dragHandle.textContent = "↕";
+      dragHandle.title = "ドラッグして並び替え";
       const tags = getVisibleTextTags(t.label);
       const tagButton = document.createElement("span");
       tagButton.className = "text-label-badge";
@@ -2763,40 +2779,190 @@
       });
 
       labelRow.appendChild(checkbox);
+      labelRow.appendChild(dragHandle);
       labelRow.appendChild(meta);
       labelRow.appendChild(tagButton);
 
       const content = document.createElement("div");
       content.className = "text-list-content";
       content.innerHTML = linkifyText(t.lines.join("\n"));
+      content.title = "クリックして編集";
+      content.addEventListener("pointerdown", (e) => {
+        if (e.target.closest("a")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        focusTextFromList(t.id);
+        startTextListInlineEdit(item, t, content);
+      });
 
       item.appendChild(labelRow);
       item.appendChild(content);
       item.classList.toggle("selected", textListSelectedIds.has(t.id));
 
       item.addEventListener("click", () => {
-        const targetIdx = findIndexById(texts, t.id);
-        if (targetIdx >= 0) {
-          const target = texts[targetIdx];
-          // 中心に移動
-          const screenW = canvas.width;
-          const screenH = canvas.height;
-          offsetX = screenW / 2 - target.x * scale;
-          offsetY = screenH / 2 - target.y * scale;
-          selected = { type: "text", index: targetIdx };
-          currentTool = "select";
-          updateToolButtons();
-          redraw();
-        }
+        focusTextFromList(t.id);
+      });
+      item.addEventListener("dragstart", (e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", t.id);
+        item.classList.add("dragging");
+      });
+      item.addEventListener("dragend", () => {
+        item.classList.remove("dragging");
+        clearTextListDropIndicators();
+      });
+      item.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const rect = item.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+        clearTextListDropIndicators(item);
+        item.classList.toggle("insert-before", position === "before");
+        item.classList.toggle("insert-after", position === "after");
+        item.dataset.dropPosition = position;
+      });
+      item.addEventListener("dragleave", () => {
+        item.classList.remove("insert-before", "insert-after");
+        delete item.dataset.dropPosition;
+      });
+      item.addEventListener("drop", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const position = item.dataset.dropPosition === "after" ? "after" : "before";
+        clearTextListDropIndicators();
+        const sourceId = e.dataTransfer.getData("text/plain");
+        if (!sourceId || sourceId === t.id) return;
+        reorderTextList(sourceId, t.id, position);
       });
 
       textListBody.appendChild(item);
     });
     Array.from(textListSelectedIds).forEach((id) => {
-      if (!visibleTextIds.has(id)) textListSelectedIds.delete(id);
+      if (!availableTextIds.has(id)) textListSelectedIds.delete(id);
     });
     updateTextListDuplicateButton();
     positionTextListPanel();
+  }
+
+  function getVisibleTextsForList() {
+    return sortTextsForList().filter(
+      (text) =>
+        text.layer !== "draft" && (!textListStarOnlyEnabled || textHasStarLabel(text))
+    );
+  }
+
+  function focusTextFromList(textId) {
+    const targetIdx = findIndexById(texts, textId);
+    if (targetIdx < 0) return;
+    const target = texts[targetIdx];
+    offsetX = canvas.width / 2 - target.x * scale;
+    offsetY = canvas.height / 2 - target.y * scale;
+    selected = { type: "text", index: targetIdx };
+    multiSelection = null;
+    currentTool = "select";
+    updateToolButtons();
+    redraw();
+  }
+
+  function startTextListInlineEdit(item, text, contentEl) {
+    if (!item || !text || item.querySelector(".text-list-content-input")) return;
+    const textarea = document.createElement("textarea");
+    textarea.className = "text-list-content-input";
+    textarea.value = (text.lines || []).join("\n");
+    textarea.setAttribute(
+      "aria-label",
+      "テキスト編集。Enterで確定、Shift+Enterで改行、Tabで次へ"
+    );
+    item.draggable = false;
+    contentEl.replaceWith(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(42, textarea.scrollHeight)}px`;
+
+    let finished = false;
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      item.draggable = true;
+      if (commit) {
+        const value = textarea.value;
+        const trimmed = value.trim();
+        if (trimmed) {
+          const lines = value.split(/\r?\n/);
+          if (value !== (text.lines || []).join("\n")) {
+            text.lines = lines;
+            emitItemPatch("text", text, { lines });
+            redraw();
+          }
+        }
+      }
+      refreshTextList();
+    };
+
+    textarea.addEventListener("click", (e) => e.stopPropagation());
+    textarea.addEventListener("pointerdown", (e) => e.stopPropagation());
+    textarea.addEventListener("dragstart", (e) => e.preventDefault());
+    textarea.addEventListener("input", () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.max(42, textarea.scrollHeight)}px`;
+    });
+    textarea.addEventListener("blur", () => finish(true));
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        const ordered = getVisibleTextsForList();
+        const currentIndex = ordered.findIndex((entry) => entry.id === text.id);
+        const nextText = ordered[currentIndex + (e.shiftKey ? -1 : 1)];
+        finish(true);
+        if (nextText) {
+          focusTextFromList(nextText.id);
+          requestAnimationFrame(() => {
+            const escapedId = window.CSS?.escape
+              ? CSS.escape(nextText.id)
+              : String(nextText.id).replace(/"/g, '\\"');
+            const nextItem = textListBody?.querySelector(
+              `.text-list-item[data-id="${escapedId}"]`
+            );
+            const nextContent = nextItem?.querySelector(".text-list-content");
+            if (nextItem && nextContent) {
+              startTextListInlineEdit(nextItem, nextText, nextContent);
+            }
+          });
+        }
+      }
+    });
+  }
+
+  function clearTextListDropIndicators(except = null) {
+    textListBody?.querySelectorAll(".text-list-item").forEach((item) => {
+      if (item === except) return;
+      item.classList.remove("insert-before", "insert-after");
+      delete item.dataset.dropPosition;
+    });
+  }
+
+  function reorderTextList(sourceId, targetId, position = "before") {
+    const ordered = sortTextsForList(texts.filter((text) => text.layer !== "draft"));
+    const from = ordered.findIndex((text) => text.id === sourceId);
+    if (from < 0) return;
+    const [moved] = ordered.splice(from, 1);
+    const targetIndex = ordered.findIndex((text) => text.id === targetId);
+    if (targetIndex < 0) return;
+    const insertIndex = targetIndex + (position === "after" ? 1 : 0);
+    ordered.splice(insertIndex, 0, moved);
+    ordered.forEach((text, idx) => {
+      text.textListOrder = idx + 1;
+      emitItemPatch("text", text, { textListOrder: text.textListOrder });
+    });
+    textListOrderCounter = ordered.length;
+    renderTextList();
   }
 
   function buildTextListPlainText() {
@@ -3240,7 +3406,9 @@
     if (textListBody) {
       const header = textListPanel.querySelector(".text-list-header");
       const headerH = header ? header.getBoundingClientRect().height : 44;
-      const bodyMax = Math.max(180, maxH - headerH);
+      const controls = textListPanel.querySelector(".text-list-controls");
+      const controlsH = controls ? controls.getBoundingClientRect().height : 0;
+      const bodyMax = Math.max(180, maxH - headerH - controlsH);
       textListBody.style.maxHeight = `${bodyMax}px`;
     }
   }
@@ -4006,6 +4174,7 @@
         x: t.x + offset * idxOffset,
         y: t.y + offset * idxOffset,
         order: orderCounter++,
+        textListOrder: bumpTextListOrderCounter(),
         frameId: targetFrameId || t.frameId || null,
         user: currentUser,
       };
@@ -4085,6 +4254,7 @@
           x: t.x + offset,
           y: t.y + offset,
           order: orderCounter++,
+          textListOrder: bumpTextListOrderCounter(),
           user: currentUser,
         };
         texts.push(clone);
@@ -5098,6 +5268,7 @@
           user: currentUser,
           order: orderCounter++,
           createdAt: Date.now(),
+          textListOrder: bumpTextListOrderCounter(),
         };
         texts.push(clone);
         copied = true;
@@ -5887,6 +6058,7 @@
     images.length = 0;
     links.length = 0;
     orderCounter = 0;
+    textListOrderCounter = 0;
     draftStrokes.length = 0;
     draftOrderCounter = 0;
     draftsLoaded = false;
@@ -5924,6 +6096,8 @@
 
   function addTextFromNetwork(text, shouldRedraw = true) {
     if (findIndexById(texts, text.id) >= 0) return;
+    const hasTextListOrder = typeof text.textListOrder === "number";
+    const textListOrder = hasTextListOrder ? text.textListOrder : bumpTextListOrderCounter();
     const withCreated = {
       ...text,
       createdAt: text.createdAt || Date.now(),
@@ -5932,8 +6106,10 @@
       rotation: text.rotation || 0,
       vertical: !!text.vertical,
       gridText: !!text.gridText,
+      textListOrder,
     };
     texts.push(withCreated);
+    if (hasTextListOrder) bumpTextListOrderCounter(textListOrder);
     bumpOrderCounter(text.order);
     registerUser(text.user);
     refreshTextList();
@@ -8710,6 +8886,11 @@
   }
 
   function addTextObject(textData) {
+    if (typeof textData.textListOrder !== "number") {
+      textData.textListOrder = bumpTextListOrderCounter();
+    } else {
+      bumpTextListOrderCounter(textData.textListOrder);
+    }
     texts.push(textData);
     registerUser(currentUser);
     emitTextAdd(textData);
@@ -9063,6 +9244,7 @@
       rotation: 0,
       vertical: false,
       gridText: false,
+      textListOrder: bumpTextListOrderCounter(),
     };
     applyFrameMembershipByPoint(t, { x: worldX, y: worldY });
     texts.push(t);
@@ -9183,9 +9365,9 @@
     }
 
     if (e.button === 0 && e.detail >= 2) {
-      ignoreNextDblClick = true;
       const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
       if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
+        ignoreNextDblClick = true;
         return;
       }
       if (hitTestText(canvasPos.x, canvasPos.y) >= 0) {
@@ -10726,6 +10908,16 @@
       }
       return;
     }
+    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
+    if (textIndex >= 0) {
+      selected = { type: "text", index: textIndex };
+      multiSelection = null;
+      currentTool = "select";
+      updateToolButtons();
+      redraw();
+      editTextAt(textIndex);
+      return;
+    }
     const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
     if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
       return;
@@ -11330,6 +11522,13 @@
 
   if (textListDuplicateGridBtn) {
     textListDuplicateGridBtn.addEventListener("click", duplicateSelectedTextListAsGrid);
+  }
+
+  if (textListStarOnly) {
+    textListStarOnly.addEventListener("change", () => {
+      textListStarOnlyEnabled = textListStarOnly.checked;
+      renderTextList();
+    });
   }
 
   if (imageFileInput) {

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS texts_v2 (
   rotation REAL NOT NULL DEFAULT 0,
   vertical INTEGER NOT NULL DEFAULT 0,
   grid_text INTEGER NOT NULL DEFAULT 0,
+  text_list_order REAL,
   frame_id TEXT,
   frame_tab TEXT
 );
@@ -160,6 +161,11 @@ try {
 }
 try {
   db.exec("ALTER TABLE texts_v2 ADD COLUMN grid_text INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE texts_v2 ADD COLUMN text_list_order REAL");
 } catch (e) {
   // ignore
 }
@@ -410,8 +416,8 @@ function getDraftStrokes(boardId, user) {
 // --- texts_v2 ---
 function saveText(text) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, frame_id, frame_tab)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     text.id,
@@ -429,6 +435,7 @@ function saveText(text) {
     text.rotation || 0,
     text.vertical ? 1 : 0,
     text.gridText ? 1 : 0,
+    typeof text.textListOrder === "number" ? text.textListOrder : null,
     text.frameId || null,
     text.frameTab || null
   );
@@ -515,7 +522,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const textsStmt = db.prepare(`
-    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, frame_id, frame_tab
+    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab
     FROM texts_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -562,6 +569,7 @@ function getBoardState(boardId) {
     rotation: row.rotation || 0,
     vertical: !!row.vertical,
     gridText: !!row.grid_text,
+    textListOrder: typeof row.text_list_order === "number" ? row.text_list_order : null,
     createdAt: row.created_at,
     frameId: row.frame_id || null,
     frameTab: row.frame_tab || null,
