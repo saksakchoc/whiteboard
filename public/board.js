@@ -12,6 +12,7 @@
   const fillToolBtn = document.getElementById("fill-tool-btn");
   const eraserToolBtn = document.getElementById("eraser-tool-btn");
   const selectToolBtn = document.getElementById("select-tool-btn");
+  const lassoCopyToolBtn = document.getElementById("lasso-copy-tool-btn");
   const strokeAlphaToggleBtn = document.getElementById("stroke-alpha-toggle-btn");
   const toolbarEl = document.getElementById("toolbar");
   const insertMenuBtn = document.getElementById("insert-menu-btn");
@@ -68,11 +69,15 @@
 
   // --- ボードID表示 ---
   const boardId = window.location.pathname.split("/").pop();
-  const userStorageKey = `board-users-${boardId}`;
-  const lastUserStorageKey = `last-user-${boardId}`;
+  const userStorageKey = "whiteboard-users-v1";
+  const lastUserStorageKey = "whiteboard-last-user-v1";
   let boardTitle = boardId;
-  const favoriteStorageKey = `favorites-${boardId}`;
-  const paletteStorageKey = `palette-${boardId}`;
+  const favoriteStorageKey = "whiteboard-favorites-v1";
+  const paletteStorageKey = "whiteboard-palette-v1";
+  const legacyUserStorageKey = `board-users-${boardId}`;
+  const legacyLastUserStorageKey = `last-user-${boardId}`;
+  const legacyFavoriteStorageKey = `favorites-${boardId}`;
+  const legacyPaletteStorageKey = `palette-${boardId}`;
   const userProfileStorageKey = "user-profiles-v1";
   let favoritesByUser = loadFavorites();
   let paletteColors = loadPalette();
@@ -83,7 +88,7 @@
   let currentColor = "#000000";
   let activeColorSwatch = null;
   let currentSize = parseInt(sizeRange.value, 10);
-  let currentTool = "pen"; // "pen" | "fill" | "select" | "eraser"
+  let currentTool = "pen"; // "pen" | "fill" | "select" | "eraser" | "lasso-copy"
   let currentUser = "";
   let knownUsers = [];
   let boardUsersFromServer = [];
@@ -103,6 +108,8 @@
   let isSelectingArea = false;
   let selectionDragStart = null;
   let selectionDragCurrent = null;
+  let lassoCopyActive = false;
+  let lassoCopyPath = [];
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
   const pendingStrokeAdds = new Map();
@@ -254,6 +261,7 @@
   // 状態フラグ
   let isDrawing = false;
   let isDrawingDraft = false;
+  let activeLinkedBoardId = null;
   let isPanning = false;
   let isDraggingObject = false;
   let isResizingObject = false;
@@ -275,6 +283,8 @@
   const ATTENTION_TIMEOUT_MS = 10000;
   const WRITING_LABEL_TIMEOUT_MS = 8000;
   const WRITING_LABEL_END_GRACE_MS = 900;
+  const TRANSPARENT_PIXEL_SRC =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
   const historyStack = [];
   const MAX_HISTORY = 80;
   let actionSnapshotTaken = false;
@@ -283,6 +293,12 @@
   let framePlacePreview = null;
   let frameCounter = 1;
   let isPlacingFrame = false;
+  let linkBoardMode = null; // "source" | "place" | null
+  let linkBoardSourceStart = null;
+  let linkBoardSourcePreview = null;
+  let pendingLinkBoardSource = null;
+  let linkBoardPlaceStart = null;
+  let linkBoardPlacePreview = null;
   let compactMode = false;
   let menuVisible = true;
 
@@ -406,6 +422,7 @@
         frameTab: img.frameTab || null,
         frameTabs: img.frameTabs ? img.frameTabs.map((tab) => ({ ...tab })) : null,
         activeFrameTab: img.activeFrameTab || null,
+        linkBoardSource: img.linkBoardSource ? { ...img.linkBoardSource } : null,
       }));
 
     return {
@@ -455,6 +472,7 @@
     selected = null;
     multiSelection = null;
     isDrawing = false;
+    activeLinkedBoardId = null;
     isErasing = false;
     isDraggingObject = false;
     isResizingObject = false;
@@ -516,6 +534,7 @@
       frameTab: img.frameTab || null,
       frameTabs: img.frameTabs || null,
       activeFrameTab: img.activeFrameTab || null,
+      linkBoardSource: img.linkBoardSource || null,
     };
   }
 
@@ -792,6 +811,14 @@
     framePlaceType = null;
     framePlaceStart = null;
     framePlacePreview = null;
+    lassoCopyActive = false;
+    lassoCopyPath = [];
+    linkBoardMode = null;
+    linkBoardSourceStart = null;
+    linkBoardSourcePreview = null;
+    pendingLinkBoardSource = null;
+    linkBoardPlaceStart = null;
+    linkBoardPlacePreview = null;
     isDrawingShape = false;
     isPlacingFrame = false;
     isDrawing = false;
@@ -1084,6 +1111,7 @@
     isDrawingDraft = false;
     activeStrokeId = null;
     activeDraftId = null;
+    activeLinkedBoardId = null;
   }
 
   function startPinchGesture(e) {
@@ -1147,37 +1175,59 @@
   });
 
   // --- ユーザー管理 ---
-  function loadStoredUsers() {
+  function readJsonStorage(key, fallback) {
     try {
-      const raw = localStorage.getItem(userStorageKey);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr : [];
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
     } catch {
-      return [];
+      return fallback;
     }
+  }
+
+  function loadStoredUsers() {
+    const globalUsers = readJsonStorage(userStorageKey, []);
+    const legacyUsers = readJsonStorage(legacyUserStorageKey, []);
+    const merged = [];
+    [...(Array.isArray(globalUsers) ? globalUsers : []), ...(Array.isArray(legacyUsers) ? legacyUsers : [])].forEach((name) => {
+      if (typeof name === "string" && name && !merged.includes(name)) merged.push(name);
+    });
+    if (JSON.stringify(merged) !== JSON.stringify(Array.isArray(globalUsers) ? globalUsers : [])) {
+      saveStoredUsers(merged);
+    }
+    return merged;
   }
 
   function loadFavorites() {
-    try {
-      const raw = localStorage.getItem(favoriteStorageKey);
-      if (!raw) return {};
-      const obj = JSON.parse(raw);
-      return obj && typeof obj === "object" ? obj : {};
-    } catch {
-      return {};
+    const globalFavs = readJsonStorage(favoriteStorageKey, {});
+    const legacyFavs = readJsonStorage(legacyFavoriteStorageKey, {});
+    const merged = {
+      ...(legacyFavs && typeof legacyFavs === "object" && !Array.isArray(legacyFavs) ? legacyFavs : {}),
+      ...(globalFavs && typeof globalFavs === "object" && !Array.isArray(globalFavs) ? globalFavs : {}),
+    };
+    const normalizedGlobal = globalFavs && typeof globalFavs === "object" && !Array.isArray(globalFavs) ? globalFavs : {};
+    if (JSON.stringify(merged) !== JSON.stringify(normalizedGlobal)) {
+      try {
+        localStorage.setItem(favoriteStorageKey, JSON.stringify(merged));
+      } catch {
+        // ignore
+      }
     }
+    return merged;
   }
 
   function loadPalette() {
-    try {
-      const raw = localStorage.getItem(paletteStorageKey);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr.filter((c) => typeof c === "string") : [];
-    } catch {
-      return [];
+    const globalPalette = readJsonStorage(paletteStorageKey, null);
+    const legacyPalette = readJsonStorage(legacyPaletteStorageKey, null);
+    const source = Array.isArray(globalPalette) ? globalPalette : legacyPalette;
+    const palette = Array.isArray(source) ? source.filter((c) => typeof c === "string") : [];
+    if (palette.length && !Array.isArray(globalPalette)) {
+      try {
+        localStorage.setItem(paletteStorageKey, JSON.stringify(palette));
+      } catch {
+        // ignore
+      }
     }
+    return palette;
   }
 
   function savePalette() {
@@ -1213,10 +1263,16 @@
   }
 
   function setProfileFavoriteColor(name, color) {
-    if (!name || !color) return;
+    if (!name) return;
     userProfiles = userProfiles || {};
     const prev = userProfiles[name] || {};
-    userProfiles[name] = { ...prev, favoriteColor: color };
+    if (color) {
+      userProfiles[name] = { ...prev, favoriteColor: color };
+    } else if (Object.keys(prev).length) {
+      const next = { ...prev };
+      delete next.favoriteColor;
+      userProfiles[name] = next;
+    }
     saveUserProfiles();
   }
 
@@ -1238,7 +1294,11 @@
 
   function loadLastUser() {
     try {
-      return localStorage.getItem(lastUserStorageKey) || "";
+      const globalUser = localStorage.getItem(lastUserStorageKey) || "";
+      if (globalUser) return globalUser;
+      const legacyUser = localStorage.getItem(legacyLastUserStorageKey) || "";
+      if (legacyUser) saveLastUser(legacyUser);
+      return legacyUser;
     } catch {
       return "";
     }
@@ -1337,6 +1397,24 @@
 
   function getCurrentFavoriteColor() {
     return favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) || "#ff3b30"; // デフォルト赤
+  }
+
+  function getCurrentRegisteredFavoriteColor() {
+    return currentUser ? favoritesByUser[currentUser] || getProfileFavoriteColor(currentUser) || "" : "";
+  }
+
+  function getUserRegisteredFavoriteColor(userName) {
+    return userName ? favoritesByUser[userName] || getProfileFavoriteColor(userName) || "" : "";
+  }
+
+  function getStrokeGlowColor(stroke) {
+    return stroke?.glowColor || getUserRegisteredFavoriteColor(stroke?.user) || "";
+  }
+
+  function applyCurrentGlowColor(target) {
+    const glowColor = getCurrentRegisteredFavoriteColor();
+    if (target && glowColor) target.glowColor = glowColor;
+    return target;
   }
 
   function createSideTag(type) {
@@ -2243,7 +2321,7 @@
   }
 
   function normalizeImageAsFrameBackground(sourceImg, visualBounds) {
-    if (!sourceImg || !sourceImg.img || !visualBounds) return {};
+    if (!sourceImg || !visualBounds) return {};
     const rotation = normalizeRotation(sourceImg.rotation || 0);
     const mirrored = !!sourceImg.mirrored;
     const bounds = getImageBoundsWorld(sourceImg);
@@ -2257,7 +2335,7 @@
       Math.abs(bounds.height - visualBounds.height) < 0.001;
     if (alreadyAligned) return {};
 
-    const sourceEl = sourceImg.img;
+    const sourceEl = sourceImg.img || ensureImageElementForImage(sourceImg, { redrawOnLoad: false });
     if (!sourceEl.complete || !sourceEl.naturalWidth || !sourceEl.naturalHeight) return {};
 
     const maxDimension = 4096;
@@ -2295,10 +2373,25 @@
 
     const src = canvasTag.toDataURL("image/png");
     const imgEl = new Image();
-    imgEl.onload = () => redraw();
+    imgEl.onload = () => {
+      sourceImg.renderImg = createImageRenderSource(imgEl);
+      if (sourceImg.id) {
+        imageElementCache.set(sourceImg.id, {
+          src: sourceImg.src,
+          img: imgEl,
+          renderImg: sourceImg.renderImg,
+        });
+      }
+      redraw();
+    };
     imgEl.src = src;
+    if (sourceImg.id) {
+      pendingImageLoadTokens.delete(sourceImg.id);
+      imageElementCache.delete(sourceImg.id);
+    }
     sourceImg.img = imgEl;
     sourceImg.src = src;
+    sourceImg.renderImg = null;
     sourceImg.x = visualBounds.x;
     sourceImg.y = visualBounds.y;
     sourceImg.width = visualBounds.width;
@@ -3484,11 +3577,12 @@
   async function linkUserToBoardServer(name) {
     const trimmed = (name || "").trim();
     if (!trimmed) return;
+    const favoriteColor = getUserRegisteredFavoriteColor(trimmed);
     try {
       const res = await fetch(`/api/boards/${boardId}/users`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify({ name: trimmed, favoriteColor }),
       });
       if (res.ok) {
         if (!boardUsersFromServer.includes(trimmed)) {
@@ -3905,13 +3999,15 @@
         emitItemPatch("text", text, { x: text.x, y: text.y, rotation: text.rotation });
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (!img || isFrameContainer(img)) return;
+        if (!img || isFrameContainer(img) || isLinkedBoardImage(img)) return;
         const oldCenter = getRectCenter({ x: img.x, y: img.y, width: img.width, height: img.height });
         const newCenter = rotatePointAround(oldCenter, center, direction);
         img.x += newCenter.x - oldCenter.x;
         img.y += newCenter.y - oldCenter.y;
         img.rotation = normalizeRotation((img.rotation || 0) + (direction === "cw" ? 90 : -90));
-        emitItemPatch("image", img, { x: img.x, y: img.y, rotation: img.rotation });
+        const visualBounds = getRotatedImageVisualBoundsWorld(img) || getImageBoundsWorld(img);
+        const normalizedPatch = normalizeImageAsFrameBackground(img, visualBounds);
+        emitItemPatch("image", img, Object.keys(normalizedPatch).length ? normalizedPatch : { x: img.x, y: img.y, rotation: img.rotation });
       }
     });
     refreshTextList();
@@ -4268,6 +4364,69 @@
   function getImageBoundsWorld(img) {
     if (!img) return null;
     return { x: img.x, y: img.y, width: img.width, height: img.height };
+  }
+
+  function isLinkedBoardImage(imgObj) {
+    return !!imgObj?.linkBoardSource;
+  }
+
+  function normalizeWorldRectFromPoints(a, b) {
+    return getNormalizedRect({
+      x: a.x,
+      y: a.y,
+      width: b.x - a.x,
+      height: b.y - a.y,
+    });
+  }
+
+  function getLinkedBoardAtWorldPoint(worldPoint) {
+    let best = null;
+    images.forEach((img, index) => {
+      if (!isLinkedBoardImage(img) || !isImageVisible(img)) return;
+      if (!pointInRectWorld(getImageBoundsWorld(img), worldPoint)) return;
+      const order = getObjectOrderValue("image", img, index);
+      if (!best || order >= best.order) best = { img, index, order };
+    });
+    return best;
+  }
+
+  function mapLinkedBoardWorldToSource(imgObj, worldPoint) {
+    const src = imgObj?.linkBoardSource;
+    if (!src || !imgObj?.width || !imgObj?.height) return worldPoint;
+    return {
+      x: src.x + ((worldPoint.x - imgObj.x) / imgObj.width) * src.width,
+      y: src.y + ((worldPoint.y - imgObj.y) / imgObj.height) * src.height,
+    };
+  }
+
+  function getLinkedBoardLabelBoundsScreen(imgObj) {
+    if (!isLinkedBoardImage(imgObj)) return null;
+    const p = worldToScreen(imgObj.x, imgObj.y);
+    return { x: p.x + 6, y: p.y + 4, width: 48, height: 24 };
+  }
+
+  function hitTestLinkedBoardLabel(screenX, screenY) {
+    const point = { x: screenX, y: screenY };
+    for (let i = images.length - 1; i >= 0; i--) {
+      const img = images[i];
+      if (!isLinkedBoardImage(img) || !isImageVisible(img)) continue;
+      const bounds = getLinkedBoardLabelBoundsScreen(img);
+      if (bounds && pointInScreenRect(point, bounds)) return { img, index: i };
+    }
+    return null;
+  }
+
+  function focusLinkedBoardSource(imgObj) {
+    const src = imgObj?.linkBoardSource;
+    if (!src || !src.width || !src.height) return;
+    offsetX = canvas.width / 2 - (src.x + src.width / 2) * scale;
+    offsetY = canvas.height / 2 - (src.y + src.height / 2) * scale;
+    selected = null;
+    multiSelection = null;
+    currentTool = "select";
+    updateToolButtons();
+    updateFooterByState();
+    redraw();
   }
 
   function getVisibleWorldRect(marginScreen = 256) {
@@ -4964,49 +5123,113 @@
       const owner = findOwningFrameForItem(item);
       return !!(owner?.frame?.id && nestedFrameIds.has(owner.frame.id));
     };
-    const applyMembership = (type, obj, patch) => {
-      if (!obj) return;
-      if (adoptLayer && type !== "draft" && obj.layer !== adoptLayer) {
-        patch = { ...patch, layer: adoptLayer };
-        obj.layer = adoptLayer;
-      }
-      obj.frameId = patch.frameId;
-      obj.frameTab = patch.frameTab;
-      if (type === "draft") {
-        if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: obj });
-      } else {
-        emitItemPatch(type, obj, patch);
-      }
+    const clonedGroupIds = new Map();
+    const getCloneGroupId = (groupId) => {
+      if (!groupId) return null;
+      if (!clonedGroupIds.has(groupId)) clonedGroupIds.set(groupId, genId());
+      return clonedGroupIds.get(groupId);
+    };
+    const copyLayer = (obj, fallback = "user") => adoptLayer || obj?.layer || fallback;
+    const copyStrokeIntoFrame = (source, patch) => {
+      if (!source) return;
+      const clone = {
+        ...source,
+        id: genId(),
+        groupId: getCloneGroupId(source.groupId),
+        points: (source.points || []).map((p) => ({ x: p.x, y: p.y })),
+        layer: copyLayer(source),
+        order: orderCounter++,
+        user: currentUser || source.user || "",
+        frameId: patch.frameId,
+        frameTab: patch.frameTab,
+      };
+      strokes.push(clone);
+      registerUser(clone.user);
+      emitStrokeAdd(clone);
+    };
+    const copyDraftIntoFrame = (source, patch) => {
+      if (!source) return;
+      const clone = {
+        ...source,
+        id: genId(),
+        groupId: getCloneGroupId(source.groupId),
+        points: (source.points || []).map((p) => ({ x: p.x, y: p.y })),
+        order: draftOrderCounter++,
+        user: currentUser || source.user || "",
+        frameId: patch.frameId,
+        frameTab: patch.frameTab,
+      };
+      draftStrokes.push(clone);
+      registerUser(clone.user);
+      if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: clone });
+    };
+    const copyTextIntoFrame = (source, patch) => {
+      if (!source) return;
+      const clone = {
+        ...source,
+        id: genId(),
+        lines: Array.isArray(source.lines) ? source.lines.slice() : source.lines,
+        layer: copyLayer(source),
+        order: orderCounter++,
+        user: currentUser || source.user || "",
+        textListOrder: bumpTextListOrderCounter(),
+        frameId: patch.frameId,
+        frameTab: patch.frameTab,
+      };
+      texts.push(clone);
+      registerUser(clone.user);
+      emitTextAdd(clone);
+    };
+    const copyImageIntoFrame = (source, patch) => {
+      if (!source) return;
+      const clone = {
+        ...source,
+        id: genId(),
+        layer: copyLayer(source, "image"),
+        order: orderCounter++,
+        user: currentUser || source.user || "",
+        imageListOrder: bumpImageListOrderCounter(),
+        frameTabs: source.frameTabs ? source.frameTabs.map((tab) => ({ ...tab })) : source.frameTabs,
+        linkBoardSource: source.linkBoardSource ? { ...source.linkBoardSource } : source.linkBoardSource,
+        frameId: patch.frameId,
+        frameTab: patch.frameTab,
+      };
+      images.push(clone);
+      registerUser(clone.user);
+      emitImageAdd(clone);
     };
 
-    strokes.forEach((s, index) => {
+    strokes.slice().forEach((s, index) => {
       if (belongsToNestedFrame({ type: "stroke", index })) return;
       const bounds = getBoundsForFrameContentCandidate({ type: "stroke", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
-      applyMembership("stroke", s, { frameId: frameImg.id, frameTab: contentTab });
+      copyStrokeIntoFrame(s, { frameId: frameImg.id, frameTab: contentTab });
     });
-    texts.forEach((t, index) => {
+    texts.slice().forEach((t, index) => {
       if (belongsToNestedFrame({ type: "text", index })) return;
       const bounds = getBoundsForFrameContentCandidate({ type: "text", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
-      applyMembership("text", t, { frameId: frameImg.id, frameTab: contentTab });
+      copyTextIntoFrame(t, { frameId: frameImg.id, frameTab: contentTab });
     });
-    images.forEach((img, index) => {
+    images.slice().forEach((img, index) => {
       if (!img || img.id === frameImg.id) return;
+      if (img.frameId === frameImg.id) return;
       if (belongsToNestedFrame({ type: "image", index })) return;
       const bounds = getBoundsForFrameContentCandidate({ type: "image", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
-      applyMembership("image", img, {
+      copyImageIntoFrame(img, {
         frameId: frameImg.id,
         frameTab: isFrameContainer(img) ? contentTab : "background",
       });
     });
-    draftStrokes.forEach((s, index) => {
+    draftStrokes.slice().forEach((s, index) => {
       if (belongsToNestedFrame({ type: "draft", index })) return;
       const bounds = getBoundsForFrameContentCandidate({ type: "draft", index });
       if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
-      applyMembership("draft", s, { frameId: frameImg.id, frameTab: contentTab });
+      copyDraftIntoFrame(s, { frameId: frameImg.id, frameTab: contentTab });
     });
+    refreshTextList();
+    refreshImageList();
   }
 
   function createCroppedFrameBackgroundImage(sourceImg, cropWorldRect, frameImg, options = {}) {
@@ -5187,6 +5410,7 @@
       groupId,
       fillSourceId: source.id,
     };
+    applyCurrentGlowColor(fillStroke);
     if (source.frameId) {
       fillStroke.frameId = source.frameId;
       fillStroke.frameTab = source.frameTab || null;
@@ -5325,6 +5549,7 @@
         groupId: draft.groupId || null,
         frameId: draft.frameId || null,
         frameTab: draft.frameTab || null,
+        glowColor: draft.glowColor || getStrokeGlowColor(draft) || null,
       };
       strokes.push(stroke);
       registerUser(currentUser);
@@ -5593,7 +5818,11 @@
 
   function identifyToServer() {
     if (!socketConnected || !currentUser) return;
-    socket.emit("user:identify", { boardId, user: currentUser });
+    socket.emit("user:identify", {
+      boardId,
+      user: currentUser,
+      favoriteColor: getCurrentRegisteredFavoriteColor(),
+    });
   }
 
   function updateScreenShareLayout() {
@@ -6132,6 +6361,7 @@
       frameTab: imgData.frameTab || null,
       frameTabs: imgData.frameTabs || null,
       activeFrameTab: imgData.activeFrameTab || null,
+      linkBoardSource: imgData.linkBoardSource || null,
       img,
     };
     images.push(imageObj);
@@ -6140,7 +6370,7 @@
     bumpOrderCounter(imgData.order);
     registerUser(imgData.user);
     refreshImageList();
-    if (!options.deferLoad || isImageNearViewport(imageObj)) {
+    if (!isLinkedBoardImage(imageObj) && (!options.deferLoad || isImageNearViewport(imageObj))) {
       ensureImageElementForImage(imageObj, { redrawOnLoad: shouldRedraw || options.redrawOnLoad });
     }
     if (shouldRedraw) redraw();
@@ -7477,6 +7707,16 @@
       try {
       if (item.type === "image") {
         const imgObj = images[item.index];
+        if (isLinkedBoardImage(imgObj)) {
+          drawLinkedBoardImage(imgObj);
+          if (selected && selected.type === "image" && selected.index === item.index) {
+            drawSelectionBoundsWorld(
+              { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+              0
+            );
+          }
+          continue;
+        }
         const imgEl = ensureImageElementForImage(imgObj);
         if (!imgObj || !imgEl || !imgEl.complete || imgEl.naturalWidth === 0 || imgEl.naturalHeight === 0) {
           continue;
@@ -7539,11 +7779,18 @@
           continue;
         }
         ctx.save();
+        const glowColor = getStrokeGlowColor(stroke);
         ctx.globalAlpha = strokesDimmed ? DIM_ALPHA : 1;
         ctx.strokeStyle = stroke.color;
         ctx.lineWidth = stroke.size * scale; // ズームに合わせて太さを変える
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+        if (glowColor) {
+          ctx.shadowColor = glowColor;
+          ctx.shadowBlur = Math.max(3, Math.min(12, (stroke.size || 1) * scale * 1.6));
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+        }
 
         ctx.beginPath();
         const first = worldToScreen(stroke.points[0].x, stroke.points[0].y);
@@ -7753,6 +8000,30 @@
       ctx.strokeRect(x, y, w, h);
       ctx.restore();
     }
+    if (linkBoardMode === "source" && linkBoardSourceStart && linkBoardSourcePreview) {
+      const start = worldToScreen(linkBoardSourceStart.x, linkBoardSourceStart.y);
+      const end = worldToScreen(linkBoardSourcePreview.x, linkBoardSourcePreview.y);
+      drawLassoRectScreen(
+        { x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y },
+        "#16a34a"
+      );
+    }
+    if (linkBoardMode === "place" && pendingLinkBoardSource) {
+      const startWorld = linkBoardPlaceStart || screenToWorld(lastMouseScreen.x, lastMouseScreen.y);
+      const endWorld =
+        linkBoardPlacePreview ||
+        (linkBoardPlaceStart
+          ? null
+          : { x: startWorld.x + pendingLinkBoardSource.width, y: startWorld.y + pendingLinkBoardSource.height });
+      if (startWorld && endWorld) {
+        const start = worldToScreen(startWorld.x, startWorld.y);
+        const end = worldToScreen(endWorld.x, endWorld.y);
+        drawLassoRectScreen(
+          { x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y },
+          "#f59e0b"
+        );
+      }
+    }
 
     if (multiSelection && multiSelection.items) {
       drawMultiSelectionItemBounds(multiSelection.items);
@@ -7767,6 +8038,9 @@
         },
         "#0078d7"
       );
+    }
+    if (lassoCopyActive && lassoCopyPath.length > 1) {
+      drawLassoPathScreen(lassoCopyPath, "#d97706");
     }
 
     // 3. 最前面オーバーレイ：レーザーポインタ／記入中ラベル
@@ -7784,7 +8058,7 @@
   function isStaticLayerCacheItem(item) {
     if (item?.type !== "image") return false;
     const imgObj = images[item.index];
-    if (!imgObj || imgObj.tagType || imgObj.frameId) return false;
+    if (!imgObj || imgObj.tagType || imgObj.frameId || isLinkedBoardImage(imgObj)) return false;
     if (selected?.type === "image" && selected.index === item.index) return false;
     const layer = imgObj.layer || "base";
     return layer === "image" || layer === "base";
@@ -7978,6 +8252,131 @@
     ctx.lineWidth = Math.max(1, 1.5 * scale);
     ctx.strokeStyle = "#d8f1ff";
     ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawLinkedBoardImage(imgObj) {
+    const src = imgObj?.linkBoardSource;
+    if (!src || !src.width || !src.height || !imgObj.width || !imgObj.height) return;
+    const dest = worldToScreen(imgObj.x, imgObj.y);
+    const destW = imgObj.width * scale;
+    const destH = imgObj.height * scale;
+    const ratioX = destW / src.width;
+    const ratioY = destH / src.height;
+    const ratio = Math.min(ratioX, ratioY);
+    const mapPoint = (p) => ({
+      x: dest.x + (p.x - src.x) * ratioX,
+      y: dest.y + (p.y - src.y) * ratioY,
+    });
+
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(dest.x, dest.y, destW, destH);
+    ctx.beginPath();
+    ctx.rect(dest.x, dest.y, destW, destH);
+    ctx.clip();
+
+    images.forEach((child) => {
+      if (!child || child.id === imgObj.id || isLinkedBoardImage(child) || !isImageVisible(child)) return;
+      const bounds = getImageBoundsWorld(child);
+      if (!bounds || !rectsOverlap(src, bounds)) return;
+      const imgEl = ensureImageElementForImage(child);
+      if (!imgEl?.complete || !imgEl.naturalWidth || !imgEl.naturalHeight) return;
+      const p = mapPoint({ x: child.x, y: child.y });
+      const w = child.width * ratioX;
+      const h = child.height * ratioY;
+      ctx.save();
+      ctx.translate(p.x + w / 2, p.y + h / 2);
+      if (child.mirrored) ctx.scale(-1, 1);
+      const rotation = normalizeRotation(child.rotation || 0);
+      if (rotation) ctx.rotate((rotation * Math.PI) / 180);
+      ctx.drawImage(child.renderImg || imgEl, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    });
+
+    strokes.forEach((stroke) => {
+      if (!stroke || !isStrokeVisible(stroke)) return;
+      const bounds = getStrokeBoundsWorld(stroke);
+      if (!bounds || !rectsOverlap(src, bounds)) return;
+      if (stroke.fill && stroke.points.length >= 3) {
+        ctx.save();
+        ctx.fillStyle = stroke.color || withAlpha(currentColor, 0.38);
+        ctx.beginPath();
+        const first = mapPoint(stroke.points[0]);
+        ctx.moveTo(first.x, first.y);
+        for (let i = 1; i < stroke.points.length; i++) {
+          const p = mapPoint(stroke.points[i]);
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+      if (!stroke.points?.length) return;
+      ctx.save();
+      const glowColor = getStrokeGlowColor(stroke);
+      ctx.globalAlpha = strokesDimmed ? DIM_ALPHA : 1;
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = Math.max(1, (stroke.size || 1) * ratio);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      if (glowColor) {
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = Math.max(2, Math.min(8, (stroke.size || 1) * ratio * 1.2));
+      }
+      ctx.beginPath();
+      const first = mapPoint(stroke.points[0]);
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p = mapPoint(stroke.points[i]);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+
+    texts.forEach((t) => {
+      if (!t || !isTextVisible(t)) return;
+      const bounds = getTextBoundsWorld(t);
+      if (!bounds || !rectsOverlap(src, bounds)) return;
+      const p = mapPoint({ x: t.x, y: t.y });
+      const fontSizePx = Math.max(4, (t.fontSize || 16) * ratio);
+      const lineHeight = fontSizePx * 1.2;
+      const baseColor = normalizeHexColor(t.color || "#000000");
+      ctx.save();
+      ctx.font = `${fontSizePx}px sans-serif`;
+      ctx.textBaseline = "top";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = Math.max(1, fontSizePx * 0.15);
+      ctx.fillStyle = lightenColor(baseColor);
+      (t.lines || [""]).forEach((line, idx) => {
+        const y = p.y + idx * lineHeight;
+        ctx.strokeText(line, p.x, y);
+        ctx.fillText(line, p.x, y);
+      });
+      ctx.restore();
+    });
+
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = "#f59e0b";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 5]);
+    ctx.strokeRect(dest.x, dest.y, destW, destH);
+    const label = getLinkedBoardLabelBoundsScreen(imgObj);
+    if (label) {
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.fillRect(label.x, label.y, label.width, label.height);
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.9)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(label.x, label.y, label.width, label.height);
+    }
+    ctx.fillStyle = "rgba(146, 64, 14, 0.95)";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("LINK", dest.x + 12, dest.y + 10);
     ctx.restore();
   }
 
@@ -8234,6 +8633,141 @@
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(norm.x, norm.y, norm.width, norm.height);
     ctx.restore();
+  }
+
+  function getPathBoundsScreen(points) {
+    if (!Array.isArray(points) || points.length === 0) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    points.forEach((p) => {
+      if (!p || typeof p.x !== "number" || typeof p.y !== "number") return;
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    });
+    if (!Number.isFinite(minX)) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function drawLassoPathScreen(points, color = "#d97706") {
+    if (!Array.isArray(points) || points.length < 2) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function createImageFromLassoPath(path) {
+    const cleaned = (path || []).filter((p) => p && typeof p.x === "number" && typeof p.y === "number");
+    if (cleaned.length < 3) {
+      redraw();
+      return;
+    }
+
+    const bounds = getPathBoundsScreen(cleaned);
+    if (!bounds || bounds.width < 4 || bounds.height < 4) {
+      currentTool = "select";
+      updateToolButtons();
+      redraw();
+      return;
+    }
+
+    ensureSnapshotForAction();
+
+    const previousSelected = selected;
+    const previousMultiSelection = multiSelection;
+    selected = null;
+    multiSelection = null;
+    renderNow();
+
+    const pad = 2;
+    const sx = Math.max(0, Math.floor(bounds.x - pad));
+    const sy = Math.max(0, Math.floor(bounds.y - pad));
+    const ex = Math.min(canvas.width, Math.ceil(bounds.x + bounds.width + pad));
+    const ey = Math.min(canvas.height, Math.ceil(bounds.y + bounds.height + pad));
+    const sw = Math.max(1, ex - sx);
+    const sh = Math.max(1, ey - sy);
+
+    const clipCanvas = document.createElement("canvas");
+    clipCanvas.width = sw;
+    clipCanvas.height = sh;
+    const clipCtx = clipCanvas.getContext("2d");
+    clipCtx.save();
+    clipCtx.beginPath();
+    clipCtx.moveTo(cleaned[0].x - sx, cleaned[0].y - sy);
+    for (let i = 1; i < cleaned.length; i++) {
+      clipCtx.lineTo(cleaned[i].x - sx, cleaned[i].y - sy);
+    }
+    clipCtx.closePath();
+    clipCtx.clip();
+    clipCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    clipCtx.restore();
+
+    let src = "";
+    try {
+      src = clipCanvas.toDataURL("image/png");
+    } catch (err) {
+      console.warn("failed to create lasso screenshot", err);
+      selected = previousSelected;
+      multiSelection = previousMultiSelection;
+      currentTool = "select";
+      updateToolButtons();
+      showTransientFooterMessage("この範囲は画像化できませんでした。外部画像が含まれている可能性があります。", 6000);
+      redraw();
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const topLeft = screenToWorld(sx, sy);
+      const offsetWorld = 18 / Math.max(scale, 0.001);
+      const imgObj = {
+        id: genId(),
+        img,
+        src,
+        x: topLeft.x + offsetWorld,
+        y: topLeft.y + offsetWorld,
+        width: sw / Math.max(scale, 0.001),
+        height: sh / Math.max(scale, 0.001),
+        layer: getImageTargetLayer(),
+        order: orderCounter++,
+        user: currentUser,
+        rotation: 0,
+        imageName: "投げ縄スクショ",
+        imageListOrder: bumpImageListOrderCounter(),
+      };
+      applyFrameMembershipByPoint(imgObj, {
+        x: imgObj.x + imgObj.width / 2,
+        y: imgObj.y + imgObj.height / 2,
+      });
+      images.push(imgObj);
+      registerUser(currentUser);
+      refreshImageList();
+      emitImageAdd(imgObj);
+      selected = { type: "image", index: images.length - 1 };
+      multiSelection = null;
+      currentTool = "select";
+      updateToolButtons();
+      updateFooterByState();
+      redraw();
+    };
+    img.onerror = () => {
+      selected = previousSelected;
+      multiSelection = previousMultiSelection;
+      currentTool = "select";
+      updateToolButtons();
+      redraw();
+    };
+    img.src = src;
   }
 
   function stopAttentionAnimation() {
@@ -8951,13 +9485,16 @@
     return created;
   }
 
-  function createTextEditorAt(screenX, screenY, initialValue = "", mode = "normal") {
+  function createTextEditorAt(screenX, screenY, initialValue = "", mode = "normal", options = {}) {
     if (!requireUser()) return;
     if (!canCreateOnCurrentLayer()) return;
     if (activeLayer === "image") return;
     pendingTextPos = null;
     updateToolButtons();
-    const presetTags = collectTextTagsAtWorldPoint(screenToWorld(screenX, screenY));
+    const initialWorldPos = options.mapWorld
+      ? options.mapWorld(screenToWorld(screenX, screenY))
+      : screenToWorld(screenX, screenY);
+    const presetTags = collectTextTagsAtWorldPoint(initialWorldPos);
 
     if (textEditor) {
       endLocalWritingLabel();
@@ -8965,7 +9502,7 @@
       textEditor = null;
     }
 
-    const startWorldPos = screenToWorld(screenX, screenY);
+    const startWorldPos = initialWorldPos;
     const textarea = document.createElement("textarea");
     textarea.className = "text-editor-overlay";
 
@@ -9000,11 +9537,13 @@
       const containerRect = container.getBoundingClientRect();
       const sx = rect.left - containerRect.left;
       const sy = rect.top - containerRect.top;
-      const worldPos = screenToWorld(sx, sy);
+      const rawWorldPos = screenToWorld(sx, sy);
+      const worldPos = options.mapWorld ? options.mapWorld(rawWorldPos) : rawWorldPos;
 
       textarea.remove();
       textEditor = null;
       endLocalWritingLabel();
+      switchToSelectTool();
 
       if (value.trim()) {
         ensureSnapshotForAction();
@@ -9046,7 +9585,11 @@
           created.push(t);
         }
         created.forEach(addTextObject);
-        if (!created.length) return;
+        if (!created.length) {
+          updateFooterByState();
+          redraw();
+          return;
+        }
 
         refreshTextList();
 
@@ -9109,13 +9652,21 @@
       textarea.remove();
       textEditor = null;
       endLocalWritingLabel();
+      switchToSelectTool();
       const trimmed = value.trim();
-      if (value === originalValue) return;
+      if (value === originalValue) {
+        updateFooterByState();
+        redraw();
+        return;
+      }
       ensureSnapshotForAction();
       if (!trimmed) {
         // 空なら削除
         const removed = texts.splice(index, 1)[0];
         refreshTextList();
+        selected = null;
+        multiSelection = null;
+        updateFooterByState();
         redraw();
         if (removed && socketConnected) {
           socket.emit("item:remove", { boardId, type: "text", id: removed.id });
@@ -9132,7 +9683,10 @@
         };
         const created = buildGridTextObjects(lines.slice(1), { x: t.x, y: t.y + (t.fontSize || 16) }, t.fontSize || 16, t);
         created.forEach(addTextObject);
+        selected = { type: "text", index };
+        multiSelection = null;
         refreshTextList();
+        updateFooterByState();
         redraw();
         if (socketConnected) {
           socket.emit("item:update", {
@@ -9149,7 +9703,10 @@
         lines,
         layer: t.layer,
       };
+      selected = { type: "text", index };
+      multiSelection = null;
       refreshTextList();
+      updateFooterByState();
       redraw();
       if (socketConnected) {
         socket.emit("item:update", {
@@ -9282,6 +9839,22 @@
       return;
     }
 
+    if (linkBoardMode && (e.button ?? 0) === 0) {
+      if (!canCreateOnCurrentLayer()) return;
+      e.preventDefault();
+      const canvasPos = getCanvasPointFromEvent(e);
+      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      if (linkBoardMode === "source") {
+        linkBoardSourceStart = worldPos;
+        linkBoardSourcePreview = worldPos;
+      } else if (linkBoardMode === "place" && pendingLinkBoardSource) {
+        linkBoardPlaceStart = worldPos;
+        linkBoardPlacePreview = worldPos;
+      }
+      redraw();
+      return;
+    }
+
     if (framePlaceType && e.button === 0) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
@@ -9321,10 +9894,31 @@
     const isRightButton = e.button === 2;
     const isMiddleButton = e.button === 1;
 
+    if (e.button === 0 && currentTool === "select") {
+      const linkedLabelHit = hitTestLinkedBoardLabel(canvasPos.x, canvasPos.y);
+      if (linkedLabelHit) {
+        e.preventDefault();
+        focusLinkedBoardSource(linkedLabelHit.img);
+        return;
+      }
+    }
+
     if (pendingTextListGridCopies && e.button === 0) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       placePendingTextListGridCopies(worldPos);
+      return;
+    }
+
+    if (currentTool === "lasso-copy" && (e.button ?? 0) === 0) {
+      if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
+      e.preventDefault();
+      selected = null;
+      multiSelection = null;
+      lassoCopyActive = true;
+      lassoCopyPath = [canvasPos];
+      redraw();
       return;
     }
 
@@ -9349,7 +9943,10 @@
     if (pendingTextMode && e.button === 0) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
-      createTextEditorAt(canvasPos.x, canvasPos.y, "", pendingTextMode);
+      const linked = getLinkedBoardAtWorldPoint(worldPos);
+      createTextEditorAt(canvasPos.x, canvasPos.y, "", pendingTextMode, {
+        mapWorld: linked ? (point) => mapLinkedBoardWorldToSource(linked.img, point) : null,
+      });
       return;
     }
 
@@ -9506,7 +10103,9 @@
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       selected = null;
       isErasing = true;
-      eraseAt(worldPos.x, worldPos.y);
+      const linked = getLinkedBoardAtWorldPoint(worldPos);
+      const erasePoint = linked ? mapLinkedBoardWorldToSource(linked.img, worldPos) : worldPos;
+      eraseAt(erasePoint.x, erasePoint.y);
       return;
     }
 
@@ -9516,18 +10115,22 @@
       if (!canCreateOnCurrentLayer()) return;
       ensureSnapshotForAction();
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      const linked = getLinkedBoardAtWorldPoint(worldPos);
+      const drawWorldPos = linked ? mapLinkedBoardWorldToSource(linked.img, worldPos) : worldPos;
+      activeLinkedBoardId = linked?.img?.id || null;
       if (activeLayer === "draft") {
         const baseColor = withAlpha(currentColor, 0.55);
         const stroke = {
           id: genId(),
           color: baseColor,
           size: currentSize,
-          points: [worldPos],
+          points: [drawWorldPos],
           user: currentUser,
           order: draftOrderCounter++,
           createdAt: Date.now(),
         };
-        applyFrameMembershipByPoint(stroke, worldPos);
+        applyCurrentGlowColor(stroke);
+        applyFrameMembershipByPoint(stroke, drawWorldPos);
         draftStrokes.push(stroke);
         activeDraftId = stroke.id;
         isDrawing = true;
@@ -9544,7 +10147,7 @@
           id: genId(),
           color: currentColor,
           size: currentSize,
-          points: [worldPos],
+          points: [drawWorldPos],
           user: currentUser,
           layer:
             activeLayer === "base"
@@ -9556,14 +10159,15 @@
               : "user",
           order: orderCounter++,
         };
-        applyFrameMembershipByPoint(stroke, worldPos);
+        applyCurrentGlowColor(stroke);
+        applyFrameMembershipByPoint(stroke, drawWorldPos);
         strokes.push(stroke);
         registerUser(currentUser);
         activeStrokeId = stroke.id;
         isDrawing = true;
         isDrawingDraft = false;
       }
-      startLocalWritingLabel(worldPos);
+      startLocalWritingLabel(drawWorldPos);
       redraw();
       return;
     }
@@ -9601,6 +10205,17 @@
       ensureSnapshotForAction();
       selected = { type: "image", index: imgHandle.index };
       const imgObj = images[imgHandle.index];
+      if (
+        imgObj &&
+        !isFrameContainer(imgObj) &&
+        !isOmoteUraTagImage(imgObj) &&
+        !isLinkedBoardImage(imgObj) &&
+        (normalizeRotation(imgObj.rotation || 0) || imgObj.mirrored)
+      ) {
+        const visualBounds = getRotatedImageVisualBoundsWorld(imgObj) || getImageBoundsWorld(imgObj);
+        const normalizedPatch = normalizeImageAsFrameBackground(imgObj, visualBounds);
+        if (Object.keys(normalizedPatch).length) emitItemPatch("image", imgObj, normalizedPatch);
+      }
       const rect = { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height };
       const anchor =
         imgHandle.handle === "tl"
@@ -9765,6 +10380,20 @@
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
     updateFrameTabTooltip(canvasPos, e.clientX, e.clientY);
 
+    if (linkBoardMode === "source" && linkBoardSourceStart) {
+      linkBoardSourcePreview = screenToWorld(canvasPos.x, canvasPos.y);
+      redraw();
+      e.preventDefault();
+      return;
+    }
+
+    if (linkBoardMode === "place" && linkBoardPlaceStart) {
+      linkBoardPlacePreview = screenToWorld(canvasPos.x, canvasPos.y);
+      redraw();
+      e.preventDefault();
+      return;
+    }
+
     if (isPlacingFrame && framePlaceStart) {
       framePlacePreview = screenToWorld(canvasPos.x, canvasPos.y);
       redraw();
@@ -9804,6 +10433,16 @@
         redraw();
         return;
       }
+    }
+
+    if (lassoCopyActive) {
+      const last = lassoCopyPath[lassoCopyPath.length - 1];
+      if (!last || Math.hypot(canvasPos.x - last.x, canvasPos.y - last.y) >= 2) {
+        lassoCopyPath.push(canvasPos);
+        redraw();
+      }
+      e.preventDefault();
+      return;
     }
 
     if (multiDragActive && multiDragOffsets) {
@@ -9862,7 +10501,13 @@
     e.preventDefault();
 
     if (isDrawing) {
-      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      const rawWorldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      const activeLinkedBoard = activeLinkedBoardId
+        ? images.find((img) => img?.id === activeLinkedBoardId)
+        : null;
+      const worldPos = activeLinkedBoard
+        ? mapLinkedBoardWorldToSource(activeLinkedBoard, rawWorldPos)
+        : rawWorldPos;
       if (isDrawingDraft) {
         const stroke = draftStrokes.find((s) => s.id === activeDraftId);
         if (!stroke) {
@@ -10014,7 +10659,9 @@
       redraw();
     }
     if (isErasing) {
-      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      const rawWorldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      const linked = getLinkedBoardAtWorldPoint(rawWorldPos);
+      const worldPos = linked ? mapLinkedBoardWorldToSource(linked.img, rawWorldPos) : rawWorldPos;
       eraseAt(worldPos.x, worldPos.y);
     }
   }
@@ -10045,6 +10692,8 @@
       isErasing ||
       multiDragActive ||
       selectionDragActive ||
+      lassoCopyActive ||
+      !!linkBoardMode ||
       isDrawingShape
     ) {
       e.preventDefault();
@@ -10082,6 +10731,52 @@
       isSelectingArea = false;
       selectionDragStart = null;
       selectionDragCurrent = null;
+    }
+
+    if (lassoCopyActive) {
+      const path = lassoCopyPath.slice();
+      lassoCopyActive = false;
+      lassoCopyPath = [];
+      createImageFromLassoPath(path);
+    }
+
+    if (linkBoardMode === "source" && linkBoardSourceStart && linkBoardSourcePreview) {
+      const source = normalizeWorldRectFromPoints(linkBoardSourceStart, linkBoardSourcePreview);
+      linkBoardSourceStart = null;
+      linkBoardSourcePreview = null;
+      if (source.width >= 8 && source.height >= 8) {
+        pendingLinkBoardSource = source;
+        linkBoardMode = "place";
+        showTransientFooterMessage("リンクボード：貼り付けたい場所をクリック、またはドラッグしてください。", 5000);
+      } else {
+        linkBoardMode = null;
+        pendingLinkBoardSource = null;
+      }
+      updateToolButtons();
+      redraw();
+      return;
+    }
+
+    if (linkBoardMode === "place" && pendingLinkBoardSource) {
+      const upPos = getCanvasPointFromEvent(e);
+      const upWorld = screenToWorld(upPos.x, upPos.y);
+      const start = linkBoardPlaceStart || upWorld;
+      const dx = linkBoardPlacePreview ? Math.abs((linkBoardPlacePreview.x || start.x) - start.x) : 0;
+      const dy = linkBoardPlacePreview ? Math.abs((linkBoardPlacePreview.y || start.y) - start.y) : 0;
+      const dest =
+        dx >= 8 && dy >= 8
+          ? normalizeWorldRectFromPoints(start, linkBoardPlacePreview)
+          : {
+              x: start.x,
+              y: start.y,
+              width: pendingLinkBoardSource.width,
+              height: pendingLinkBoardSource.height,
+            };
+      createLinkedBoardAt(pendingLinkBoardSource, dest);
+      linkBoardPlaceStart = null;
+      linkBoardPlacePreview = null;
+      updateToolButtons();
+      return;
     }
 
     // リサイズが終わった時点で、テキストのフォントサイズをデフォルトに反映
@@ -10223,6 +10918,7 @@
     isPanning = false;
     isDraggingObject = false;
     isResizingObject = false;
+    activeLinkedBoardId = null;
     if (multiDragActive && multiDragOffsets) {
       const multiMembershipPatches = new Map();
       multiDragOffsets.forEach((it) => {
@@ -10558,8 +11254,11 @@
       img.src = dataUrl;
 
       isPlacingFrame = false;
+      framePlaceType = null;
       framePlaceStart = null;
       framePlacePreview = null;
+      currentTool = "select";
+      updateToolButtons();
     }
   }
 
@@ -11260,7 +11959,8 @@
     const isPen = currentTool === "pen";
     const isFill = currentTool === "fill";
     const isEraser = currentTool === "eraser";
-    const isInsertMode = !!shapeMode || !!framePlaceType;
+    const isLassoCopy = currentTool === "lasso-copy";
+    const isInsertMode = !!shapeMode || !!framePlaceType || !!linkBoardMode;
     const isSelect = currentTool === "select" && !isInsertMode && !pendingTextMode && !pendingTextListGridCopies;
     if (penToolBtn) {
       penToolBtn.disabled = creationLocked || isPen;
@@ -11280,6 +11980,11 @@
       selectToolBtn.disabled = isSelect;
       selectToolBtn.classList.toggle("active", isSelect);
     }
+    if (lassoCopyToolBtn) {
+      lassoCopyToolBtn.disabled = creationLocked || isLassoCopy;
+      lassoCopyToolBtn.classList.toggle("active", isLassoCopy);
+      lassoCopyToolBtn.title = creationLocked ? "このレイヤーでは投げ縄スクショは使えません" : "投げ縄スクショ";
+    }
     if (textToolBtn) {
       textToolBtn.disabled = creationLocked;
       textToolBtn.classList.toggle("active", !!pendingTextMode || !!pendingTextListGridCopies);
@@ -11293,7 +11998,7 @@
     if (otherMenuBtn) {
       otherMenuBtn.classList.toggle("active", isInsertMode);
     }
-    if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill") {
+    if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill" || currentTool === "lasso-copy") {
       canvas.style.cursor = "crosshair";
     } else {
       canvas.style.cursor = "default";
@@ -11305,6 +12010,13 @@
     pendingTextListGridCopies = null;
     pendingTextMode = null;
     if (textToolMenu) textToolMenu.classList.add("hidden");
+    updateToolButtons();
+  }
+
+  function switchToSelectTool() {
+    pendingTextListGridCopies = null;
+    pendingTextMode = null;
+    currentTool = "select";
     updateToolButtons();
   }
 
@@ -11418,6 +12130,9 @@
       }
       saveFavorites();
       updateFavButtons();
+      linkUserToBoardServer(currentUser);
+      identifyToServer();
+      redraw();
     });
   });
 
@@ -11481,6 +12196,22 @@
     showTransientFooterMessage("選択ツール：右クリックでメニューを開けます。", 5000);
     resetShapeMode();
   });
+
+  if (lassoCopyToolBtn) {
+    lassoCopyToolBtn.addEventListener("click", () => {
+      if (!requireUser()) return;
+      if (!canCreateOnCurrentLayer()) return;
+      pendingTextListGridCopies = null;
+      pendingTextMode = null;
+      lassoCopyActive = false;
+      lassoCopyPath = [];
+      currentTool = "lasso-copy";
+      updateToolButtons();
+      showTransientFooterMessage("投げ縄スクショ：囲った形を透明画像として複製します。", 5000);
+      resetShapeMode();
+      redraw();
+    });
+  }
 
   textListBtn.addEventListener("click", toggleTextListPanelView);
 
@@ -11733,6 +12464,16 @@
 
     if (shapeMode) {
       setFooterMessage("図形挿入：ドラッグして同じ種類の図形を続けて配置できます。");
+      return;
+    }
+
+    if (linkBoardMode === "source") {
+      setFooterMessage("リンクボード：元にする範囲をドラッグしてください。");
+      return;
+    }
+
+    if (linkBoardMode === "place") {
+      setFooterMessage("リンクボード：貼り付けたい場所をクリック、またはドラッグして大きさを指定してください。");
       return;
     }
 
@@ -12032,6 +12773,7 @@
       order: orderCounter++,
       groupId: opts.groupId || null,
     };
+    applyCurrentGlowColor(stroke);
     applyFrameMembershipByPoint(stroke, points[0]);
     strokes.push(stroke);
     registerUser(currentUser);
@@ -12108,6 +12850,65 @@
     closeInsertMenu();
   }
 
+  function startLinkedBoardMode() {
+    if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
+    pendingTextListGridCopies = null;
+    pendingTextMode = null;
+    resetShapeMode();
+    linkBoardMode = "source";
+    linkBoardSourceStart = null;
+    linkBoardSourcePreview = null;
+    pendingLinkBoardSource = null;
+    linkBoardPlaceStart = null;
+    linkBoardPlacePreview = null;
+    currentTool = "select";
+    showTransientFooterMessage("リンクボード：元にする範囲をドラッグしてください。", 5000);
+    updateToolButtons();
+    closeInsertMenu();
+  }
+
+  function createLinkedBoardAt(sourceRect, destRect) {
+    if (!sourceRect || !destRect) return;
+    const source = getNormalizedRect(sourceRect);
+    const dest = getNormalizedRect(destRect);
+    if (source.width < 8 || source.height < 8 || dest.width < 8 || dest.height < 8) return;
+    ensureSnapshotForAction();
+    const imgObj = {
+      id: genId(),
+      img: null,
+      src: TRANSPARENT_PIXEL_SRC,
+      x: dest.x,
+      y: dest.y,
+      width: dest.width,
+      height: dest.height,
+      layer: "user",
+      order: orderCounter++,
+      user: currentUser,
+      rotation: 0,
+      imageName: "リンクボード",
+      imageListOrder: bumpImageListOrderCounter(),
+      linkBoardSource: {
+        x: source.x,
+        y: source.y,
+        width: source.width,
+        height: source.height,
+      },
+    };
+    images.push(imgObj);
+    registerUser(currentUser);
+    refreshImageList();
+    emitImageAdd(imgObj);
+    selected = { type: "image", index: images.length - 1 };
+    multiSelection = null;
+    linkBoardMode = null;
+    pendingLinkBoardSource = null;
+    linkBoardPlaceStart = null;
+    linkBoardPlacePreview = null;
+    updateFooterByState();
+    redraw();
+  }
+
   function renderInsertMenu() {
     if (!insertMenu) return;
     insertMenu.innerHTML = "";
@@ -12153,6 +12954,10 @@
       },
     ]);
 
+    addSection("リンク", [
+      { label: "リンクボード", onClick: () => startLinkedBoardMode() },
+    ]);
+
     if (templates && templates.length > 0) {
       addSection(
         "テンプレ画像",
@@ -12194,38 +12999,56 @@
   function positionInsertMenu() {
     if (!insertMenu || !insertMenuBtn) return;
     const margin = 8;
+    let viewportBottom = window.innerHeight - margin;
+    if (footerHint) {
+      const footerRect = footerHint.getBoundingClientRect();
+      if (footerRect.height > 0) {
+        viewportBottom = Math.min(viewportBottom, footerRect.top - margin);
+      }
+    }
+    viewportBottom = Math.max(margin + 80, viewportBottom);
+    const viewportMaxHeight = Math.max(80, viewportBottom - margin);
+    const minMenuHeight = Math.min(120, viewportMaxHeight);
 
     const btnRect = insertMenuBtn.getBoundingClientRect();
 
     insertMenu.style.left = "0px";
     insertMenu.style.top = "0px";
     insertMenu.style.bottom = "auto";
-    insertMenu.style.maxHeight = `${Math.max(180, window.innerHeight - margin * 2)}px`;
+    insertMenu.style.maxHeight = `${viewportMaxHeight}px`;
 
-    const menuRect = insertMenu.getBoundingClientRect();
+    const naturalRect = insertMenu.getBoundingClientRect();
 
-    const availableBelow = window.innerHeight - btnRect.bottom - margin;
-    const availableAbove = btnRect.top - margin;
-    const openUpwards = menuRect.height > availableBelow && availableAbove > availableBelow;
+    const availableBelow = Math.max(0, viewportBottom - btnRect.bottom - margin);
+    const availableAbove = Math.max(0, btnRect.top - margin);
+    const openUpwards = naturalRect.height > availableBelow && availableAbove > availableBelow;
+    const availableHeight = openUpwards ? availableAbove : availableBelow;
+    const maxHeight = Math.min(
+      viewportMaxHeight,
+      Math.max(minMenuHeight, availableHeight)
+    );
+    insertMenu.style.maxHeight = `${maxHeight}px`;
 
     let top;
     if (openUpwards) {
-      const maxHeight = Math.max(180, availableAbove - margin);
-      insertMenu.style.maxHeight = `${maxHeight}px`;
-      top = btnRect.top - Math.min(menuRect.height, maxHeight) - margin;
+      top = btnRect.top - Math.min(naturalRect.height, maxHeight) - margin;
     } else {
-      const maxHeight = Math.max(180, availableBelow - margin);
-      insertMenu.style.maxHeight = `${maxHeight}px`;
       top = btnRect.bottom + margin;
     }
 
+    const menuRect = insertMenu.getBoundingClientRect();
+    const menuHeight = Math.min(menuRect.height, maxHeight);
+    top = Math.min(
+      Math.max(margin, top),
+      Math.max(margin, viewportBottom - menuHeight)
+    );
+
     let left = btnRect.left;
-    const maxLeft = window.innerWidth - menuRect.width - margin;
-    left = Math.min(left, maxLeft);
-    left = Math.max(margin, left);
+    const maxLeft = Math.max(margin, window.innerWidth - menuRect.width - margin);
+    left = Math.min(Math.max(margin, left), maxLeft);
 
     insertMenu.style.left = `${left}px`;
-    insertMenu.style.top = `${Math.max(margin, top)}px`;
+    insertMenu.style.top = `${top}px`;
   }
 
   function scheduleCloseInsertMenu(delay = 150) {
@@ -12247,6 +13070,12 @@
     framePlaceStart = null;
     framePlacePreview = null;
     isPlacingFrame = false;
+    linkBoardMode = null;
+    linkBoardSourceStart = null;
+    linkBoardSourcePreview = null;
+    pendingLinkBoardSource = null;
+    linkBoardPlaceStart = null;
+    linkBoardPlacePreview = null;
     updateToolButtons();
   }
 

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS strokes_v2 (
   group_id TEXT,
   fill_source_id TEXT,
   frame_id TEXT,
-  frame_tab TEXT
+  frame_tab TEXT,
+  glow_color TEXT
 );
 
 CREATE TABLE IF NOT EXISTS texts_v2 (
@@ -83,7 +84,8 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   frame_id TEXT,
   frame_tab TEXT,
   frame_tabs TEXT,
-  active_frame_tab TEXT
+  active_frame_tab TEXT,
+  link_board_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS links_v1 (
@@ -117,7 +119,8 @@ CREATE TABLE IF NOT EXISTS draft_strokes (
   fill INTEGER NOT NULL DEFAULT 0,
   group_id TEXT,
   frame_id TEXT,
-  frame_tab TEXT
+  frame_tab TEXT,
+  glow_color TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -233,8 +236,11 @@ try {
   ["images_v2", "frame_tab TEXT"],
   ["images_v2", "frame_tabs TEXT"],
   ["images_v2", "active_frame_tab TEXT"],
+  ["images_v2", "link_board_source TEXT"],
   ["draft_strokes", "frame_id TEXT"],
   ["draft_strokes", "frame_tab TEXT"],
+  ["strokes_v2", "glow_color TEXT"],
+  ["draft_strokes", "glow_color TEXT"],
   ["links_v1", "favicon TEXT"],
 ].forEach(([table, column]) => {
   try {
@@ -295,18 +301,26 @@ function getBoardTitle(boardId) {
   return row ? row.title : null;
 }
 
-function addUser(name, favoriteColor = null) {
+function addUser(name, favoriteColor = undefined) {
   if (!name) return;
-  const stmt = db.prepare(`
-    INSERT OR IGNORE INTO users (name, favorite_color)
-    VALUES (?, ?)
-  `);
+  const stmt = db.prepare(
+    favoriteColor !== undefined
+      ? `
+        INSERT INTO users (name, favorite_color)
+        VALUES (?, ?)
+        ON CONFLICT(name) DO UPDATE SET favorite_color=excluded.favorite_color
+      `
+      : `
+        INSERT OR IGNORE INTO users (name, favorite_color)
+        VALUES (?, ?)
+      `
+  );
   stmt.run(name, favoriteColor || null);
 }
 
-function linkUserToBoard(boardId, name) {
+function linkUserToBoard(boardId, name, favoriteColor = undefined) {
   if (!boardId || !name) return;
-  addUser(name);
+  addUser(name, favoriteColor);
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO board_users (board_id, user_name)
     VALUES (?, ?)
@@ -336,8 +350,8 @@ function setBoardTitle(boardId, title) {
 // --- strokes_v2 ---
 function saveStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id, frame_id, frame_tab)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id, frame_id, frame_tab, glow_color)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -352,7 +366,8 @@ function saveStroke(stroke) {
     stroke.fill ? 1 : 0,
     stroke.groupId || null,
     stroke.frameId || null,
-    stroke.frameTab || null
+    stroke.frameTab || null,
+    stroke.glowColor || null
   );
 }
 
@@ -364,8 +379,8 @@ function deleteStroke(boardId, id) {
 // --- draft_strokes ---
 function saveDraftStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO draft_strokes (id, board_id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab, glow_color)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -380,7 +395,8 @@ function saveDraftStroke(stroke) {
     stroke.groupId || null,
     stroke.fillSourceId || null,
     stroke.frameId || null,
-    stroke.frameTab || null
+    stroke.frameTab || null,
+    stroke.glowColor || null
   );
 }
 
@@ -393,7 +409,7 @@ function deleteDraftStroke(boardId, id, user) {
 
 function getDraftStrokes(boardId, user) {
   const stmt = db.prepare(`
-    SELECT id, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab
+    SELECT id, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab, glow_color
     FROM draft_strokes
     WHERE board_id = ? AND user = ?
     ORDER BY "order" ASC
@@ -410,6 +426,7 @@ function getDraftStrokes(boardId, user) {
     fillSourceId: row.fill_source_id || null,
     frameId: row.frame_id || null,
     frameTab: row.frame_tab || null,
+    glowColor: row.glow_color || null,
   }));
 }
 
@@ -449,8 +466,8 @@ function deleteText(boardId, id) {
 // --- images_v2 ---
 function saveImage(img) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     img.id,
@@ -473,7 +490,8 @@ function saveImage(img) {
     img.frameId || null,
     img.frameTab || null,
     img.frameTabs ? JSON.stringify(img.frameTabs) : null,
-    img.activeFrameTab || null
+    img.activeFrameTab || null,
+    img.linkBoardSource ? JSON.stringify(img.linkBoardSource) : null
   );
 }
 
@@ -516,10 +534,12 @@ function deleteLink(boardId, id) {
 // --- state ---
 function getBoardState(boardId) {
   const strokesStmt = db.prepare(`
-    SELECT id, user, color, size, points, layer, "order", fill, group_id, frame_id, frame_tab
-    FROM strokes_v2
-    WHERE board_id = ?
-    ORDER BY "order" ASC
+    SELECT s.id, s.user, s.color, s.size, s.points, s.layer, s."order", s.fill, s.group_id, s.frame_id, s.frame_tab,
+           COALESCE(s.glow_color, u.favorite_color) AS glow_color
+    FROM strokes_v2 s
+    LEFT JOIN users u ON u.name = s.user
+    WHERE s.board_id = ?
+    ORDER BY s."order" ASC
   `);
   const textsStmt = db.prepare(`
     SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab
@@ -528,7 +548,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const imagesStmt = db.prepare(`
-    SELECT id, user, src, x, y, width, height, layer, "order", rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab
+    SELECT id, user, src, x, y, width, height, layer, "order", rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source
     FROM images_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -553,6 +573,7 @@ function getBoardState(boardId) {
     groupId: row.group_id || null,
     frameId: row.frame_id || null,
     frameTab: row.frame_tab || null,
+    glowColor: row.glow_color || null,
   }));
 
   const texts = textsStmt.all(boardId).map((row) => ({
@@ -595,6 +616,7 @@ function getBoardState(boardId) {
     frameTab: row.frame_tab || null,
     frameTabs: row.frame_tabs ? JSON.parse(row.frame_tabs) : null,
     activeFrameTab: row.active_frame_tab || null,
+    linkBoardSource: row.link_board_source ? JSON.parse(row.link_board_source) : null,
   }));
 
   const links = linksStmt.all(boardId).map((row) => ({

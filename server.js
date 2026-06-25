@@ -234,12 +234,13 @@ app.get("/api/boards/:boardId/users", (req, res) => {
 app.post("/api/boards/:boardId/users", (req, res) => {
   const boardId = req.params.boardId;
   const name = (req.body?.name || "").trim();
+  const favoriteColor = String(req.body?.favoriteColor || "").trim() || null;
   if (!boardId || !name) {
     return res.status(400).json({ error: "invalid params" });
   }
   try {
-    addUser(name);
-    linkUserToBoard(boardId, name);
+    addUser(name, favoriteColor);
+    linkUserToBoard(boardId, name, favoriteColor);
     res.json({ ok: true });
   } catch (err) {
     console.error("Failed to link user to board", err);
@@ -555,10 +556,12 @@ io.on("connection", (socket) => {
     socket.emit("screen-share:active", activeShares);
   });
 
-  socket.on("user:identify", ({ boardId, user }) => {
+  socket.on("user:identify", ({ boardId, user, favoriteColor }) => {
     if (!boardId || !user) return;
     currentBoardId = boardId;
     currentUserName = user;
+    addUser(user, favoriteColor || null);
+    linkUserToBoard(boardId, user, favoriteColor || null);
     const drafts = getDraftStrokes(boardId, user);
     socket.emit("draft:init", drafts);
   });
