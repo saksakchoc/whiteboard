@@ -4059,9 +4059,7 @@
         img.x += newCenter.x - oldCenter.x;
         img.y += newCenter.y - oldCenter.y;
         img.rotation = normalizeRotation((img.rotation || 0) + (direction === "cw" ? 90 : -90));
-        const visualBounds = getRotatedImageVisualBoundsWorld(img) || getImageBoundsWorld(img);
-        const normalizedPatch = normalizeImageAsFrameBackground(img, visualBounds);
-        emitItemPatch("image", img, Object.keys(normalizedPatch).length ? normalizedPatch : { x: img.x, y: img.y, rotation: img.rotation });
+        emitItemPatch("image", img, { x: img.x, y: img.y, rotation: img.rotation });
       }
     });
     refreshTextList();
@@ -8759,6 +8757,88 @@
     ctx.restore();
   }
 
+  function createHighQualityLassoScreenshot(cleaned) {
+    const originalCanvasWidth = canvas.width;
+    const originalCanvasHeight = canvas.height;
+    const originalScale = scale;
+    const originalOffsetX = offsetX;
+    const originalOffsetY = offsetY;
+    const originalSelected = selected;
+    const originalMultiSelection = multiSelection;
+    const minScale = 2;
+    const maxScale = 4;
+    const maxPixels = 16000000;
+    const deviceScale = window.devicePixelRatio || 1;
+    const captureScaleBase = Math.max(originalScale * deviceScale, minScale);
+    const padWorld = 2 / Math.max(originalScale, 0.001);
+    const worldPoints = cleaned.map((p) => screenToWorld(p.x, p.y));
+    const worldBounds = getPathBoundsScreen(worldPoints);
+    const captureBounds = {
+      x: worldBounds.x - padWorld,
+      y: worldBounds.y - padWorld,
+      width: worldBounds.width + padWorld * 2,
+      height: worldBounds.height + padWorld * 2,
+    };
+
+    let captureScale = Math.min(captureScaleBase, maxScale);
+    let outW = Math.max(1, Math.ceil(captureBounds.width * captureScale));
+    let outH = Math.max(1, Math.ceil(captureBounds.height * captureScale));
+    const pixels = outW * outH;
+    if (pixels > maxPixels) {
+      const shrink = Math.sqrt(maxPixels / pixels);
+      captureScale = Math.max(0.25, captureScale * shrink);
+      outW = Math.max(1, Math.ceil(captureBounds.width * captureScale));
+      outH = Math.max(1, Math.ceil(captureBounds.height * captureScale));
+    }
+
+    const clipCanvas = document.createElement("canvas");
+    clipCanvas.width = outW;
+    clipCanvas.height = outH;
+    const clipCtx = clipCanvas.getContext("2d");
+    if (!clipCtx) throw new Error("failed to create lasso clip context");
+
+    try {
+      selected = null;
+      multiSelection = null;
+      scale = captureScale;
+      offsetX = -captureBounds.x * captureScale;
+      offsetY = -captureBounds.y * captureScale;
+      canvas.width = outW;
+      canvas.height = outH;
+      renderNow();
+
+      clipCtx.save();
+      clipCtx.beginPath();
+      clipCtx.moveTo(
+        (worldPoints[0].x - captureBounds.x) * captureScale,
+        (worldPoints[0].y - captureBounds.y) * captureScale
+      );
+      for (let i = 1; i < worldPoints.length; i++) {
+        clipCtx.lineTo(
+          (worldPoints[i].x - captureBounds.x) * captureScale,
+          (worldPoints[i].y - captureBounds.y) * captureScale
+        );
+      }
+      clipCtx.closePath();
+      clipCtx.clip();
+      clipCtx.drawImage(canvas, 0, 0);
+      clipCtx.restore();
+      return {
+        src: clipCanvas.toDataURL("image/png"),
+        worldBounds: captureBounds,
+      };
+    } finally {
+      canvas.width = originalCanvasWidth;
+      canvas.height = originalCanvasHeight;
+      scale = originalScale;
+      offsetX = originalOffsetX;
+      offsetY = originalOffsetY;
+      selected = originalSelected;
+      multiSelection = originalMultiSelection;
+      renderNow();
+    }
+  }
+
   function createImageFromLassoPath(path) {
     const cleaned = (path || []).filter((p) => p && typeof p.x === "number" && typeof p.y === "number");
     if (cleaned.length < 3) {
@@ -8782,32 +8862,12 @@
     multiSelection = null;
     renderNow();
 
-    const pad = 2;
-    const sx = Math.max(0, Math.floor(bounds.x - pad));
-    const sy = Math.max(0, Math.floor(bounds.y - pad));
-    const ex = Math.min(canvas.width, Math.ceil(bounds.x + bounds.width + pad));
-    const ey = Math.min(canvas.height, Math.ceil(bounds.y + bounds.height + pad));
-    const sw = Math.max(1, ex - sx);
-    const sh = Math.max(1, ey - sy);
-
-    const clipCanvas = document.createElement("canvas");
-    clipCanvas.width = sw;
-    clipCanvas.height = sh;
-    const clipCtx = clipCanvas.getContext("2d");
-    clipCtx.save();
-    clipCtx.beginPath();
-    clipCtx.moveTo(cleaned[0].x - sx, cleaned[0].y - sy);
-    for (let i = 1; i < cleaned.length; i++) {
-      clipCtx.lineTo(cleaned[i].x - sx, cleaned[i].y - sy);
-    }
-    clipCtx.closePath();
-    clipCtx.clip();
-    clipCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-    clipCtx.restore();
-
     let src = "";
+    let captureWorldBounds = null;
     try {
-      src = clipCanvas.toDataURL("image/png");
+      const capture = createHighQualityLassoScreenshot(cleaned);
+      src = capture.src;
+      captureWorldBounds = capture.worldBounds;
     } catch (err) {
       console.warn("failed to create lasso screenshot", err);
       selected = previousSelected;
@@ -8820,7 +8880,7 @@
     }
     const img = new Image();
     img.onload = () => {
-      const topLeft = screenToWorld(sx, sy);
+      const topLeft = captureWorldBounds || screenToWorld(bounds.x, bounds.y);
       const offsetWorld = 18 / Math.max(scale, 0.001);
       const imgObj = {
         id: genId(),
@@ -8828,8 +8888,8 @@
         src,
         x: topLeft.x + offsetWorld,
         y: topLeft.y + offsetWorld,
-        width: sw / Math.max(scale, 0.001),
-        height: sh / Math.max(scale, 0.001),
+        width: (captureWorldBounds?.width || bounds.width / Math.max(scale, 0.001)),
+        height: (captureWorldBounds?.height || bounds.height / Math.max(scale, 0.001)),
         layer: getImageTargetLayer(),
         order: orderCounter++,
         user: currentUser,
