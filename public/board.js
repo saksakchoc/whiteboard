@@ -9253,6 +9253,8 @@
 
       selected = { type: "image", index: images.length - 1 };
       multiSelection = null;
+      resetShapeMode();
+      switchToSelectTool();
       updateFooterByState();
       redraw();
     } catch (err) {
@@ -9320,6 +9322,10 @@
     }
 
     multiSelection = null;
+    if (layout.count > 0) {
+      resetShapeMode();
+      switchToSelectTool();
+    }
     updateFooterByState();
     redraw();
   }
