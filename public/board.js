@@ -29,6 +29,8 @@
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
   const textListDuplicateGridBtn = document.getElementById("text-list-duplicate-grid-btn");
   const textListStarOnly = document.getElementById("text-list-star-only");
+  const textListSortTagBtn = document.getElementById("text-list-sort-tag-btn");
+  const textListSortCreatedBtn = document.getElementById("text-list-sort-created-btn");
   const imageListPanel = document.getElementById("image-list-panel");
   const imageListBody = document.getElementById("image-list-body");
   const imageListCloseBtn = document.getElementById("image-list-close-btn");
@@ -148,6 +150,9 @@
   let activeScreenShareSocketId = null;
   let activeScreenShareUser = "";
   let screenShareFocus = false;
+  let screenShareWindowPosition = null;
+  let screenShareDrag = null;
+  let suppressNextScreenShareClick = false;
   const screenSharePeers = new Map();
   const remoteScreenStreams = new Map();
   const knownScreenSharers = new Map();
@@ -2733,7 +2738,7 @@
 
   function getSelectedTextListItems() {
     const selectedIds = new Set(textListSelectedIds);
-    return sortTextsForList().filter((t) => t.layer !== "draft" && selectedIds.has(t.id));
+    return getVisibleTextsForList({ ignoreStarFilter: true }).filter((t) => selectedIds.has(t.id));
   }
 
   function duplicateSelectedTextListAsGrid() {
@@ -2825,10 +2830,8 @@
   function renderTextList() {
     if (!textListOpen) return;
     textListBody.innerHTML = "";
-    const availableTextIds = new Set(texts.filter((t) => t.layer !== "draft").map((t) => t.id));
-    const sorted = sortTextsForList().filter(
-      (t) => t.layer !== "draft" && (!textListStarOnlyEnabled || textHasStarLabel(t))
-    );
+    const availableTextIds = new Set(getVisibleTextsForList({ ignoreStarFilter: true }).map((t) => t.id));
+    const sorted = getVisibleTextsForList();
     sorted.forEach((t, idx) => {
       const item = document.createElement("div");
       item.className = "text-list-item";
@@ -2937,10 +2940,15 @@
     positionTextListPanel();
   }
 
-  function getVisibleTextsForList() {
+  function isTextListVisibleText(text) {
+    return !!text && text.layer !== "draft" && !text.gridText;
+  }
+
+  function getVisibleTextsForList({ ignoreStarFilter = false } = {}) {
     return sortTextsForList().filter(
       (text) =>
-        text.layer !== "draft" && (!textListStarOnlyEnabled || textHasStarLabel(text))
+        isTextListVisibleText(text) &&
+        (ignoreStarFilter || !textListStarOnlyEnabled || textHasStarLabel(text))
     );
   }
 
@@ -3042,7 +3050,7 @@
   }
 
   function reorderTextList(sourceId, targetId, position = "before") {
-    const ordered = sortTextsForList(texts.filter((text) => text.layer !== "draft"));
+    const ordered = getVisibleTextsForList({ ignoreStarFilter: true });
     const from = ordered.findIndex((text) => text.id === sourceId);
     if (from < 0) return;
     const [moved] = ordered.splice(from, 1);
@@ -3054,8 +3062,54 @@
       text.textListOrder = idx + 1;
       emitItemPatch("text", text, { textListOrder: text.textListOrder });
     });
-    textListOrderCounter = ordered.length;
+    textListOrderCounter = Math.max(
+      textListOrderCounter,
+      ...texts.map((text) => Number(text.textListOrder) || 0)
+    );
     renderTextList();
+  }
+
+  function getTextCreatedSortValue(text) {
+    const value = Number(text?.createdAt);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function getTextTagSortValue(text) {
+    const tags = getVisibleTextTags(text?.label)
+      .map((tag) => tag.normalize("NFKC").toLowerCase())
+      .sort((a, b) => a.localeCompare(b, "ja"));
+    return tags.length ? tags.join("\n") : "\uffff";
+  }
+
+  function compareTextCreatedOrder(a, b) {
+    const createdDiff = getTextCreatedSortValue(a) - getTextCreatedSortValue(b);
+    if (createdDiff) return createdDiff;
+    return String(a?.id || "").localeCompare(String(b?.id || ""), "ja");
+  }
+
+  function applyTextListOrder(ordered) {
+    ordered.forEach((text, idx) => {
+      text.textListOrder = idx + 1;
+      emitItemPatch("text", text, { textListOrder: text.textListOrder });
+    });
+    textListOrderCounter = Math.max(
+      textListOrderCounter,
+      ...texts.map((text) => Number(text.textListOrder) || 0)
+    );
+    renderTextList();
+  }
+
+  function sortTextListByTag() {
+    const ordered = getVisibleTextsForList({ ignoreStarFilter: true }).sort((a, b) => {
+      const tagDiff = getTextTagSortValue(a).localeCompare(getTextTagSortValue(b), "ja");
+      return tagDiff || compareTextCreatedOrder(a, b);
+    });
+    applyTextListOrder(ordered);
+  }
+
+  function sortTextListByCreated() {
+    const ordered = getVisibleTextsForList({ ignoreStarFilter: true }).sort(compareTextCreatedOrder);
+    applyTextListOrder(ordered);
   }
 
   function buildTextListPlainText() {
@@ -5827,7 +5881,45 @@
 
   function updateScreenShareLayout() {
     document.body.classList.toggle("screen-share-focus", screenShareFocus && !!activeScreenShareSocketId);
+    applyScreenShareWindowPosition();
     resizeCanvas();
+  }
+
+  function clampScreenSharePosition(pos) {
+    if (!screenShareView || !pos) return null;
+    const margin = 8;
+    const rect = screenShareView.getBoundingClientRect();
+    const width = rect.width || 280;
+    const height = rect.height || 158;
+    return {
+      x: Math.min(Math.max(margin, pos.x), Math.max(margin, window.innerWidth - width - margin)),
+      y: Math.min(Math.max(margin, pos.y), Math.max(margin, window.innerHeight - height - margin)),
+    };
+  }
+
+  function applyScreenShareWindowPosition() {
+    if (!screenShareView || screenShareView.classList.contains("hidden")) return;
+    if (screenShareFocus) {
+      screenShareView.style.left = "";
+      screenShareView.style.top = "";
+      screenShareView.style.right = "";
+      screenShareView.style.bottom = "";
+      return;
+    }
+    if (!screenShareWindowPosition) {
+      screenShareView.style.left = "";
+      screenShareView.style.top = "";
+      screenShareView.style.right = "";
+      screenShareView.style.bottom = "";
+      return;
+    }
+    const pos = clampScreenSharePosition(screenShareWindowPosition);
+    if (!pos) return;
+    screenShareWindowPosition = pos;
+    screenShareView.style.left = `${pos.x}px`;
+    screenShareView.style.top = `${pos.y}px`;
+    screenShareView.style.right = "auto";
+    screenShareView.style.bottom = "auto";
   }
 
   function showScreenShareStream(socketId, user, stream) {
@@ -10745,15 +10837,20 @@
       linkBoardSourceStart = null;
       linkBoardSourcePreview = null;
       if (source.width >= 8 && source.height >= 8) {
-        pendingLinkBoardSource = source;
-        linkBoardMode = "place";
-        showTransientFooterMessage("リンクボード：貼り付けたい場所をクリック、またはドラッグしてください。", 5000);
+        const offsetWorld = 24 / Math.max(scale, 0.001);
+        createLinkedBoardAt(source, {
+          x: source.x + offsetWorld,
+          y: source.y + offsetWorld,
+          width: source.width,
+          height: source.height,
+        });
+        showTransientFooterMessage("リンクボードを作成しました。", 2500);
       } else {
         linkBoardMode = null;
         pendingLinkBoardSource = null;
+        updateToolButtons();
+        redraw();
       }
-      updateToolButtons();
-      redraw();
       return;
     }
 
@@ -11448,11 +11545,60 @@
     }
   }
 
+  function startScreenShareDrag(e) {
+    if (!screenShareView || screenShareFocus || !activeScreenShareSocketId) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    if (e.target === screenShareToggleBtn) return;
+    const rect = screenShareView.getBoundingClientRect();
+    screenShareDrag = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startX: rect.left,
+      startY: rect.top,
+      moved: false,
+    };
+    screenShareView.setPointerCapture?.(e.pointerId);
+  }
+
+  function moveScreenShareDrag(e) {
+    if (!screenShareDrag || screenShareDrag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - screenShareDrag.startClientX;
+    const dy = e.clientY - screenShareDrag.startClientY;
+    if (!screenShareDrag.moved && Math.hypot(dx, dy) < 4) return;
+    screenShareDrag.moved = true;
+    screenShareWindowPosition = clampScreenSharePosition({
+      x: screenShareDrag.startX + dx,
+      y: screenShareDrag.startY + dy,
+    });
+    applyScreenShareWindowPosition();
+    e.preventDefault();
+  }
+
+  function endScreenShareDrag(e) {
+    if (!screenShareDrag || screenShareDrag.pointerId !== e.pointerId) return;
+    if (screenShareDrag.moved) {
+      suppressNextScreenShareClick = true;
+      e.preventDefault();
+    }
+    screenShareView?.releasePointerCapture?.(e.pointerId);
+    screenShareDrag = null;
+  }
+
   canvas.addEventListener("mousedown", handlePointerDown);
   canvas.addEventListener("mousemove", handlePointerMove);
   canvas.addEventListener("mouseleave", hideFrameTabTooltip);
   if (screenShareView) {
-    screenShareView.addEventListener("click", () => {
+    screenShareView.addEventListener("pointerdown", startScreenShareDrag);
+    screenShareView.addEventListener("pointermove", moveScreenShareDrag);
+    screenShareView.addEventListener("pointerup", endScreenShareDrag);
+    screenShareView.addEventListener("pointercancel", endScreenShareDrag);
+    screenShareView.addEventListener("click", (e) => {
+      if (suppressNextScreenShareClick) {
+        suppressNextScreenShareClick = false;
+        e.preventDefault();
+        return;
+      }
       if (!activeScreenShareSocketId) return;
       screenShareFocus = !screenShareFocus;
       updateScreenShareLayout();
@@ -12255,6 +12401,14 @@
     textListDuplicateGridBtn.addEventListener("click", duplicateSelectedTextListAsGrid);
   }
 
+  if (textListSortTagBtn) {
+    textListSortTagBtn.addEventListener("click", sortTextListByTag);
+  }
+
+  if (textListSortCreatedBtn) {
+    textListSortCreatedBtn.addEventListener("click", sortTextListByCreated);
+  }
+
   if (textListStarOnly) {
     textListStarOnly.addEventListener("change", () => {
       textListStarOnlyEnabled = textListStarOnly.checked;
@@ -12729,6 +12883,7 @@
     if (insertMenu && !insertMenu.classList.contains("hidden")) {
       positionInsertMenu();
     }
+    applyScreenShareWindowPosition();
     positionImageListPanel();
     positionLinkListPanel();
   });

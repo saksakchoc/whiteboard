@@ -191,7 +191,13 @@ body {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
   overflow: hidden;
   z-index: 1800;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.screen-share-view:active {
+  cursor: grabbing;
 }
 
 .screen-share-view.hidden {
