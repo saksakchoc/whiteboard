@@ -312,6 +312,7 @@
   let selected = null;
   let dragOffsetWorld = { x: 0, y: 0 };
   let frameDragOffsets = null;
+  let linkedBoardLabelDrag = null;
   let contextFrameTabTarget = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
 
@@ -481,6 +482,7 @@
     isErasing = false;
     isDraggingObject = false;
     isResizingObject = false;
+    linkedBoardLabelDrag = null;
     shapeMode = null;
     if (textEditor) {
       endLocalWritingLabel();
@@ -890,6 +892,7 @@
       isErasing = false;
       isDraggingObject = false;
       isResizingObject = false;
+      linkedBoardLabelDrag = null;
       selected = null;
       multiSelection = null;
       pendingTextListGridCopies = null;
@@ -905,6 +908,7 @@
       isErasing = false;
       isDraggingObject = false;
       isResizingObject = false;
+      linkedBoardLabelDrag = null;
       selected = null;
       multiSelection = null;
       pendingTextListGridCopies = null;
@@ -2517,6 +2521,8 @@
           id: imgObj.id,
           patch: {
             src: imgObj.src,
+            x: imgObj.x,
+            y: imgObj.y,
             width: imgObj.width,
             height: imgObj.height,
             tagLabel: imgObj.tagLabel,
@@ -4461,7 +4467,7 @@
     const point = { x: screenX, y: screenY };
     for (let i = images.length - 1; i >= 0; i--) {
       const img = images[i];
-      if (!isLinkedBoardImage(img) || !isImageVisible(img)) continue;
+      if (!isLinkedBoardImage(img) || !isImageVisible(img) || !canInteractImage(img)) continue;
       const bounds = getLinkedBoardLabelBoundsScreen(img);
       if (bounds && pointInScreenRect(point, bounds)) return { img, index: i };
     }
@@ -4478,6 +4484,22 @@
     currentTool = "select";
     updateToolButtons();
     updateFooterByState();
+    redraw();
+  }
+
+  function startImageDragAtCanvasPoint(imgIndex, canvasPos, options = {}) {
+    if (options.snapshot !== false) ensureSnapshotForAction();
+    selected = { type: "image", index: imgIndex };
+    multiSelection = null;
+    const imgObj = images[imgIndex];
+    if (isFrameContainer(imgObj)) bringFrameGroupToFront(imgObj);
+    frameDragOffsets = isFrameContainer(imgObj) ? captureFrameDragItems(imgObj) : null;
+    const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+    dragOffsetWorld = {
+      x: worldPos.x - imgObj.x,
+      y: worldPos.y - imgObj.y,
+    };
+    isDraggingObject = true;
     redraw();
   }
 
@@ -7297,6 +7319,7 @@
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
+      if (isLinkedBoardImage(imgObj)) continue;
       const hit = hitTestResizeHandlesScreen(
         screenX,
         screenY,
@@ -7802,7 +7825,8 @@
           if (selected && selected.type === "image" && selected.index === item.index) {
             drawSelectionBoundsWorld(
               { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
-              0
+              0,
+              false
             );
           }
           continue;
@@ -8220,13 +8244,18 @@
     return new Set(candidates.map(({ item }) => getRenderItemKey(item)));
   }
 
-  function drawSelectionRect(x, y, w, h) {
+  function drawSelectionRect(x, y, w, h, showHandles = true) {
     ctx.save();
     ctx.strokeStyle = "#0078d7";
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 2]);
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
+
+    if (!showHandles) {
+      ctx.restore();
+      return;
+    }
 
     const handleSize = 8;
     const handles = [
@@ -8246,11 +8275,11 @@
     ctx.restore();
   }
 
-  function drawSelectionBoundsWorld(bounds, rotation = 0) {
+  function drawSelectionBoundsWorld(bounds, rotation = 0, showHandles = true) {
     const normalizedRotation = normalizeRotation(rotation);
     if (!normalizedRotation) {
       const p = worldToScreen(bounds.x, bounds.y);
-      drawSelectionRect(p.x, p.y, bounds.width * scale, bounds.height * scale);
+      drawSelectionRect(p.x, p.y, bounds.width * scale, bounds.height * scale, showHandles);
       return;
     }
 
@@ -8270,15 +8299,17 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const handleSize = 8;
-    ctx.fillStyle = "#ffffff";
-    ctx.strokeStyle = "#0078d7";
-    corners.forEach((corner) => {
-      ctx.beginPath();
-      ctx.rect(corner.x - handleSize / 2, corner.y - handleSize / 2, handleSize, handleSize);
-      ctx.fill();
-      ctx.stroke();
-    });
+    if (showHandles) {
+      const handleSize = 8;
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#0078d7";
+      corners.forEach((corner) => {
+        ctx.beginPath();
+        ctx.rect(corner.x - handleSize / 2, corner.y - handleSize / 2, handleSize, handleSize);
+        ctx.fill();
+        ctx.stroke();
+      });
+    }
     ctx.restore();
   }
 
@@ -8618,6 +8649,7 @@
       } else if (item.type === "image") {
         const img = images[item.index];
         if (!img || seen.has(`image:${img.id || item.index}`)) return;
+        if (isLinkedBoardImage(img)) return;
         seen.add(`image:${img.id || item.index}`);
         captured.push({
           type: "image",
@@ -10056,7 +10088,14 @@
       const linkedLabelHit = hitTestLinkedBoardLabel(canvasPos.x, canvasPos.y);
       if (linkedLabelHit) {
         e.preventDefault();
-        focusLinkedBoardSource(linkedLabelHit.img);
+        linkedBoardLabelDrag = {
+          index: linkedLabelHit.index,
+          id: linkedLabelHit.img.id,
+          startScreen: { x: canvasPos.x, y: canvasPos.y },
+          startWorld: { x: linkedLabelHit.img.x, y: linkedLabelHit.img.y },
+          moved: false,
+        };
+        startImageDragAtCanvasPoint(linkedLabelHit.index, canvasPos, { snapshot: false });
         return;
       }
     }
@@ -10442,24 +10481,9 @@
     }
 
     // 画像本体ヒット → ドラッグ移動
-    const startImageDrag = (imgIndex) => {
-      ensureSnapshotForAction();
-      selected = { type: "image", index: imgIndex };
-      multiSelection = null;
-      const imgObj = images[imgIndex];
-      if (isFrameContainer(imgObj)) bringFrameGroupToFront(imgObj);
-      frameDragOffsets = isFrameContainer(imgObj) ? captureFrameDragItems(imgObj) : null;
-      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
-      dragOffsetWorld = {
-        x: worldPos.x - imgObj.x,
-        y: worldPos.y - imgObj.y,
-      };
-      isDraggingObject = true;
-      redraw();
-    };
     const imgIndex = hitTestImage(canvasPos.x, canvasPos.y, { includeFrameBody: false });
     if (imgIndex >= 0) {
-      startImageDrag(imgIndex);
+      startImageDragAtCanvasPoint(imgIndex, canvasPos);
       return;
     }
 
@@ -10537,6 +10561,22 @@
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
     updateFrameTabTooltip(canvasPos, e.clientX, e.clientY);
+    if (linkedBoardLabelDrag) {
+      const dx = canvasPos.x - linkedBoardLabelDrag.startScreen.x;
+      const dy = canvasPos.y - linkedBoardLabelDrag.startScreen.y;
+      if (!linkedBoardLabelDrag.moved && Math.hypot(dx, dy) > 4) {
+        const imgObj =
+          images[linkedBoardLabelDrag.index]?.id === linkedBoardLabelDrag.id
+            ? images[linkedBoardLabelDrag.index]
+            : images.find((img) => img?.id === linkedBoardLabelDrag.id);
+        if (imgObj) {
+          imgObj.x = linkedBoardLabelDrag.startWorld.x;
+          imgObj.y = linkedBoardLabelDrag.startWorld.y;
+        }
+        ensureSnapshotForAction();
+        linkedBoardLabelDrag.moved = true;
+      }
+    }
 
     if (linkBoardMode === "source" && linkBoardSourceStart) {
       linkBoardSourcePreview = screenToWorld(canvasPos.x, canvasPos.y);
@@ -10898,6 +10938,33 @@
       createImageFromLassoPath(path);
     }
 
+    if (linkedBoardLabelDrag) {
+      const drag = linkedBoardLabelDrag;
+      const upPos = getCanvasPointFromEvent(e);
+      const screenDistance = Math.hypot(
+        upPos.x - drag.startScreen.x,
+        upPos.y - drag.startScreen.y
+      );
+      const imgObj =
+        images[drag.index]?.id === drag.id
+          ? images[drag.index]
+          : images.find((img) => img?.id === drag.id);
+      const shouldOpenSource = !drag.moved && screenDistance <= 4;
+      if (shouldOpenSource) {
+        if (imgObj) {
+          imgObj.x = drag.startWorld.x;
+          imgObj.y = drag.startWorld.y;
+        }
+        isDraggingObject = false;
+        frameDragOffsets = null;
+        linkedBoardLabelDrag = null;
+        focusLinkedBoardSource(imgObj);
+        actionSnapshotTaken = false;
+        return;
+      }
+      linkedBoardLabelDrag = null;
+    }
+
     if (linkBoardMode === "source" && linkBoardSourceStart && linkBoardSourcePreview) {
       const source = normalizeWorldRectFromPoints(linkBoardSourceStart, linkBoardSourcePreview);
       linkBoardSourceStart = null;
@@ -11197,6 +11264,7 @@
     isDrawingDraft = false;
     resizeInfo = null;
     frameDragOffsets = null;
+    linkedBoardLabelDrag = null;
     multiDragActive = false;
     multiDragOffsets = null;
     multiDragStartWorld = null;
