@@ -17,7 +17,13 @@
         <button id="fill-tool-btn" class="side-button" title="塗りつぶし">🪣</button>
         <button id="eraser-tool-btn" class="side-button" title="消しゴム">🩹</button>
         <button id="select-tool-btn" class="side-button" title="選択">🖱️</button>
-        <button id="lasso-copy-tool-btn" class="side-button" title="投げ縄スクショ">✂</button>
+        <div class="side-lasso-tool">
+          <button id="lasso-copy-tool-btn" class="side-button" title="投げ縄スクショ">✂</button>
+          <div id="lasso-copy-tool-menu" class="side-menu hidden">
+            <button data-lasso-copy-mode="freehand">フリーハンド</button>
+            <button data-lasso-copy-mode="rect">四角形</button>
+          </div>
+        </div>
         <div class="side-text-tool">
           <button id="text-tool-btn" class="side-button" title="文字入力">A</button>
           <div id="text-tool-menu" class="side-menu hidden">
@@ -188,6 +194,10 @@
       <button data-action="rotate-right">右に90度回転(Alt+クリック)</button>
       <button data-action="rotate-left">左に90度回転(右Alt+クリック)</button>
       <button data-action="copy-draft">下書きレイヤーにコピー</button>
+      <button data-action="lasso-copy">コピー</button>
+      <button data-action="lasso-link-board">リンクボード作成</button>
+      <button data-action="lasso-draft-board">下書きボード作成</button>
+      <button data-action="publish-draft-board">みんなに公開</button>
       <button data-action="duplicate">複製</button>
       <button data-action="delete">削除</button>
     </div>

@@ -745,6 +745,7 @@ button:hover {
 
 .side-others,
 .side-list-tool,
+.side-lasso-tool,
 .side-text-tool {
   position: relative;
   overflow: visible;

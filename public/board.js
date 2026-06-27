@@ -13,6 +13,7 @@
   const eraserToolBtn = document.getElementById("eraser-tool-btn");
   const selectToolBtn = document.getElementById("select-tool-btn");
   const lassoCopyToolBtn = document.getElementById("lasso-copy-tool-btn");
+  const lassoCopyToolMenu = document.getElementById("lasso-copy-tool-menu");
   const strokeAlphaToggleBtn = document.getElementById("stroke-alpha-toggle-btn");
   const toolbarEl = document.getElementById("toolbar");
   const insertMenuBtn = document.getElementById("insert-menu-btn");
@@ -112,6 +113,8 @@
   let selectionDragCurrent = null;
   let lassoCopyActive = false;
   let lassoCopyPath = [];
+  let lassoCopyMode = "rect"; // "freehand" | "rect"
+  let lassoCopySelection = null; // { mode, worldPath, worldBounds }
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
   const pendingStrokeAdds = new Map();
@@ -312,6 +315,7 @@
   let selected = null;
   let dragOffsetWorld = { x: 0, y: 0 };
   let frameDragOffsets = null;
+  let draftBoardDragOffsets = null;
   let linkedBoardLabelDrag = null;
   let contextFrameTabTarget = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
@@ -429,6 +433,12 @@
         frameTabs: img.frameTabs ? img.frameTabs.map((tab) => ({ ...tab })) : null,
         activeFrameTab: img.activeFrameTab || null,
         linkBoardSource: img.linkBoardSource ? { ...img.linkBoardSource } : null,
+        draftBoardSource: img.draftBoardSource ? { ...img.draftBoardSource } : null,
+        draftBoardId: img.draftBoardId || null,
+        lassoToolObject: !!img.lassoToolObject,
+        lassoOutlinePath: Array.isArray(img.lassoOutlinePath)
+          ? img.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
+          : null,
       }));
 
     return {
@@ -482,6 +492,8 @@
     isErasing = false;
     isDraggingObject = false;
     isResizingObject = false;
+    draftBoardDragOffsets = null;
+    frameDragOffsets = null;
     linkedBoardLabelDrag = null;
     shapeMode = null;
     if (textEditor) {
@@ -542,6 +554,12 @@
       frameTabs: img.frameTabs || null,
       activeFrameTab: img.activeFrameTab || null,
       linkBoardSource: img.linkBoardSource || null,
+      draftBoardSource: img.draftBoardSource || null,
+      draftBoardId: img.draftBoardId || null,
+      lassoToolObject: !!img.lassoToolObject,
+      lassoOutlinePath: Array.isArray(img.lassoOutlinePath)
+        ? img.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
+        : null,
     };
   }
 
@@ -667,11 +685,19 @@
     return `0 0 ${blur}px #ffffff`;
   }
 
+  function isOwnDraftBoardItem(obj) {
+    return !!obj && obj.user === currentUser && !!obj.draftBoardId;
+  }
+
+  function isOwnDraftBoardOverlay(imgObj) {
+    return !!imgObj && imgObj.user === currentUser && !!imgObj.draftBoardSource;
+  }
+
   function isStrokeVisible(stroke) {
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer !== "draft" || stroke.user === currentUser;
-    if (activeLayer === "user") return layer === "user" || layer === "base" || layer === "image";
+    if (activeLayer === "user") return layer === "user" || layer === "base" || layer === "image" || isOwnDraftBoardItem(stroke);
     if (activeLayer === "base") return layer === "base" || layer === "image";
     if (activeLayer === "image") return layer === "image";
     return false;
@@ -681,13 +707,14 @@
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer !== "draft" || text.user === currentUser;
-    if (activeLayer === "user") return layer === "user" || layer === "base";
+    if (activeLayer === "user") return layer === "user" || layer === "base" || isOwnDraftBoardItem(text);
     if (activeLayer === "base") return layer === "base";
     if (activeLayer === "image") return false;
     return false;
   }
 
   function canInteractStroke(stroke) {
+    if (isOwnDraftBoardItem(stroke)) return false;
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer === "draft" && stroke.user === currentUser;
@@ -698,6 +725,7 @@
   }
 
   function canInteractText(text) {
+    if (isOwnDraftBoardItem(text)) return false;
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer === "draft" && text.user === currentUser;
@@ -728,7 +756,15 @@
     if (activeLayer === "draft") return (imgObj?.layer || "user") !== "draft" || imgObj?.user === currentUser;
     if (activeLayer === "image") return (imgObj?.layer || "image") === "image";
     if (activeLayer === "base") return (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
-    if (activeLayer === "user") return (imgObj?.layer || "user") === "user" || (imgObj?.layer || "base") === "base" || (imgObj?.layer || "image") === "image";
+    if (activeLayer === "user") {
+      return (
+        (imgObj?.layer || "user") === "user" ||
+        (imgObj?.layer || "base") === "base" ||
+        (imgObj?.layer || "image") === "image" ||
+        isOwnDraftBoardOverlay(imgObj) ||
+        isOwnDraftBoardItem(imgObj)
+      );
+    }
     return false;
   }
 
@@ -741,10 +777,11 @@
       if (frame && frame.activeFrameTab !== "background") return false;
     }
     if (isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj)) return isImageVisible(imgObj);
+    if (isOwnDraftBoardItem(imgObj)) return false;
     if (activeLayer === "admin") return true;
     const layer = imgObj.layer || "user";
     if (activeLayer === "draft") return layer === "draft" && imgObj.user === currentUser;
-    if (activeLayer === "user") return layer === "user";
+    if (activeLayer === "user") return layer === "user" || isOwnDraftBoardOverlay(imgObj);
     if (activeLayer === "base") return layer === "base";
     if (activeLayer === "image") return layer === "image";
     return false;
@@ -820,6 +857,7 @@
     framePlacePreview = null;
     lassoCopyActive = false;
     lassoCopyPath = [];
+    lassoCopySelection = null;
     linkBoardMode = null;
     linkBoardSourceStart = null;
     linkBoardSourcePreview = null;
@@ -895,6 +933,7 @@
       linkedBoardLabelDrag = null;
       selected = null;
       multiSelection = null;
+      lassoCopySelection = null;
       pendingTextListGridCopies = null;
       pendingTextPos = null;
       selectionDragActive = false;
@@ -911,6 +950,7 @@
       linkedBoardLabelDrag = null;
       selected = null;
       multiSelection = null;
+      lassoCopySelection = null;
       pendingTextListGridCopies = null;
       pendingTextPos = null;
       selectionDragActive = false;
@@ -2173,6 +2213,7 @@
       } else if (item.type === "image") {
         const img = images[item.index];
         if (img && canInteractImage(img)) {
+          if (isDraftBoardImage(img)) addDraftBoardContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
           if (isFrameContainer(img)) addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
           imageIds.add(img.id);
         }
@@ -3745,6 +3786,21 @@
     });
   }
 
+  function addDraftBoardContentsToDeleteSets(boardImg, strokeIds, textIds, imageIds, draftIds) {
+    if (!isDraftBoardImage(boardImg) || boardImg.user !== currentUser) return;
+    const draftBoardId = boardImg.id;
+    draftStrokes.forEach((draft) => {
+      if (draft?.draftBoardId === draftBoardId && draft.user === currentUser) draftIds.add(draft.id);
+    });
+    texts.forEach((text) => {
+      if (text?.draftBoardId === draftBoardId && text.user === currentUser) textIds.add(text.id);
+    });
+    images.forEach((img) => {
+      if (!img || img.id === draftBoardId) return;
+      if (img.draftBoardId === draftBoardId && img.user === currentUser) imageIds.add(img.id);
+    });
+  }
+
   function detachFrameContents(frameImg) {
     if (!isFrameContainer(frameImg)) return;
     getFrameContentItems(frameImg).forEach((item) => {
@@ -3812,6 +3868,9 @@
       } else if (item.type === "image") {
         const img = images[item.index];
         if (img && (allowImages || isFrameContainer(img)) && canInteractImage(img)) {
+          if (isDraftBoardImage(img)) {
+            addDraftBoardContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
+          }
           if (isFrameContainer(img) && frameDeleteMode === "with-contents") {
             addFrameContentsToDeleteSets(img, strokeIds, textIds, imageIds, draftIds);
           } else if (isFrameContainer(img) && frameDeleteMode === "frame-only") {
@@ -4059,7 +4118,7 @@
         emitItemPatch("text", text, { x: text.x, y: text.y, rotation: text.rotation });
       } else if (item.type === "image") {
         const img = images[item.index];
-        if (!img || isFrameContainer(img) || isLinkedBoardImage(img)) return;
+        if (!img || isFrameContainer(img) || isBoardOverlayImage(img)) return;
         const oldCenter = getRectCenter({ x: img.x, y: img.y, width: img.width, height: img.height });
         const newCenter = rotatePointAround(oldCenter, center, direction);
         img.x += newCenter.x - oldCenter.x;
@@ -4196,6 +4255,7 @@
     const targets = collectOrderableSelectionItems();
     if (!targets.length) return;
 
+    const targetKeys = new Set(targets.map((it) => getSelectionItemKey(it)));
     const byLayer = new Map();
     targets.forEach((it) => {
       const layer = getItemLayer(it);
@@ -4211,7 +4271,8 @@
         .map((it) => ({ ...it, order: getItemOrder(it) }))
         .sort((a, b) => a.order - b.order);
 
-      const orders = layerItems.map((x) => x.order ?? 0);
+      const otherLayerItems = layerItems.filter((it) => !targetKeys.has(getSelectionItemKey(it)));
+      const orders = (otherLayerItems.length ? otherLayerItems : layerItems).map((x) => x.order ?? 0);
       const maxOrder = Math.max(...orders);
       const minOrder = Math.min(...orders);
 
@@ -4221,7 +4282,7 @@
         });
       } else if (direction === "back") {
         orderedTargets.forEach((it, idx) => {
-          setItemOrder(it, minOrder - (idx + 1));
+          setItemOrder(it, minOrder - orderedTargets.length + idx);
         });
       }
     });
@@ -4428,6 +4489,18 @@
     return !!imgObj?.linkBoardSource;
   }
 
+  function isDraftBoardImage(imgObj) {
+    return !!imgObj?.draftBoardSource;
+  }
+
+  function isBoardOverlayImage(imgObj) {
+    return isLinkedBoardImage(imgObj) || isDraftBoardImage(imgObj);
+  }
+
+  function isLassoToolObject(imgObj) {
+    return !!imgObj?.lassoToolObject || isDraftBoardImage(imgObj) || isLinkedBoardImage(imgObj);
+  }
+
   function normalizeWorldRectFromPoints(a, b) {
     return getNormalizedRect({
       x: a.x,
@@ -4441,6 +4514,17 @@
     let best = null;
     images.forEach((img, index) => {
       if (!isLinkedBoardImage(img) || !isImageVisible(img)) return;
+      if (!pointInRectWorld(getImageBoundsWorld(img), worldPoint)) return;
+      const order = getObjectOrderValue("image", img, index);
+      if (!best || order >= best.order) best = { img, index, order };
+    });
+    return best;
+  }
+
+  function getDraftBoardAtWorldPoint(worldPoint) {
+    let best = null;
+    images.forEach((img, index) => {
+      if (!isDraftBoardImage(img) || !isImageVisible(img) || img.user !== currentUser) return;
       if (!pointInRectWorld(getImageBoundsWorld(img), worldPoint)) return;
       const order = getObjectOrderValue("image", img, index);
       if (!best || order >= best.order) best = { img, index, order };
@@ -4494,6 +4578,7 @@
     const imgObj = images[imgIndex];
     if (isFrameContainer(imgObj)) bringFrameGroupToFront(imgObj);
     frameDragOffsets = isFrameContainer(imgObj) ? captureFrameDragItems(imgObj) : null;
+    draftBoardDragOffsets = isDraftBoardImage(imgObj) ? captureDraftBoardDragItems(imgObj) : null;
     const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
     dragOffsetWorld = {
       x: worldPos.x - imgObj.x,
@@ -5096,6 +5181,82 @@
     });
   }
 
+  function captureDraftBoardDragItems(boardImg) {
+    if (!isDraftBoardImage(boardImg)) return null;
+    const boardId = boardImg.id;
+    const captured = { boardId, boardX: boardImg.x, boardY: boardImg.y, items: [] };
+    draftStrokes.forEach((stroke, index) => {
+      if (stroke?.draftBoardId !== boardId) return;
+      captured.items.push({
+        type: "draft",
+        index,
+        id: stroke.id,
+        points: (stroke.points || []).map((p) => ({ x: p.x, y: p.y })),
+      });
+    });
+    texts.forEach((text, index) => {
+      if (text?.draftBoardId !== boardId) return;
+      captured.items.push({ type: "text", index, id: text.id, x: text.x, y: text.y });
+    });
+    images.forEach((img, index) => {
+      if (!img || img.id === boardId || img.draftBoardId !== boardId) return;
+      captured.items.push({ type: "image", index, id: img.id, x: img.x, y: img.y });
+    });
+    return captured.items.length ? captured : null;
+  }
+
+  function applyDraftBoardDragOffsets(captured, dx, dy) {
+    if (!captured) return;
+    captured.items.forEach((it) => {
+      if (it.type === "draft") {
+        const stroke = draftStrokes[it.index];
+        if (stroke && stroke.id === it.id) {
+          stroke.points = it.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        }
+      } else if (it.type === "text") {
+        const text = texts[it.index];
+        if (text && text.id === it.id) {
+          text.x = it.x + dx;
+          text.y = it.y + dy;
+        }
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (img && img.id === it.id) {
+          img.x = it.x + dx;
+          img.y = it.y + dy;
+        }
+      }
+    });
+  }
+
+  function emitDraftBoardDragUpdates(captured) {
+    if (!socketConnected || !captured) return;
+    captured.items.forEach((it) => {
+      if (it.type === "draft") {
+        const stroke = draftStrokes[it.index];
+        if (stroke && stroke.id === it.id) socket.emit("draft:stroke:add", { boardId, stroke });
+      } else if (it.type === "text") {
+        const text = texts[it.index];
+        if (!text || text.id !== it.id) return;
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: text.id,
+          patch: { x: text.x, y: text.y },
+        });
+      } else if (it.type === "image") {
+        const img = images[it.index];
+        if (!img || img.id !== it.id) return;
+        socket.emit("item:update", {
+          boardId,
+          type: "image",
+          id: img.id,
+          patch: { x: img.x, y: img.y },
+        });
+      }
+    });
+  }
+
   function setFrameGroupedItemOrder(item, newOrder) {
     if (!item || typeof newOrder !== "number") return;
     if (item.type === "stroke") {
@@ -5265,6 +5426,7 @@
         imageListOrder: bumpImageListOrderCounter(),
         frameTabs: source.frameTabs ? source.frameTabs.map((tab) => ({ ...tab })) : source.frameTabs,
         linkBoardSource: source.linkBoardSource ? { ...source.linkBoardSource } : source.linkBoardSource,
+        draftBoardSource: source.draftBoardSource ? { ...source.draftBoardSource } : source.draftBoardSource,
         frameId: patch.frameId,
         frameTab: patch.frameTab,
       };
@@ -6348,6 +6510,7 @@
   }
 
   function canDeleteText(t) {
+    if (isOwnDraftBoardItem(t)) return true;
     if ((t.layer || "user") === "base") return activeLayer === "base";
     if (isAdminUser() || activeLayer === "admin") return true;
     return (t.layer || "user") === "user";
@@ -6474,6 +6637,12 @@
       frameTabs: imgData.frameTabs || null,
       activeFrameTab: imgData.activeFrameTab || null,
       linkBoardSource: imgData.linkBoardSource || null,
+      draftBoardSource: imgData.draftBoardSource || null,
+      draftBoardId: imgData.draftBoardId || null,
+      lassoToolObject: !!imgData.lassoToolObject,
+      lassoOutlinePath: Array.isArray(imgData.lassoOutlinePath)
+        ? imgData.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
+        : null,
       img,
     };
     images.push(imageObj);
@@ -6482,7 +6651,7 @@
     bumpOrderCounter(imgData.order);
     registerUser(imgData.user);
     refreshImageList();
-    if (!isLinkedBoardImage(imageObj) && (!options.deferLoad || isImageNearViewport(imageObj))) {
+    if (!isBoardOverlayImage(imageObj) && (!options.deferLoad || isImageNearViewport(imageObj))) {
       ensureImageElementForImage(imageObj, { redrawOnLoad: shouldRedraw || options.redrawOnLoad });
     }
     if (shouldRedraw) redraw();
@@ -7040,6 +7209,51 @@
     return 4;
   }
 
+  function getDraftBoardRenderInfo(item) {
+    if (!item) return null;
+    if (item.type === "image") {
+      const img = images[item.index];
+      if (!img) return null;
+      if (isDraftBoardImage(img)) {
+        return {
+          groupId: img.id,
+          rank: 0,
+          order: typeof img.order === "number" ? img.order : 0,
+          createdAt: img.createdAt || 0,
+        };
+      }
+      if (img.draftBoardId) {
+        return {
+          groupId: img.draftBoardId,
+          rank: 1,
+          order: typeof img.order === "number" ? img.order : 0,
+          createdAt: img.createdAt || 0,
+        };
+      }
+    }
+    if (item.type === "draft-stroke") {
+      const stroke = draftStrokes[item.index];
+      if (!stroke?.draftBoardId) return null;
+      return {
+        groupId: stroke.draftBoardId,
+        rank: 2,
+        order: typeof stroke.order === "number" ? stroke.order : 0,
+        createdAt: stroke.createdAt || 0,
+      };
+    }
+    if (item.type === "text") {
+      const text = texts[item.index];
+      if (!text?.draftBoardId) return null;
+      return {
+        groupId: text.draftBoardId,
+        rank: 2,
+        order: typeof text.order === "number" ? text.order : 0,
+        createdAt: text.createdAt || 0,
+      };
+    }
+    return null;
+  }
+
   function getImageHitDrawInfo(imgObj, index, rankOverride = null) {
     const order = getObjectOrderValue("image", imgObj, index);
     let frameGroupId = null;
@@ -7105,6 +7319,128 @@
     }
     if (a.layerPriority !== b.layerPriority) return a.layerPriority - b.layerPriority;
     if (a.order !== b.order) return a.order - b.order;
+    return a.arrayIndex - b.arrayIndex;
+  }
+
+  function getHitTypeOrder(type) {
+    if (type === "stroke") return 0;
+    if (type === "draft") return 1;
+    if (type === "image") return 2;
+    if (type === "text") return 3;
+    if (type === "link") return 4;
+    return 5;
+  }
+
+  function getHitDrawInfoForItem(item) {
+    if (!item) return null;
+    const type = item.type;
+    const index = item.index;
+    let obj = null;
+    let layer = "user";
+    let order = 0;
+    let frameGroupId = null;
+    let frameGroupOrder = null;
+    let frameGroupRank = null;
+
+    if (type === "image") {
+      obj = images[index];
+      if (!obj) return null;
+      const info = getImageHitDrawInfo(obj, index);
+      layer = obj.layer || "base";
+      order = info.order;
+      frameGroupId = info.frameGroupId;
+      frameGroupOrder = info.frameGroupOrder;
+      frameGroupRank = info.frameGroupRank;
+    } else if (type === "text") {
+      obj = texts[index];
+      if (!obj) return null;
+      layer = obj.layer || "user";
+      order = getObjectOrderValue("text", obj, index);
+      const owner = findOwningFrameForItem({ type: "text", index });
+      if (owner) {
+        frameGroupId = owner.frame.id;
+        frameGroupOrder = owner.order;
+        frameGroupRank = getFrameMemberDrawRank(obj);
+      }
+    } else if (type === "stroke") {
+      obj = strokes[index];
+      if (!obj) return null;
+      layer = obj.layer || "user";
+      order = getObjectOrderValue("stroke", obj, index);
+      const owner = findOwningFrameForItem({ type: "stroke", index });
+      if (owner) {
+        frameGroupId = owner.frame.id;
+        frameGroupOrder = owner.order;
+        frameGroupRank = getFrameMemberDrawRank(obj);
+      }
+    } else if (type === "draft") {
+      obj = draftStrokes[index];
+      if (!obj) return null;
+      layer = "draft";
+      order = getObjectOrderValue("draft", obj, index);
+      const owner = findOwningFrameForItem({ type: "draft", index });
+      if (owner) {
+        frameGroupId = owner.frame.id;
+        frameGroupOrder = owner.order;
+        frameGroupRank = getFrameMemberDrawRank(obj);
+      }
+    } else if (type === "link") {
+      obj = links[index];
+      if (!obj) return null;
+      layer = obj.layer || "user";
+      order = getObjectOrderValue("link", obj, index);
+    } else {
+      return null;
+    }
+
+    const info = {
+      item,
+      type,
+      index,
+      order,
+      arrayIndex: index,
+      typeOrder: getHitTypeOrder(type),
+      layerPriority: getRenderLayerPriority(layer),
+      frameGroupId,
+      frameGroupOrder,
+      frameGroupRank,
+    };
+    const draftType = type === "draft" ? "draft-stroke" : type;
+    const draftInfo = getDraftBoardRenderInfo({ type: draftType, index });
+    if (draftInfo) {
+      info.draftBoardGroupId = draftInfo.groupId;
+      info.draftBoardGroupRank = draftInfo.rank;
+      info.draftBoardGroupOrder = draftInfo.order;
+      info.draftBoardGroupCreatedAt = draftInfo.createdAt;
+    }
+    return info;
+  }
+
+  function compareHitDrawOrder(a, b) {
+    if (a.draftBoardGroupId && b.draftBoardGroupId && a.draftBoardGroupId === b.draftBoardGroupId) {
+      const rankA = a.draftBoardGroupRank ?? 1;
+      const rankB = b.draftBoardGroupRank ?? 1;
+      if (rankA !== rankB) return rankA - rankB;
+      const createdA = typeof a.draftBoardGroupCreatedAt === "number" ? a.draftBoardGroupCreatedAt : 0;
+      const createdB = typeof b.draftBoardGroupCreatedAt === "number" ? b.draftBoardGroupCreatedAt : 0;
+      if (createdA !== createdB) return createdA - createdB;
+      const orderA = typeof a.draftBoardGroupOrder === "number" ? a.draftBoardGroupOrder : a.order ?? 0;
+      const orderB = typeof b.draftBoardGroupOrder === "number" ? b.draftBoardGroupOrder : b.order ?? 0;
+      if (orderA !== orderB) return orderA - orderB;
+    }
+    if (a.frameGroupId || b.frameGroupId) {
+      const groupA = typeof a.frameGroupOrder === "number" ? a.frameGroupOrder : a.order ?? 0;
+      const groupB = typeof b.frameGroupOrder === "number" ? b.frameGroupOrder : b.order ?? 0;
+      if (groupA !== groupB) return groupA - groupB;
+      if (a.frameGroupId && b.frameGroupId && a.frameGroupId === b.frameGroupId) {
+        const rankA = a.frameGroupRank ?? 1;
+        const rankB = b.frameGroupRank ?? 1;
+        if (rankA !== rankB) return rankA - rankB;
+      }
+    }
+    if (a.layerPriority !== b.layerPriority) return a.layerPriority - b.layerPriority;
+    if (a.order !== b.order) return a.order - b.order;
+    if (a.typeOrder !== b.typeOrder) return a.typeOrder - b.typeOrder;
     return a.arrayIndex - b.arrayIndex;
   }
 
@@ -7319,7 +7655,7 @@
     for (let i = images.length - 1; i >= 0; i--) {
       const imgObj = images[i];
       if (!canInteractImage(imgObj)) continue;
-      if (isLinkedBoardImage(imgObj)) continue;
+      if (isBoardOverlayImage(imgObj)) continue;
       const hit = hitTestResizeHandlesScreen(
         screenX,
         screenY,
@@ -7711,6 +8047,14 @@
       });
     });
     combined.forEach((item) => {
+      const draftBoardRenderInfo = getDraftBoardRenderInfo(item);
+      if (draftBoardRenderInfo) {
+        item.draftBoardGroupId = draftBoardRenderInfo.groupId;
+        item.draftBoardGroupRank = draftBoardRenderInfo.rank;
+        item.draftBoardGroupOrder = draftBoardRenderInfo.order;
+        item.draftBoardGroupCreatedAt = draftBoardRenderInfo.createdAt;
+      }
+
       if (item.type === "image") {
         const img = images[item.index];
         if (isFrameContainer(img)) {
@@ -7776,6 +8120,17 @@
       }
     });
     combined.sort((a, b) => {
+      if (a.draftBoardGroupId && b.draftBoardGroupId && a.draftBoardGroupId === b.draftBoardGroupId) {
+        const rankA = a.draftBoardGroupRank ?? 1;
+        const rankB = b.draftBoardGroupRank ?? 1;
+        if (rankA !== rankB) return rankA - rankB;
+        const createdA = typeof a.draftBoardGroupCreatedAt === "number" ? a.draftBoardGroupCreatedAt : 0;
+        const createdB = typeof b.draftBoardGroupCreatedAt === "number" ? b.draftBoardGroupCreatedAt : 0;
+        if (createdA !== createdB) return createdA - createdB;
+        const orderA = typeof a.draftBoardGroupOrder === "number" ? a.draftBoardGroupOrder : a.order ?? 0;
+        const orderB = typeof b.draftBoardGroupOrder === "number" ? b.draftBoardGroupOrder : b.order ?? 0;
+        if (orderA !== orderB) return orderA - orderB;
+      }
       if (a.frameGroupId || b.frameGroupId) {
         const groupA = typeof a.frameGroupOrder === "number" ? a.frameGroupOrder : a.order ?? 0;
         const groupB = typeof b.frameGroupOrder === "number" ? b.frameGroupOrder : b.order ?? 0;
@@ -7820,8 +8175,8 @@
       try {
       if (item.type === "image") {
         const imgObj = images[item.index];
-        if (isLinkedBoardImage(imgObj)) {
-          drawLinkedBoardImage(imgObj);
+        if (isBoardOverlayImage(imgObj)) {
+          drawBoardOverlayImage(imgObj);
           if (selected && selected.type === "image" && selected.index === item.index) {
             drawSelectionBoundsWorld(
               { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
@@ -7854,10 +8209,12 @@
               ctx.restore();
             }
             if (imgObj.mirrored) {
-              drawMirroredImageGlow(
-                { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
-                rotation
-              );
+              if (!drawMirroredLassoImageGlow(imgObj)) {
+                drawMirroredImageGlow(
+                  { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+                  rotation
+                );
+              }
             }
           }
         } catch (err) {
@@ -7865,10 +8222,12 @@
           continue;
         }
         if (selected && selected.type === "image" && selected.index === item.index) {
-          drawSelectionBoundsWorld(
-            { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
-            rotation
-          );
+          if (!drawLassoImageSelectionBounds(imgObj)) {
+            drawSelectionBoundsWorld(
+              { x: imgObj.x, y: imgObj.y, width: imgObj.width, height: imgObj.height },
+              rotation
+            );
+          }
         }
       } else if (item.type === "stroke") {
         const stroke = strokes[item.index];
@@ -7918,7 +8277,7 @@
       } else if (item.type === "draft-stroke") {
         const stroke = draftStrokes[item.index];
         if (!stroke || !stroke.points || stroke.points.length === 0) continue;
-        if (activeLayer !== "draft") continue;
+        if (activeLayer !== "draft" && !(activeLayer === "user" && isOwnDraftBoardItem(stroke))) continue;
         if (stroke.user !== currentUser) continue;
         if (stroke.fill) {
           if (stroke.points.length < 3) continue;
@@ -8154,7 +8513,27 @@
       );
     }
     if (lassoCopyActive && lassoCopyPath.length > 1) {
-      drawLassoPathScreen(lassoCopyPath, "#d97706");
+      if (lassoCopyMode === "rect") {
+        drawLassoRectScreen(
+          {
+            x: lassoCopyPath[0].x,
+            y: lassoCopyPath[0].y,
+            width: lassoCopyPath[1].x - lassoCopyPath[0].x,
+            height: lassoCopyPath[1].y - lassoCopyPath[0].y,
+          },
+          "#d97706"
+        );
+      } else {
+        drawLassoPathScreen(lassoCopyPath, "#d97706");
+      }
+    }
+    if (lassoCopySelection) {
+      const path = getLassoSelectionScreenPath();
+      if (lassoCopySelection.mode === "rect") {
+        drawLassoRectScreen(getPathBoundsScreen(path), "#d97706");
+      } else {
+        drawLassoPathScreen(path, "#d97706");
+      }
     }
 
     // 3. 最前面オーバーレイ：レーザーポインタ／記入中ラベル
@@ -8172,7 +8551,7 @@
   function isStaticLayerCacheItem(item) {
     if (item?.type !== "image") return false;
     const imgObj = images[item.index];
-    if (!imgObj || imgObj.tagType || imgObj.frameId || isLinkedBoardImage(imgObj)) return false;
+    if (!imgObj || imgObj.tagType || imgObj.frameId || isBoardOverlayImage(imgObj)) return false;
     if (selected?.type === "image" && selected.index === item.index) return false;
     const layer = imgObj.layer || "base";
     return layer === "image" || layer === "base";
@@ -8313,6 +8692,70 @@
     ctx.restore();
   }
 
+  function getLassoOutlineWorldPoints(imgObj) {
+    if (!imgObj || !Array.isArray(imgObj.lassoOutlinePath) || imgObj.lassoOutlinePath.length < 3) return [];
+    const center = {
+      x: imgObj.x + imgObj.width / 2,
+      y: imgObj.y + imgObj.height / 2,
+    };
+    const rotation = normalizeRotation(imgObj.rotation || 0);
+    return imgObj.lassoOutlinePath.map((point) => {
+      const px = typeof point.x === "number" ? point.x : 0;
+      const py = typeof point.y === "number" ? point.y : 0;
+      const local = {
+        x: imgObj.x + (imgObj.mirrored ? 1 - px : px) * imgObj.width,
+        y: imgObj.y + py * imgObj.height,
+      };
+      return rotation ? rotatePointByDegrees(local, center, rotation) : local;
+    });
+  }
+
+  function drawLassoImageSelectionBounds(imgObj) {
+    const points = getLassoOutlineWorldPoints(imgObj).map((p) => worldToScreen(p.x, p.y));
+    if (points.length < 3) return false;
+    ctx.save();
+    ctx.strokeStyle = "#0078d7";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 2]);
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+    return true;
+  }
+
+  function drawMirroredLassoImageGlow(imgObj) {
+    if (!imgObj?.mirrored) return false;
+    const points = getLassoOutlineWorldPoints(imgObj).map((p) => worldToScreen(p.x, p.y));
+    if (points.length < 3) return false;
+    const strokePath = () => {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    };
+    ctx.save();
+    ctx.strokeStyle = "#22a7ff";
+    ctx.shadowColor = "rgba(34, 167, 255, 0.95)";
+    ctx.shadowBlur = Math.max(10, 14 * scale);
+    ctx.lineWidth = Math.max(3, 4 * scale);
+    strokePath();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = Math.max(1, 1.5 * scale);
+    ctx.strokeStyle = "#d8f1ff";
+    strokePath();
+    ctx.restore();
+    return true;
+  }
+
   function drawStarLabelBoundsWorld(bounds, rotation = 0, color = "#111827") {
     if (!bounds) return;
     const padding = Math.max(3, 4 * scale);
@@ -8376,6 +8819,47 @@
     ctx.restore();
   }
 
+  function drawBoardOverlayImage(imgObj) {
+    if (isDraftBoardImage(imgObj)) {
+      drawDraftBoardImage(imgObj);
+      return;
+    }
+    drawLinkedBoardImage(imgObj);
+  }
+
+  function drawDraftBoardImage(imgObj) {
+    const src = imgObj?.draftBoardSource;
+    if (!src || !imgObj.width || !imgObj.height) return;
+    const dest = worldToScreen(imgObj.x, imgObj.y);
+    const destW = imgObj.width * scale;
+    const destH = imgObj.height * scale;
+    const headerH = Math.min(destH, Math.max(18, Math.min(22, (src.headerHeight || 0) * scale || 20)));
+
+    ctx.save();
+    ctx.fillStyle = "rgba(239, 246, 255, 0.72)";
+    ctx.fillRect(dest.x, dest.y, destW, destH);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+    ctx.fillRect(dest.x, dest.y, destW, headerH);
+    ctx.strokeStyle = "rgba(37, 99, 235, 0.95)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 5]);
+    ctx.shadowColor = "rgba(59, 130, 246, 0.85)";
+    ctx.shadowBlur = 12;
+    ctx.strokeRect(dest.x, dest.y, destW, destH);
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(37, 99, 235, 0.35)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(dest.x, dest.y + headerH);
+    ctx.lineTo(dest.x + destW, dest.y + headerH);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(30, 64, 175, 0.98)";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("下書きボード", dest.x + 10, dest.y + Math.max(4, (headerH - 14) / 2));
+    ctx.restore();
+  }
+
   function drawLinkedBoardImage(imgObj) {
     const src = imgObj?.linkBoardSource;
     if (!src || !src.width || !src.height || !imgObj.width || !imgObj.height) return;
@@ -8398,7 +8882,7 @@
     ctx.clip();
 
     images.forEach((child) => {
-      if (!child || child.id === imgObj.id || isLinkedBoardImage(child) || !isImageVisible(child)) return;
+      if (!child || child.id === imgObj.id || isBoardOverlayImage(child) || !isImageVisible(child)) return;
       const bounds = getImageBoundsWorld(child);
       if (!bounds || !rectsOverlap(src, bounds)) return;
       const imgEl = ensureImageElementForImage(child);
@@ -8542,6 +9026,10 @@
 
   function drawMultiSelectionItemBounds(items) {
     (items || []).forEach((item) => {
+      if (item?.type === "image") {
+        const imgObj = images[item.index];
+        if (drawLassoImageSelectionBounds(imgObj)) return;
+      }
       const resolved = getSelectionItemBoundsWorld(item);
       if (!resolved || !resolved.bounds) return;
       drawSelectionBoundsWorld(resolved.bounds, resolved.rotation || 0);
@@ -8649,7 +9137,7 @@
       } else if (item.type === "image") {
         const img = images[item.index];
         if (!img || seen.has(`image:${img.id || item.index}`)) return;
-        if (isLinkedBoardImage(img)) return;
+        if (isBoardOverlayImage(img)) return;
         seen.add(`image:${img.id || item.index}`);
         captured.push({
           type: "image",
@@ -8789,6 +9277,417 @@
     ctx.restore();
   }
 
+  function clearLassoCopySelection() {
+    lassoCopySelection = null;
+    lassoCopyActive = false;
+    lassoCopyPath = [];
+  }
+
+  function getLassoSelectionScreenPath(selection = lassoCopySelection) {
+    if (!selection || !Array.isArray(selection.worldPath)) return [];
+    return selection.worldPath.map((p) => worldToScreen(p.x, p.y));
+  }
+
+  function makeRectPathScreen(a, b) {
+    const left = Math.min(a.x, b.x);
+    const top = Math.min(a.y, b.y);
+    const right = Math.max(a.x, b.x);
+    const bottom = Math.max(a.y, b.y);
+    return [
+      { x: left, y: top },
+      { x: right, y: top },
+      { x: right, y: bottom },
+      { x: left, y: bottom },
+    ];
+  }
+
+  function createLassoCopySelectionFromScreenPath(path, mode = lassoCopyMode) {
+    const cleaned = (path || []).filter((p) => p && typeof p.x === "number" && typeof p.y === "number");
+    if (cleaned.length < 3) return false;
+    const screenBounds = getPathBoundsScreen(cleaned);
+    if (!screenBounds || screenBounds.width < 4 || screenBounds.height < 4) return false;
+    const worldPath = cleaned.map((p) => screenToWorld(p.x, p.y));
+    const worldBounds = getPathBoundsScreen(worldPath);
+    if (!worldBounds || worldBounds.width <= 0 || worldBounds.height <= 0) return false;
+    lassoCopySelection = { mode, worldPath, worldBounds };
+    selected = null;
+    multiSelection = null;
+    updateToolButtons();
+    updateFooterByState();
+    redraw();
+    return true;
+  }
+
+  function pointInPolygonScreen(point, polygon) {
+    if (!Array.isArray(polygon) || polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const pi = polygon[i];
+      const pj = polygon[j];
+      const intersects =
+        pi.y > point.y !== pj.y > point.y &&
+        point.x < ((pj.x - pi.x) * (point.y - pi.y)) / ((pj.y - pi.y) || 0.000001) + pi.x;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function hitTestLassoCopySelectionScreen(screenPoint) {
+    if (!lassoCopySelection) return false;
+    const path = getLassoSelectionScreenPath();
+    const bounds = getPathBoundsScreen(path);
+    if (!bounds || !pointInRectWorld(bounds, screenPoint)) return false;
+    if (lassoCopySelection.mode === "rect") return true;
+    return pointInPolygonScreen(screenPoint, path);
+  }
+
+  function buildRelativeLassoOutlinePath(worldPath, worldBounds) {
+    if (!Array.isArray(worldPath) || worldPath.length < 3 || !worldBounds?.width || !worldBounds?.height) return null;
+    return worldPath
+      .filter((point) => point && typeof point.x === "number" && typeof point.y === "number")
+      .map((point) => ({
+        x: (point.x - worldBounds.x) / worldBounds.width,
+        y: (point.y - worldBounds.y) / worldBounds.height,
+      }));
+  }
+
+  function copyLassoCopySelection() {
+    if (!lassoCopySelection) return;
+    const mode = lassoCopySelection.mode;
+    const path = getLassoSelectionScreenPath();
+    const lassoOutlinePath =
+      mode === "rect" ? null : buildRelativeLassoOutlinePath(lassoCopySelection.worldPath, lassoCopySelection.worldBounds);
+    clearLassoCopySelection();
+    createImageFromLassoPath(path, mode, { lassoOutlinePath });
+  }
+
+  function createLinkedBoardFromLassoCopySelection() {
+    if (!lassoCopySelection?.worldBounds) return;
+    if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
+    const source = { ...lassoCopySelection.worldBounds };
+    const offsetWorld = 24 / Math.max(scale, 0.001);
+    const dest = {
+      x: source.x + offsetWorld,
+      y: source.y + offsetWorld,
+      width: source.width,
+      height: source.height,
+    };
+    clearLassoCopySelection();
+    createLinkedBoardAt(source, dest, { lassoToolObject: true });
+    showTransientFooterMessage("リンクボードを作成しました。", 2500);
+  }
+
+  function mapRectPointBetweenRects(point, source, dest) {
+    return {
+      x: dest.x + ((point.x - source.x) / source.width) * dest.width,
+      y: dest.y + ((point.y - source.y) / source.height) * dest.height,
+    };
+  }
+
+  function mapRectBetweenRects(rect, source, dest) {
+    const p = mapRectPointBetweenRects({ x: rect.x, y: rect.y }, source, dest);
+    return {
+      x: p.x,
+      y: p.y,
+      width: (rect.width / source.width) * dest.width,
+      height: (rect.height / source.height) * dest.height,
+    };
+  }
+
+  function createCroppedDraftBoardImage(sourceImg, cropWorldRect, sourceRect, destRect, draftBoardId) {
+    if (!sourceImg || !cropWorldRect || !sourceRect || !destRect || !draftBoardId) return null;
+    if (isFrameContainer(sourceImg) || isBoardOverlayImage(sourceImg)) return null;
+    if (normalizeRotation(sourceImg.rotation || 0) !== 0) return null;
+    const sourceEl = ensureImageElementForImage(sourceImg);
+    if (!sourceEl?.complete || !sourceEl.naturalWidth || !sourceEl.naturalHeight) return null;
+    const sourceBounds = getImageBoundsWorld(sourceImg);
+    if (!sourceBounds || sourceBounds.width <= 0 || sourceBounds.height <= 0) return null;
+    const scaleX = sourceEl.naturalWidth / sourceBounds.width;
+    const scaleY = sourceEl.naturalHeight / sourceBounds.height;
+    const sx = Math.max(0, Math.round((cropWorldRect.x - sourceBounds.x) * scaleX));
+    const sy = Math.max(0, Math.round((cropWorldRect.y - sourceBounds.y) * scaleY));
+    const sw = Math.min(sourceEl.naturalWidth - sx, Math.round(cropWorldRect.width * scaleX));
+    const sh = Math.min(sourceEl.naturalHeight - sy, Math.round(cropWorldRect.height * scaleY));
+    if (sw <= 0 || sh <= 0) return null;
+    try {
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = sw;
+      cropCanvas.height = sh;
+      const cropCtx = cropCanvas.getContext("2d");
+      cropCtx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, sw, sh);
+      const src = cropCanvas.toDataURL("image/png");
+      const img = new Image();
+      const mapped = mapRectBetweenRects(cropWorldRect, sourceRect, destRect);
+      const clone = {
+        id: genId(),
+        img,
+        src,
+        x: mapped.x,
+        y: mapped.y,
+        width: mapped.width,
+        height: mapped.height,
+        layer: "draft",
+        order: orderCounter++,
+        user: currentUser,
+        rotation: 0,
+        mirrored: false,
+        imageName: sourceImg.imageName ? `${sourceImg.imageName} 下書き` : "下書き画像",
+        imageListOrder: bumpImageListOrderCounter(),
+        draftBoardId,
+      };
+      img.onload = () => redraw();
+      img.src = src;
+      return clone;
+    } catch (err) {
+      console.error("failed to crop draft board image", err);
+      return null;
+    }
+  }
+
+  function createDraftBoardFromLassoCopySelection() {
+    if (!lassoCopySelection?.worldBounds) return;
+    if (!requireUser()) return;
+    if (!canCreateOnCurrentLayer()) return;
+    const source = { ...lassoCopySelection.worldBounds };
+    if (source.width < 8 || source.height < 8) return;
+    ensureSnapshotForAction();
+    const offsetWorld = 24 / Math.max(scale, 0.001);
+    const headerHeightWorld = 22 / Math.max(scale, 0.001);
+    const dest = {
+      x: source.x + offsetWorld,
+      y: source.y + offsetWorld - headerHeightWorld,
+      width: source.width,
+      height: source.height + headerHeightWorld,
+    };
+    const contentDest = {
+      x: dest.x,
+      y: dest.y + headerHeightWorld,
+      width: source.width,
+      height: source.height,
+    };
+    const boardIdForDraft = genId();
+    const boardImg = {
+      id: boardIdForDraft,
+      img: null,
+      src: TRANSPARENT_PIXEL_SRC,
+      x: dest.x,
+      y: dest.y,
+      width: dest.width,
+      height: dest.height,
+      layer: "draft",
+      order: -1000000000 + orderCounter++,
+      user: currentUser,
+      rotation: 0,
+      imageName: "下書きボード",
+      imageListOrder: bumpImageListOrderCounter(),
+      lassoToolObject: true,
+      draftBoardSource: {
+        x: source.x,
+        y: source.y,
+        width: source.width,
+        height: source.height,
+        headerHeight: headerHeightWorld,
+      },
+    };
+    images.push(boardImg);
+    registerUser(currentUser);
+    emitImageAdd(boardImg);
+
+    const groupIds = new Map();
+    const getDraftGroupId = (groupId) => {
+      if (!groupId) return null;
+      if (!groupIds.has(groupId)) groupIds.set(groupId, genId());
+      return groupIds.get(groupId);
+    };
+    const copyStroke = (stroke) => {
+      if (!stroke || !isStrokeVisible(stroke)) return false;
+      const bounds = getStrokeBoundsWorld(stroke);
+      if (!bounds || !rectContainsRect(source, bounds)) return false;
+      const draft = {
+        id: genId(),
+        color: stroke.color || currentColor,
+        size: stroke.size || currentSize,
+        points: (stroke.points || []).map((p) => mapRectPointBetweenRects(p, source, contentDest)),
+        user: currentUser,
+        order: draftOrderCounter++,
+        createdAt: Date.now(),
+        fill: !!stroke.fill,
+        groupId: getDraftGroupId(stroke.groupId),
+        draftBoardId: boardIdForDraft,
+      };
+      draftStrokes.push(draft);
+      if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: draft });
+      return true;
+    };
+    strokes.slice().forEach(copyStroke);
+
+    texts.slice().forEach((text) => {
+      if (!text || !isTextVisible(text)) return;
+      const bounds = getTextBoundsWorld(text);
+      if (!bounds || !rectContainsRect(source, bounds)) return;
+      const p = mapRectPointBetweenRects({ x: text.x, y: text.y }, source, contentDest);
+      const clone = {
+        ...text,
+        id: genId(),
+        lines: Array.isArray(text.lines) ? text.lines.slice() : text.lines,
+        x: p.x,
+        y: p.y,
+        fontSize: (text.fontSize || 16) * (contentDest.height / source.height),
+        layer: "draft",
+        user: currentUser,
+        order: orderCounter++,
+        createdAt: Date.now(),
+        textListOrder: bumpTextListOrderCounter(),
+        frameId: null,
+        frameTab: null,
+        draftBoardId: boardIdForDraft,
+      };
+      texts.push(clone);
+      emitTextAdd(clone);
+    });
+
+    images.slice().forEach((img) => {
+      if (!img || img.id === boardIdForDraft || isFrameContainer(img) || isBoardOverlayImage(img)) return;
+      if (!isImageVisible(img)) return;
+      const bounds = getImageBoundsWorld(img);
+      if (!bounds || !rectsOverlap(source, bounds)) return;
+      let clone = null;
+      if (rectContainsRect(source, bounds)) {
+        const mapped = mapRectBetweenRects(bounds, source, contentDest);
+        clone = {
+          ...img,
+          id: genId(),
+          x: mapped.x,
+          y: mapped.y,
+          width: mapped.width,
+          height: mapped.height,
+          layer: "draft",
+          order: orderCounter++,
+          user: currentUser,
+          frameId: null,
+          frameTab: null,
+          imageName: img.imageName ? `${img.imageName} 下書き` : "",
+          imageListOrder: bumpImageListOrderCounter(),
+          draftBoardId: boardIdForDraft,
+          linkBoardSource: img.linkBoardSource ? { ...img.linkBoardSource } : img.linkBoardSource,
+          draftBoardSource: null,
+        };
+      } else {
+        const cropWorldRect = getRectIntersection(source, bounds);
+        clone = createCroppedDraftBoardImage(img, cropWorldRect, source, contentDest, boardIdForDraft);
+      }
+      if (!clone) return;
+      images.push(clone);
+      emitImageAdd(clone);
+    });
+
+    refreshTextList();
+    refreshImageList();
+    clearLassoCopySelection();
+    const boardIndex = findIndexById(images, boardIdForDraft);
+    selected = boardIndex >= 0 ? { type: "image", index: boardIndex } : null;
+    multiSelection = null;
+    showTransientFooterMessage("下書きボードを作成しました。下書きボードを右クリックすると公開できます。", 4000);
+    updateToolButtons();
+    redraw();
+  }
+
+  function publishDraftBoard(imgObj) {
+    if (!imgObj || !isDraftBoardImage(imgObj) || imgObj.user !== currentUser) return;
+    ensureSnapshotForAction();
+    const draftBoardId = imgObj.id;
+    const draftTargets = draftStrokes.filter((stroke) => stroke?.draftBoardId === draftBoardId && stroke.user === currentUser);
+    draftTargets.forEach((draft) => {
+      const stroke = {
+        id: genId(),
+        color: draft.color,
+        size: draft.size,
+        points: (draft.points || []).map((p) => ({ x: p.x, y: p.y })),
+        user: currentUser,
+        layer: "user",
+        order: orderCounter++,
+        fill: !!draft.fill,
+        groupId: draft.groupId || null,
+        glowColor: draft.glowColor || getStrokeGlowColor(draft) || null,
+      };
+      strokes.push(stroke);
+      emitStrokeAdd(stroke);
+    });
+    draftTargets.forEach((draft) => {
+      const idx = findIndexById(draftStrokes, draft.id);
+      if (idx >= 0) draftStrokes.splice(idx, 1);
+      if (socketConnected) socket.emit("draft:stroke:remove", { boardId, id: draft.id });
+    });
+
+    texts.forEach((text) => {
+      if (!text || text.draftBoardId !== draftBoardId || text.user !== currentUser) return;
+      text.layer = "user";
+      text.draftBoardId = null;
+      emitItemPatch("text", text, { layer: "user", draftBoardId: null });
+    });
+    images.slice().forEach((img) => {
+      if (!img || img.id === draftBoardId || img.draftBoardId !== draftBoardId || img.user !== currentUser) return;
+      img.layer = "user";
+      img.draftBoardId = null;
+      emitItemPatch("image", img, { layer: "user", draftBoardId: null });
+    });
+
+    const boardIndex = findIndexById(images, draftBoardId);
+    if (boardIndex >= 0) {
+      images.splice(boardIndex, 1);
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "image", id: draftBoardId });
+    }
+    refreshTextList();
+    refreshImageList();
+    selected = null;
+    multiSelection = null;
+    showTransientFooterMessage("下書きボードを公開しました。", 3000);
+    redraw();
+  }
+
+  function deleteDraftBoard(imgObj) {
+    if (!imgObj || !isDraftBoardImage(imgObj) || imgObj.user !== currentUser) return;
+    ensureSnapshotForAction();
+    const draftBoardId = imgObj.id;
+
+    for (let i = draftStrokes.length - 1; i >= 0; i--) {
+      const draft = draftStrokes[i];
+      if (!draft || draft.draftBoardId !== draftBoardId || draft.user !== currentUser) continue;
+      draftStrokes.splice(i, 1);
+      if (socketConnected) socket.emit("draft:stroke:remove", { boardId, id: draft.id });
+    }
+
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const text = texts[i];
+      if (!text || text.draftBoardId !== draftBoardId || text.user !== currentUser) continue;
+      texts.splice(i, 1);
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "text", id: text.id });
+    }
+
+    for (let i = images.length - 1; i >= 0; i--) {
+      const img = images[i];
+      if (!img || img.id === draftBoardId || img.draftBoardId !== draftBoardId || img.user !== currentUser) continue;
+      images.splice(i, 1);
+      invalidatePendingImageLoad(img.id);
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "image", id: img.id });
+    }
+
+    const boardIndex = findIndexById(images, draftBoardId);
+    if (boardIndex >= 0) {
+      images.splice(boardIndex, 1);
+      invalidatePendingImageLoad(draftBoardId);
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "image", id: draftBoardId });
+    }
+
+    refreshTextList();
+    refreshImageList();
+    selected = null;
+    multiSelection = null;
+    showTransientFooterMessage("下書きボードを削除しました。", 3000);
+    redraw();
+  }
+
   function createHighQualityLassoScreenshot(cleaned) {
     const originalCanvasWidth = canvas.width;
     const originalCanvasHeight = canvas.height;
@@ -8871,7 +9770,7 @@
     }
   }
 
-  function createImageFromLassoPath(path) {
+  function createImageFromLassoPath(path, mode = lassoCopyMode, options = {}) {
     const cleaned = (path || []).filter((p) => p && typeof p.x === "number" && typeof p.y === "number");
     if (cleaned.length < 3) {
       redraw();
@@ -8880,7 +9779,6 @@
 
     const bounds = getPathBoundsScreen(cleaned);
     if (!bounds || bounds.width < 4 || bounds.height < 4) {
-      currentTool = "select";
       updateToolButtons();
       redraw();
       return;
@@ -8896,15 +9794,24 @@
 
     let src = "";
     let captureWorldBounds = null;
+    let lassoOutlinePath = Array.isArray(options.lassoOutlinePath) ? options.lassoOutlinePath : null;
     try {
       const capture = createHighQualityLassoScreenshot(cleaned);
       src = capture.src;
       captureWorldBounds = capture.worldBounds;
+      if (!lassoOutlinePath && mode !== "rect" && captureWorldBounds?.width > 0 && captureWorldBounds?.height > 0) {
+        lassoOutlinePath = cleaned.map((point) => {
+          const worldPoint = screenToWorld(point.x, point.y);
+          return {
+            x: (worldPoint.x - captureWorldBounds.x) / captureWorldBounds.width,
+            y: (worldPoint.y - captureWorldBounds.y) / captureWorldBounds.height,
+          };
+        });
+      }
     } catch (err) {
       console.warn("failed to create lasso screenshot", err);
       selected = previousSelected;
       multiSelection = previousMultiSelection;
-      currentTool = "select";
       updateToolButtons();
       showTransientFooterMessage("この範囲は画像化できませんでした。外部画像が含まれている可能性があります。", 6000);
       redraw();
@@ -8928,6 +9835,8 @@
         rotation: 0,
         imageName: "投げ縄スクショ",
         imageListOrder: bumpImageListOrderCounter(),
+        lassoToolObject: true,
+        lassoOutlinePath,
       };
       applyFrameMembershipByPoint(imgObj, {
         x: imgObj.x + imgObj.width / 2,
@@ -8939,7 +9848,6 @@
       emitImageAdd(imgObj);
       selected = { type: "image", index: images.length - 1 };
       multiSelection = null;
-      currentTool = "select";
       updateToolButtons();
       updateFooterByState();
       redraw();
@@ -8947,7 +9855,6 @@
     img.onerror = () => {
       selected = previousSelected;
       multiSelection = previousMultiSelection;
-      currentTool = "select";
       updateToolButtons();
       redraw();
     };
@@ -9684,6 +10591,7 @@
     const initialWorldPos = options.mapWorld
       ? options.mapWorld(screenToWorld(screenX, screenY))
       : screenToWorld(screenX, screenY);
+    const targetDraftBoard = options.draftBoard || getDraftBoardAtWorldPoint(initialWorldPos);
     const presetTags = collectTextTagsAtWorldPoint(initialWorldPos);
 
     if (textEditor) {
@@ -9746,12 +10654,13 @@
               fontSize: fontSizeWorld,
               color: textDefaultColor,
               user: currentUser,
-              layer: getTextLayerForCurrentLayer(),
+              layer: targetDraftBoard ? "draft" : getTextLayerForCurrentLayer(),
               label: serializeTextTags(presetTags),
               rotation: 0,
               vertical: false,
               frameId: membership?.frameId || null,
               frameTab: membership?.frameTab || null,
+              draftBoardId: targetDraftBoard?.img?.id || null,
             })
           );
         } else {
@@ -9763,15 +10672,16 @@
             fontSize: fontSizeWorld,
             color: textDefaultColor,
             user: currentUser,
-            layer: getTextLayerForCurrentLayer(),
+            layer: targetDraftBoard ? "draft" : getTextLayerForCurrentLayer(),
             order: orderCounter++,
             createdAt: Date.now(),
             label: serializeTextTags(presetTags),
             rotation: 0,
             vertical: false,
             gridText: false,
+            draftBoardId: targetDraftBoard?.img?.id || null,
           };
-          applyFrameMembershipByPoint(t, worldPos);
+          if (!targetDraftBoard) applyFrameMembershipByPoint(t, worldPos);
           created.push(t);
         }
         created.forEach(addTextObject);
@@ -10084,6 +10994,20 @@
     const isRightButton = e.button === 2;
     const isMiddleButton = e.button === 1;
 
+    if (
+      lassoCopySelection &&
+      e.button === 0 &&
+      currentTool === "select" &&
+      !hitTestLassoCopySelectionScreen(canvasPos)
+    ) {
+      clearLassoCopySelection();
+      selected = null;
+      multiSelection = null;
+      updateFooterByState();
+      redraw();
+      return;
+    }
+
     if (e.button === 0 && currentTool === "select") {
       const linkedLabelHit = hitTestLinkedBoardLabel(canvasPos.x, canvasPos.y);
       if (linkedLabelHit) {
@@ -10111,8 +11035,17 @@
       if (!requireUser()) return;
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
+      const lassoObjectIndex = hitTestImage(canvasPos.x, canvasPos.y, {
+        includeFrameBody: false,
+        includeNonFrameImages: true,
+      });
+      if (lassoObjectIndex >= 0 && isLassoToolObject(images[lassoObjectIndex])) {
+        startImageDragAtCanvasPoint(lassoObjectIndex, canvasPos);
+        return;
+      }
       selected = null;
       multiSelection = null;
+      lassoCopySelection = null;
       lassoCopyActive = true;
       lassoCopyPath = [canvasPos];
       redraw();
@@ -10141,8 +11074,10 @@
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       const linked = getLinkedBoardAtWorldPoint(worldPos);
+      const draftBoard = linked ? null : getDraftBoardAtWorldPoint(worldPos);
       createTextEditorAt(canvasPos.x, canvasPos.y, "", pendingTextMode, {
         mapWorld: linked ? (point) => mapLinkedBoardWorldToSource(linked.img, point) : null,
+        draftBoard,
       });
       return;
     }
@@ -10313,10 +11248,11 @@
       ensureSnapshotForAction();
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       const linked = getLinkedBoardAtWorldPoint(worldPos);
+      const draftBoard = linked ? null : getDraftBoardAtWorldPoint(worldPos);
       const drawWorldPos = linked ? mapLinkedBoardWorldToSource(linked.img, worldPos) : worldPos;
       activeLinkedBoardId = linked?.img?.id || null;
-      if (activeLayer === "draft") {
-        const baseColor = withAlpha(currentColor, 0.55);
+      if (activeLayer === "draft" || draftBoard) {
+        const baseColor = draftBoard ? currentColor : withAlpha(currentColor, 0.55);
         const stroke = {
           id: genId(),
           color: baseColor,
@@ -10325,9 +11261,10 @@
           user: currentUser,
           order: draftOrderCounter++,
           createdAt: Date.now(),
+          draftBoardId: draftBoard?.img?.id || null,
         };
         applyCurrentGlowColor(stroke);
-        applyFrameMembershipByPoint(stroke, drawWorldPos);
+        if (!draftBoard) applyFrameMembershipByPoint(stroke, drawWorldPos);
         draftStrokes.push(stroke);
         activeDraftId = stroke.id;
         isDrawing = true;
@@ -10406,7 +11343,7 @@
         imgObj &&
         !isFrameContainer(imgObj) &&
         !isOmoteUraTagImage(imgObj) &&
-        !isLinkedBoardImage(imgObj) &&
+        !isBoardOverlayImage(imgObj) &&
         (normalizeRotation(imgObj.rotation || 0) || imgObj.mirrored)
       ) {
         const visualBounds = getRotatedImageVisualBoundsWorld(imgObj) || getImageBoundsWorld(imgObj);
@@ -10447,12 +11384,12 @@
       return;
     }
 
-    const linkIndex = hitTestLink(canvasPos.x, canvasPos.y);
-    if (linkIndex >= 0) {
+    const topHit = hitTestTopSelectableRawItem(canvasPos);
+    if (topHit?.type === "link") {
       ensureSnapshotForAction();
-      selected = { type: "link", index: linkIndex };
+      selected = { type: "link", index: topHit.index };
       multiSelection = null;
-      const link = links[linkIndex];
+      const link = links[topHit.index];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
         x: worldPos.x - link.x,
@@ -10463,13 +11400,11 @@
       return;
     }
 
-    // テキスト本体ヒット → ドラッグ移動
-    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
-    if (textIndex >= 0) {
+    if (topHit?.type === "text") {
       ensureSnapshotForAction();
-      selected = { type: "text", index: textIndex };
+      selected = { type: "text", index: topHit.index };
       multiSelection = null;
-      const t = texts[textIndex];
+      const t = texts[topHit.index];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
         x: worldPos.x - t.x,
@@ -10480,20 +11415,16 @@
       return;
     }
 
-    // 画像本体ヒット → ドラッグ移動
-    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y, { includeFrameBody: false });
-    if (imgIndex >= 0) {
-      startImageDragAtCanvasPoint(imgIndex, canvasPos);
+    if (topHit?.type === "image") {
+      startImageDragAtCanvasPoint(topHit.index, canvasPos);
       return;
     }
 
-    // ストローク本体ヒット
-    const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
-    if (strokeIndex >= 0) {
+    if (topHit?.type === "stroke") {
       ensureSnapshotForAction();
-      selected = getStrokeGroupSelection(strokeIndex);
+      selected = getStrokeGroupSelection(topHit.index);
       multiSelection = null;
-      const s = strokes[strokeIndex];
+      const s = strokes[topHit.index];
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
       dragOffsetWorld = {
         x: worldPos.x - (s.points[0]?.x || worldPos.x),
@@ -10504,26 +11435,22 @@
       return;
     }
 
-    // 自分の下書きヒット（下書きレイヤーのみ）
-    if (activeLayer === "draft") {
-      const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
-      if (draftIndex >= 0) {
-        ensureSnapshotForAction();
-        selected = getDraftGroupSelection(draftIndex);
-        multiSelection = null;
-        const s =
-          selected?.type === "draft-group"
-            ? draftStrokes[selected.indices[0]]
-            : draftStrokes[draftIndex];
-        const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
-        dragOffsetWorld = {
-          x: worldPos.x - (s.points[0]?.x || worldPos.x),
-          y: worldPos.y - (s.points[0]?.y || worldPos.y),
-        };
-        isDraggingObject = true;
-        redraw();
-        return;
-      }
+    if (topHit?.type === "draft") {
+      ensureSnapshotForAction();
+      selected = getDraftGroupSelection(topHit.index);
+      multiSelection = null;
+      const s =
+        selected?.type === "draft-group"
+          ? draftStrokes[selected.indices[0]]
+          : draftStrokes[topHit.index];
+      const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
+      dragOffsetWorld = {
+        x: worldPos.x - (s.points[0]?.x || worldPos.x),
+        y: worldPos.y - (s.points[0]?.y || worldPos.y),
+      };
+      isDraggingObject = true;
+      redraw();
+      return;
     }
 
     // 何もない場所 → 範囲選択の開始点として扱う
@@ -10634,10 +11561,15 @@
     }
 
     if (lassoCopyActive) {
-      const last = lassoCopyPath[lassoCopyPath.length - 1];
-      if (!last || Math.hypot(canvasPos.x - last.x, canvasPos.y - last.y) >= 2) {
-        lassoCopyPath.push(canvasPos);
+      if (lassoCopyMode === "rect") {
+        lassoCopyPath[1] = canvasPos;
         redraw();
+      } else {
+        const last = lassoCopyPath[lassoCopyPath.length - 1];
+        if (!last || Math.hypot(canvasPos.x - last.x, canvasPos.y - last.y) >= 2) {
+          lassoCopyPath.push(canvasPos);
+          redraw();
+        }
       }
       e.preventDefault();
       return;
@@ -10751,6 +11683,13 @@
             frameDragOffsets,
             imgObj.x - frameDragOffsets.frameX,
             imgObj.y - frameDragOffsets.frameY
+          );
+        }
+        if (isDraftBoardImage(imgObj) && draftBoardDragOffsets) {
+          applyDraftBoardDragOffsets(
+            draftBoardDragOffsets,
+            imgObj.x - draftBoardDragOffsets.boardX,
+            imgObj.y - draftBoardDragOffsets.boardY
           );
         }
       } else if (selected.type === "link") {
@@ -10932,10 +11871,16 @@
     }
 
     if (lassoCopyActive) {
-      const path = lassoCopyPath.slice();
+      const path =
+        lassoCopyMode === "rect" && lassoCopyPath.length >= 2
+          ? makeRectPathScreen(lassoCopyPath[0], lassoCopyPath[1])
+          : lassoCopyPath.slice();
       lassoCopyActive = false;
       lassoCopyPath = [];
-      createImageFromLassoPath(path);
+      if (!createLassoCopySelectionFromScreenPath(path, lassoCopyMode)) {
+        updateToolButtons();
+        redraw();
+      }
     }
 
     if (linkedBoardLabelDrag) {
@@ -10957,6 +11902,7 @@
         }
         isDraggingObject = false;
         frameDragOffsets = null;
+        draftBoardDragOffsets = null;
         linkedBoardLabelDrag = null;
         focusLinkedBoardSource(imgObj);
         actionSnapshotTaken = false;
@@ -11140,6 +12086,10 @@
       emitFrameDragUpdates(frameDragOffsets);
     }
 
+    if (isDraggingObject && selected?.type === "image" && draftBoardDragOffsets) {
+      emitDraftBoardDragUpdates(draftBoardDragOffsets);
+    }
+
     if (isResizingObject && resizeInfo?.type === "multi") {
       emitMultiResizeUpdates(resizeInfo.items);
     }
@@ -11148,6 +12098,7 @@
     isPanning = false;
     isDraggingObject = false;
     isResizingObject = false;
+    draftBoardDragOffsets = null;
     activeLinkedBoardId = null;
     if (multiDragActive && multiDragOffsets) {
       const multiMembershipPatches = new Map();
@@ -11264,6 +12215,7 @@
     isDrawingDraft = false;
     resizeInfo = null;
     frameDragOffsets = null;
+    draftBoardDragOffsets = null;
     linkedBoardLabelDrag = null;
     multiDragActive = false;
     multiDragOffsets = null;
@@ -11287,6 +12239,14 @@
           selected = { type: "image", index: tabHit.index };
           multiSelection = null;
           showContextMenu(e.clientX, e.clientY, { frameTabTarget: tabHit });
+          rightButtonDown = false;
+          rightButtonStart = null;
+          return;
+        }
+        if (hitTestLassoCopySelectionScreen(rightButtonStart?.canvas || canvasPos)) {
+          selected = null;
+          multiSelection = null;
+          showContextMenu(e.clientX, e.clientY, { lassoCopySelection: true });
           rightButtonDown = false;
           rightButtonStart = null;
           return;
@@ -12010,24 +12970,82 @@
   }
 
   function hitTestSelectableItem(canvasPos) {
-    const linkIndex = hitTestLink(canvasPos.x, canvasPos.y);
-    if (linkIndex >= 0) return { type: "link", index: linkIndex };
+    const hit = hitTestTopSelectableRawItem(canvasPos);
+    if (!hit) return null;
+    if (hit.type === "stroke") return getStrokeGroupSelection(hit.index);
+    if (hit.type === "draft") return getDraftGroupSelection(hit.index);
+    return hit;
+  }
 
-    const textIndex = hitTestText(canvasPos.x, canvasPos.y);
-    if (textIndex >= 0) return { type: "text", index: textIndex };
+  function hitTestTopSelectableRawItem(canvasPos) {
+    const candidates = [];
+    const addCandidate = (item) => {
+      const info = getHitDrawInfoForItem(item);
+      if (info) candidates.push(info);
+    };
+    const worldPoint = screenToWorld(canvasPos.x, canvasPos.y);
+    const tolWorld = 6 / scale;
 
-    const imgIndex = hitTestImage(canvasPos.x, canvasPos.y, { includeFrameBody: false });
-    if (imgIndex >= 0) return { type: "image", index: imgIndex };
+    links.forEach((link, index) => {
+      if (!link || !isLinkVisible(link) || !canInteractLink(link)) return;
+      if (pointInRectWorld(getLinkBoundsWorld(link), worldPoint)) addCandidate({ type: "link", index });
+    });
 
-    const strokeIndex = hitTestStroke(canvasPos.x, canvasPos.y, (s) => isStrokeVisible(s) || activeLayer === "draft");
-    if (strokeIndex >= 0) return getStrokeGroupSelection(strokeIndex);
+    texts.forEach((text, index) => {
+      if (!text || !isTextVisible(text) || !canInteractText(text)) return;
+      const bounds = getTextBoundsWorld(text);
+      if (pointInRotatedRectWorld(worldPoint, bounds, text.rotation || 0)) addCandidate({ type: "text", index });
+    });
+
+    images.forEach((imgObj, index) => {
+      if (!imgObj || !canInteractImage(imgObj)) return;
+      if (isFrameContainer(imgObj)) {
+        const headerHit = getFrameHeaderHitBoundsScreen(imgObj);
+        const headerBounds = getFrameHeaderBoundsWorld(imgObj);
+        if (
+          pointInScreenRect({ x: canvasPos.x, y: canvasPos.y }, headerHit) ||
+          (headerBounds && pointInRotatedRectWorld(worldPoint, headerBounds, imgObj.rotation || 0))
+        ) {
+          addCandidate({ type: "image", index });
+        }
+        return;
+      }
+      if (isImageCoveredByHigherFrameAtPoint(imgObj, index, worldPoint)) return;
+      const bounds = getImageBoundsWorld(imgObj);
+      if (bounds && pointInRotatedRectWorld(worldPoint, bounds, imgObj.rotation || 0)) {
+        addCandidate({ type: "image", index });
+      }
+    });
+
+    strokes.forEach((stroke, index) => {
+      if (!stroke || !stroke.points || !isStrokeVisible(stroke) || !canInteractStroke(stroke)) return;
+      const bounds = getStrokeBoundsWorld(stroke);
+      if (!bounds || !pointInRectWorld(bounds, worldPoint)) return;
+      if (stroke.fill && pointInPolygon(worldPoint, stroke.points)) {
+        addCandidate({ type: "stroke", index });
+        return;
+      }
+      const tol = Math.max(tolWorld, (stroke.size || 1) / scale / 2);
+      if (isPointNearStroke(stroke, worldPoint, tol)) addCandidate({ type: "stroke", index });
+    });
 
     if (activeLayer === "draft") {
-      const draftIndex = hitTestDraftStroke(canvasPos.x, canvasPos.y);
-      if (draftIndex >= 0) return getDraftGroupSelection(draftIndex);
+      draftStrokes.forEach((stroke, index) => {
+        if (!stroke || !stroke.points || stroke.user !== currentUser) return;
+        const bounds = getStrokeBoundsWorld(stroke);
+        if (!bounds || !pointInRectWorld(bounds, worldPoint)) return;
+        if (stroke.fill && pointInPolygon(worldPoint, stroke.points)) {
+          addCandidate({ type: "draft", index });
+          return;
+        }
+        const tol = Math.max(tolWorld, (stroke.size || 1) / scale / 2);
+        if (isPointNearStroke(stroke, worldPoint, tol)) addCandidate({ type: "draft", index });
+      });
     }
 
-    return null;
+    if (!candidates.length) return null;
+    candidates.sort(compareHitDrawOrder);
+    return candidates[candidates.length - 1].item;
   }
 
   function hitTestLink(screenX, screenY) {
@@ -12261,9 +13279,11 @@
       selectToolBtn.classList.toggle("active", isSelect);
     }
     if (lassoCopyToolBtn) {
-      lassoCopyToolBtn.disabled = creationLocked || isLassoCopy;
+      lassoCopyToolBtn.disabled = creationLocked;
       lassoCopyToolBtn.classList.toggle("active", isLassoCopy);
-      lassoCopyToolBtn.title = creationLocked ? "このレイヤーでは投げ縄スクショは使えません" : "投げ縄スクショ";
+      lassoCopyToolBtn.title = creationLocked
+        ? "このレイヤーでは投げ縄スクショは使えません"
+        : `投げ縄スクショ（${lassoCopyMode === "rect" ? "四角形" : "フリーハンド"}）`;
     }
     if (textToolBtn) {
       textToolBtn.disabled = creationLocked;
@@ -12428,6 +13448,7 @@
     currentTool = "pen";
     lastUserLayerTool = "pen";
     selected = null;
+    clearLassoCopySelection();
     updateToolButtons();
     redraw();
     showTransientFooterMessage("ペン：このレイヤーに描いた線は共有されます。", 5000);
@@ -12446,6 +13467,7 @@
       currentTool = "fill";
       lastUserLayerTool = "fill";
       selected = null;
+      clearLassoCopySelection();
       updateToolButtons();
       redraw();
       showTransientFooterMessage("塗りつぶし：閉じた線の内側をクリックしてください。", 5000);
@@ -12463,6 +13485,7 @@
     currentTool = "eraser";
     lastUserLayerTool = "eraser";
     selected = null;
+    clearLassoCopySelection();
     updateToolButtons();
     showTransientFooterMessage("消しゴム：線に触れると一筆単位で削除されます。画像やテキストは消えません。", 5000);
     resetShapeMode();
@@ -12472,24 +13495,62 @@
     pendingTextListGridCopies = null;
     pendingTextMode = null;
     currentTool = "select";
+    lassoCopyActive = false;
+    lassoCopyPath = [];
     updateToolButtons();
     showTransientFooterMessage("選択ツール：右クリックでメニューを開けます。", 5000);
     resetShapeMode();
   });
 
-  if (lassoCopyToolBtn) {
-    lassoCopyToolBtn.addEventListener("click", () => {
+  function startLassoCopyTool(mode = lassoCopyMode) {
       if (!requireUser()) return;
       if (!canCreateOnCurrentLayer()) return;
       pendingTextListGridCopies = null;
       pendingTextMode = null;
       lassoCopyActive = false;
       lassoCopyPath = [];
+      lassoCopySelection = null;
+      lassoCopyMode = mode === "rect" ? "rect" : "freehand";
       currentTool = "lasso-copy";
       updateToolButtons();
-      showTransientFooterMessage("投げ縄スクショ：囲った形を透明画像として複製します。", 5000);
+      showTransientFooterMessage(
+        `投げ縄スクショ（${lassoCopyMode === "rect" ? "四角形" : "フリーハンド"}）：範囲を選択して右クリックメニューを開いてください。`,
+        6000
+      );
       resetShapeMode();
       redraw();
+  }
+
+  if (lassoCopyToolBtn) {
+    lassoCopyToolBtn.addEventListener("click", () => {
+      startLassoCopyTool();
+    });
+  }
+
+  if (lassoCopyToolBtn && lassoCopyToolMenu) {
+    const openLassoCopyToolMenu = () => {
+      if (isCreationLockedLayer()) return;
+      if (textToolMenu) textToolMenu.classList.add("hidden");
+      closeListMenu();
+      closeOtherMenu();
+      lassoCopyToolMenu.classList.remove("hidden");
+    };
+    const closeLassoCopyToolMenu = () => {
+      lassoCopyToolMenu.classList.add("hidden");
+    };
+    lassoCopyToolBtn.addEventListener("mouseenter", openLassoCopyToolMenu);
+    lassoCopyToolMenu.addEventListener("mouseenter", openLassoCopyToolMenu);
+    lassoCopyToolBtn.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!lassoCopyToolMenu.matches(":hover") && !lassoCopyToolBtn.matches(":hover")) closeLassoCopyToolMenu();
+    }, 120));
+    lassoCopyToolMenu.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!lassoCopyToolMenu.matches(":hover") && !lassoCopyToolBtn.matches(":hover")) closeLassoCopyToolMenu();
+    }, 120));
+    lassoCopyToolMenu.querySelectorAll("button[data-lasso-copy-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        startLassoCopyTool(btn.getAttribute("data-lasso-copy-mode"));
+        closeLassoCopyToolMenu();
+      });
     });
   }
 
@@ -12596,6 +13657,19 @@
   function showContextMenu(x, y, options = {}) {
     if (!contextMenu) return;
     contextFrameTabTarget = options.frameTabTarget || null;
+    if (options.lassoCopySelection) {
+      contextMenu.querySelectorAll("button").forEach((btn) => {
+        const action = btn.getAttribute("data-action");
+        const isLassoAction =
+          action === "lasso-copy" ||
+          action === "lasso-link-board" ||
+          action === "lasso-draft-board";
+        btn.classList.toggle("hidden", !isLassoAction);
+        btn.classList.remove("disabled");
+      });
+      positionContextMenu(x, y);
+      return;
+    }
     const deleteFrameTabBtn = contextMenu.querySelector('button[data-action="delete-frame-tab"]');
     if (contextFrameTabTarget) {
       contextMenu.querySelectorAll("button").forEach((btn) => {
@@ -12622,46 +13696,48 @@
     const hasFrameBackgroundMoveTarget = selectionHasFrameBackgroundMoveTarget();
     const hasFrameContentsTarget = selectionHasFrameContentsTarget();
     const hasImageTabTarget = selectionHasImageTabTarget();
-    const frameOnlySelection =
-      hasAny && selectionItems.every((item) => item.type === "image" && isFrameContainer(images[item.index]));
+    const draftBoardOnlySelection =
+      hasAny && selectionItems.every((item) => item.type === "image" && isDraftBoardImage(images[item.index]));
+
+    const isActionVisible = (action) => {
+      if (!hasAny) return false;
+      if (action === "apply-draft") return hasDraft;
+      if (action === "move-base") return hasMoveTarget;
+      if (action === "move-image") return hasMoveImageTarget;
+      if (action === "move-frame-background") return hasFrameBackgroundMoveTarget;
+      if (action === "add-image-tab") return hasImageTabTarget;
+      if (action === "delete-frame-tab") return false;
+      if (action === "select-frame-contents") return hasFrameContentsTarget;
+      if (action === "rename-image") return hasImage;
+      if (action === "mirror-image") return hasMirrorTarget;
+      if (action === "bring-front") return hasOrderable;
+      if (action === "send-back") return hasOrderable;
+      if (action === "rotate-right") return hasRotatable;
+      if (action === "rotate-left") return hasRotatable;
+      if (action === "copy-draft") return hasDraftCopyTarget;
+      if (action === "lasso-copy") return false;
+      if (action === "lasso-link-board") return false;
+      if (action === "lasso-draft-board") return false;
+      if (action === "publish-draft-board") return false;
+      if (action === "duplicate") return hasAny;
+      if (action === "delete") return hasAny;
+      return false;
+    };
 
     contextMenu.querySelectorAll("button").forEach((btn) => {
       btn.classList.remove("disabled");
       const action = btn.getAttribute("data-action");
-      btn.classList.toggle(
-        "hidden",
-        action === "delete-frame-tab" ||
-          (frameOnlySelection && action !== "select-frame-contents" && action !== "add-image-tab")
-      );
+      btn.classList.toggle("hidden", !isActionVisible(action));
     });
-    const applyBtn = contextMenu.querySelector('button[data-action="apply-draft"]');
-    const moveBtn = contextMenu.querySelector('button[data-action="move-base"]');
-    const moveImageBtn = contextMenu.querySelector('button[data-action="move-image"]');
-    const moveFrameBackgroundBtn = contextMenu.querySelector('button[data-action="move-frame-background"]');
-    const addImageTabBtn = contextMenu.querySelector('button[data-action="add-image-tab"]');
-    const selectFrameContentsBtn = contextMenu.querySelector('button[data-action="select-frame-contents"]');
-    const renameImageBtn = contextMenu.querySelector('button[data-action="rename-image"]');
-    const mirrorImageBtn = contextMenu.querySelector('button[data-action="mirror-image"]');
-    const dupBtn = contextMenu.querySelector('button[data-action="duplicate"]');
-    const frontBtn = contextMenu.querySelector('button[data-action="bring-front"]');
-    const backBtn = contextMenu.querySelector('button[data-action="send-back"]');
-    const rotateRightBtn = contextMenu.querySelector('button[data-action="rotate-right"]');
-    const rotateLeftBtn = contextMenu.querySelector('button[data-action="rotate-left"]');
-    const copyDraftBtn = contextMenu.querySelector('button[data-action="copy-draft"]');
-    if (applyBtn && !hasDraft) applyBtn.classList.add("disabled");
-    if (moveBtn && !hasMoveTarget) moveBtn.classList.add("disabled");
-    if (moveImageBtn && !hasMoveImageTarget) moveImageBtn.classList.add("disabled");
-    if (moveFrameBackgroundBtn && !hasFrameBackgroundMoveTarget) moveFrameBackgroundBtn.classList.add("disabled");
-    if (addImageTabBtn && !hasImageTabTarget) addImageTabBtn.classList.add("disabled");
-    if (selectFrameContentsBtn && !hasFrameContentsTarget) selectFrameContentsBtn.classList.add("disabled");
-    if (renameImageBtn && !hasImage) renameImageBtn.classList.add("disabled");
-    if (mirrorImageBtn && !hasMirrorTarget) mirrorImageBtn.classList.add("disabled");
-    if (frontBtn && !hasOrderable) frontBtn.classList.add("disabled");
-    if (backBtn && !hasOrderable) backBtn.classList.add("disabled");
-    if (rotateRightBtn && !hasRotatable) rotateRightBtn.classList.add("disabled");
-    if (rotateLeftBtn && !hasRotatable) rotateLeftBtn.classList.add("disabled");
-    if (copyDraftBtn && !hasDraftCopyTarget) copyDraftBtn.classList.add("disabled");
-    if (dupBtn && !hasAny) dupBtn.classList.add("disabled");
+    if (draftBoardOnlySelection) {
+      contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.add("hidden"));
+      const publishBtn = contextMenu.querySelector('button[data-action="publish-draft-board"]');
+      if (publishBtn) publishBtn.classList.remove("hidden");
+      const deleteBtn = contextMenu.querySelector('button[data-action="delete"]');
+      if (deleteBtn) deleteBtn.classList.remove("hidden");
+      positionContextMenu(x, y);
+      return;
+    }
     if (!hasAny) return;
 
     positionContextMenu(x, y);
@@ -12675,7 +13751,11 @@
       if (action === "apply-draft") {
         applyDraftSelectionToPublic();
       } else if (action === "delete") {
-        deleteSelection();
+        const draftBoard = getSelectionItems()
+          .map((item) => (item.type === "image" ? images[item.index] : null))
+          .find((img) => isDraftBoardImage(img));
+        if (draftBoard) deleteDraftBoard(draftBoard);
+        else deleteSelection();
       } else if (action === "duplicate") {
         duplicateSelectedImages();
       } else if (action === "move-base") {
@@ -12706,6 +13786,17 @@
         rotateSelection("ccw");
       } else if (action === "copy-draft") {
         copySelectionToDraft();
+      } else if (action === "lasso-copy") {
+        copyLassoCopySelection();
+      } else if (action === "lasso-link-board") {
+        createLinkedBoardFromLassoCopySelection();
+      } else if (action === "lasso-draft-board") {
+        createDraftBoardFromLassoCopySelection();
+      } else if (action === "publish-draft-board") {
+        const board = getSelectionItems()
+          .map((item) => (item.type === "image" ? images[item.index] : null))
+          .find((img) => isDraftBoardImage(img));
+        publishDraftBoard(board);
       }
       hideContextMenu();
     });
@@ -12775,6 +13866,18 @@
         pendingTextMode === "grid"
           ? "方眼紙用入力：配置したい場所をクリックしてください。"
           : "通常入力：配置したい場所をクリックしてください。"
+      );
+      return;
+    }
+
+    if (lassoCopySelection) {
+      setFooterMessage("投げ縄スクショ：選択範囲を右クリックして「コピー」「リンクボード作成」「下書きボード作成」を選んでください。");
+      return;
+    }
+
+    if (currentTool === "lasso-copy") {
+      setFooterMessage(
+        `投げ縄スクショ（${lassoCopyMode === "rect" ? "四角形" : "フリーハンド"}）：範囲をドラッグしてください。`
       );
       return;
     }
@@ -13157,7 +14260,7 @@
     closeInsertMenu();
   }
 
-  function createLinkedBoardAt(sourceRect, destRect) {
+  function createLinkedBoardAt(sourceRect, destRect, options = {}) {
     if (!sourceRect || !destRect) return;
     const source = getNormalizedRect(sourceRect);
     const dest = getNormalizedRect(destRect);
@@ -13177,6 +14280,7 @@
       rotation: 0,
       imageName: "リンクボード",
       imageListOrder: bumpImageListOrderCounter(),
+      lassoToolObject: !!options.lassoToolObject,
       linkBoardSource: {
         x: source.x,
         y: source.y,
@@ -13241,10 +14345,6 @@
           startFramePlacement("free");
         },
       },
-    ]);
-
-    addSection("リンク", [
-      { label: "リンクボード", onClick: () => startLinkedBoardMode() },
     ]);
 
     if (templates && templates.length > 0) {
