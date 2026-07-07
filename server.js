@@ -37,6 +37,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH || "";
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH || "";
 const SSL_CA_PATH = process.env.SSL_CA_PATH || "";
+const dataDir = path.join(__dirname, "data");
 
 const app = express();
 
@@ -141,15 +142,56 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// 新しいボードを作成してリダイレクト
-app.get("/new", (req, res) => {
+function logBoardCreation(req, boardId) {
+  const entry = {
+    at: new Date().toISOString(),
+    boardId,
+    ip: req.ip,
+    ips: req.ips,
+    method: req.method,
+    path: req.originalUrl,
+    userAgent: req.get("user-agent") || "",
+    origin: req.get("origin") || "",
+    referer: req.get("referer") || "",
+  };
+  fs.appendFile(
+    path.join(dataDir, "board-create-audit.log"),
+    `${JSON.stringify(entry)}\n`,
+    (err) => {
+      if (err) console.error("Failed to write board creation audit log", err);
+    }
+  );
+}
+
+function createNewBoardId(req) {
   let id;
   do {
     id = generateBoardId();
   } while (getBoard(id)); // かぶり防止
 
   createBoard(id);
+  logBoardCreation(req, id);
+  return id;
+}
+
+// 新しいボードを作成してリダイレクト
+app.post("/new", (req, res) => {
+  const id = createNewBoardId(req);
   res.redirect(`/b/${id}`);
+});
+
+app.post("/api/boards", (req, res) => {
+  try {
+    const id = createNewBoardId(req);
+    res.status(201).json({ id, url: `/b/${id}` });
+  } catch (err) {
+    console.error("Failed to create board", err);
+    res.status(500).json({ error: "failed to create board" });
+  }
+});
+
+app.get("/new", (req, res) => {
+  res.redirect("/");
 });
 
 app.get("/api/boards", (req, res) => {

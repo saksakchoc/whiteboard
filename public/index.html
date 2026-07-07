@@ -192,8 +192,18 @@
     const boardListEl = document.getElementById("board-list");
     const statusEl = document.getElementById("status");
 
-    newBoardBtn.addEventListener("click", () => {
-      window.location.href = "/new";
+    newBoardBtn.addEventListener("click", async () => {
+      newBoardBtn.disabled = true;
+      try {
+        const res = await fetch("/api/boards", { method: "POST" });
+        if (!res.ok) throw new Error("failed to create board");
+        const board = await res.json();
+        window.location.href = board.url || `/b/${encodeURIComponent(board.id)}`;
+      } catch (err) {
+        console.error(err);
+        window.alert("ボード作成に失敗しました。");
+        newBoardBtn.disabled = false;
+      }
     });
 
     function formatDate(timestamp) {
