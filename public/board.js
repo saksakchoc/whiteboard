@@ -30,6 +30,7 @@
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
   const textListDuplicateGridBtn = document.getElementById("text-list-duplicate-grid-btn");
   const textListStarOnly = document.getElementById("text-list-star-only");
+  const textListSortKanaBtn = document.getElementById("text-list-sort-kana-btn");
   const textListSortTagBtn = document.getElementById("text-list-sort-tag-btn");
   const textListSortCreatedBtn = document.getElementById("text-list-sort-created-btn");
   const imageListPanel = document.getElementById("image-list-panel");
@@ -256,6 +257,8 @@
   let textListOrderCounter = 0;
   let imageListOpen = false;
   let linkListOpen = false;
+  const listPopupWindows = new Map();
+  const listPanelHomes = new Map();
   let imageListOrderCounter = 0;
   const linkPreviewRefreshes = new Set();
 
@@ -2755,6 +2758,9 @@
 
   function openTextList() {
     textListOpen = true;
+    openListPopup(textListPanel, "テキスト一覧", () => {
+      textListOpen = false;
+    });
     textListPanel.classList.remove("hidden");
     positionTextListPanel();
     renderTextList();
@@ -2763,6 +2769,7 @@
   function closeTextList() {
     textListOpen = false;
     textListPanel.classList.add("hidden");
+    closeListPopup(textListPanel);
     textListPanel.style.maxHeight = "";
     if (textListBody) textListBody.style.maxHeight = "";
     textListPanel.style.top = "";
@@ -3154,6 +3161,24 @@
     applyTextListOrder(ordered);
   }
 
+  function sortTextListByKana() {
+    const collator = new Intl.Collator("ja", {
+      usage: "sort",
+      sensitivity: "base",
+      numeric: true,
+    });
+    const getSortValue = (text) =>
+      (text?.lines || []).join("\n").trim().normalize("NFKC").toLowerCase();
+    const ordered = getVisibleTextsForList({ ignoreStarFilter: true }).sort((a, b) => {
+      const aValue = getSortValue(a);
+      const bValue = getSortValue(b);
+      if (!aValue && bValue) return 1;
+      if (aValue && !bValue) return -1;
+      return collator.compare(aValue, bValue) || compareTextCreatedOrder(a, b);
+    });
+    applyTextListOrder(ordered);
+  }
+
   function sortTextListByCreated() {
     const ordered = getVisibleTextsForList({ ignoreStarFilter: true }).sort(compareTextCreatedOrder);
     applyTextListOrder(ordered);
@@ -3240,6 +3265,9 @@
 
   function openImageList() {
     imageListOpen = true;
+    openListPopup(imageListPanel, "画像一覧", () => {
+      imageListOpen = false;
+    });
     imageListPanel.classList.remove("hidden");
     positionImageListPanel();
     renderImageList();
@@ -3248,6 +3276,7 @@
   function closeImageList() {
     imageListOpen = false;
     imageListPanel.classList.add("hidden");
+    closeListPopup(imageListPanel);
     imageListPanel.style.maxHeight = "";
     if (imageListBody) imageListBody.style.maxHeight = "";
     imageListPanel.style.top = "";
@@ -3262,6 +3291,9 @@
 
   function openLinkList() {
     linkListOpen = true;
+    openListPopup(linkListPanel, "リンク集", () => {
+      linkListOpen = false;
+    });
     linkListPanel.classList.remove("hidden");
     positionLinkListPanel();
     renderLinkList();
@@ -3270,6 +3302,7 @@
   function closeLinkList() {
     linkListOpen = false;
     linkListPanel.classList.add("hidden");
+    closeListPopup(linkListPanel);
     linkListPanel.style.maxHeight = "";
     if (linkListBody) linkListBody.style.maxHeight = "";
     linkListPanel.style.top = "";
@@ -3280,8 +3313,65 @@
     if (linkListOpen) renderLinkList();
   }
 
+  function restoreListPanel(panel) {
+    const home = listPanelHomes.get(panel);
+    if (!home || panel.ownerDocument === document) return;
+    const nextSibling = home.nextSibling?.parentNode === home.parent ? home.nextSibling : null;
+    home.parent.insertBefore(panel, nextSibling);
+  }
+
+  function openListPopup(panel, title, onClosed) {
+    if (!panel) return false;
+    const current = listPopupWindows.get(panel);
+    if (current && !current.closed) {
+      current.focus();
+      return true;
+    }
+    if (!listPanelHomes.has(panel)) {
+      listPanelHomes.set(panel, {
+        parent: panel.parentNode,
+        nextSibling: panel.nextSibling,
+      });
+    }
+
+    const popup = window.open(
+      "",
+      `whiteboard-list-${boardId}-${panel.id}`,
+      "popup=yes,width=480,height=720,resizable=yes,scrollbars=no"
+    );
+    if (!popup) return false;
+
+    popup.document.open();
+    popup.document.write(`<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/style.css"><style>html,body{height:100%;margin:0;overflow:hidden;background:#fff}body{min-width:0}.text-list-panel{position:static!important;width:100%!important;height:100vh;max-height:none!important;box-sizing:border-box;border:0;border-radius:0}.text-list-body{flex:1;max-height:none!important}.text-list-controls>span,.text-list-controls>button{white-space:nowrap}.text-list-star-filter{width:auto!important}</style></head><body></body></html>`);
+    popup.document.close();
+    popup.document.body.appendChild(panel);
+    listPopupWindows.set(panel, popup);
+    popup.addEventListener("beforeunload", () => {
+      if (listPopupWindows.get(panel) !== popup) return;
+      listPopupWindows.delete(panel);
+      restoreListPanel(panel);
+      panel.classList.add("hidden");
+      onClosed();
+    });
+    popup.focus();
+    return true;
+  }
+
+  function closeListPopup(panel) {
+    const popup = listPopupWindows.get(panel);
+    if (!popup) return;
+    listPopupWindows.delete(panel);
+    restoreListPanel(panel);
+    if (!popup.closed) popup.close();
+  }
+
+  function isListPanelInPopup(panel) {
+    return !!panel && panel.ownerDocument !== document;
+  }
+
   function positionLinkListPanel() {
     if (!linkListPanel || linkListPanel.classList.contains("hidden")) return;
+    if (isListPanelInPopup(linkListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl ? toolbarEl.getBoundingClientRect().bottom + margin : 60;
@@ -3585,6 +3675,7 @@
 
   function positionTextListPanel() {
     if (!textListPanel || textListPanel.classList.contains("hidden")) return;
+    if (isListPanelInPopup(textListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl
@@ -3609,6 +3700,7 @@
 
   function positionImageListPanel() {
     if (!imageListPanel || imageListPanel.classList.contains("hidden")) return;
+    if (isListPanelInPopup(imageListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl
@@ -13648,6 +13740,10 @@
 
   if (textListSortTagBtn) {
     textListSortTagBtn.addEventListener("click", sortTextListByTag);
+  }
+
+  if (textListSortKanaBtn) {
+    textListSortKanaBtn.addEventListener("click", sortTextListByKana);
   }
 
   if (textListSortCreatedBtn) {
