@@ -795,6 +795,7 @@ button:hover {
 
 body.follow-view #toolbar,
 body.follow-view #side-toolbar,
+body.follow-view #menu-toggle-btn,
 body.follow-view #footer-hint,
 body.follow-view #screen-share-view {
   display: none !important;
@@ -813,6 +814,29 @@ body.follow-view #board-canvas {
   cursor: default;
 }
 
+body.draft-board-view #toolbar,
+body.draft-board-view #side-toolbar,
+body.draft-board-view #menu-toggle-btn,
+body.draft-board-view #footer-hint,
+body.draft-board-view #screen-share-view,
+body.link-board-view #toolbar,
+body.link-board-view #side-toolbar,
+body.link-board-view #menu-toggle-btn,
+body.link-board-view #footer-hint,
+body.link-board-view #screen-share-view {
+  display: none !important;
+}
+
+body.draft-board-view #canvas-container,
+body.link-board-view #canvas-container {
+  inset: 0;
+}
+
+body.draft-board-view,
+body.link-board-view {
+  background: #1e293b;
+}
+
 .follow-view-label {
   position: fixed;
   top: 10px;
@@ -825,6 +849,199 @@ body.follow-view #board-canvas {
   color: #fff;
   font-size: 13px;
   pointer-events: none;
+}
+
+.follow-view-label.is-jump-action {
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+}
+
+.follow-view-label.is-jump-action:hover {
+  background: rgba(37, 99, 235, 0.92);
+}
+
+body.link-board-view .follow-view-label {
+  display: none;
+}
+
+.floating-app-window {
+  position: fixed;
+  min-width: 280px;
+  min-height: 220px;
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - 8px);
+  overflow: hidden;
+  resize: both;
+  border: 1px solid #64748b;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 44px rgba(15, 23, 42, 0.32);
+}
+
+.floating-app-window.active {
+  border-color: #2563eb;
+  box-shadow: 0 20px 52px rgba(15, 23, 42, 0.42), 0 0 0 2px rgba(37, 99, 235, 0.3);
+}
+
+.floating-app-window:not(.active)::after {
+  content: "";
+  position: absolute;
+  inset: 38px 0 0;
+  z-index: 5;
+  background: transparent;
+}
+
+.floating-app-window-header {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 0 8px 0 12px;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.floating-app-window.active .floating-app-window-header {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.floating-app-window-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 20px;
+}
+
+.floating-app-window-content {
+  display: block;
+  width: 100%;
+  height: calc(100% - 38px);
+  border: 0;
+  background: #1e293b;
+}
+
+.floating-draft-board-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.floating-draft-board-actions button:not(.floating-app-window-close) {
+  padding: 4px 9px;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.floating-text-list .text-list-panel {
+  position: static;
+  width: 100%;
+  height: 100%;
+  max-height: none !important;
+  box-sizing: border-box;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.floating-text-list .text-list-header {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.floating-text-list .text-list-body {
+  flex: 1;
+  max-height: none !important;
+}
+
+.floating-link-board {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  min-height: 220px;
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - 8px);
+  overflow: hidden;
+  resize: both;
+  border: 1px solid #64748b;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 44px rgba(15, 23, 42, 0.32);
+}
+
+.floating-link-board.active {
+  border-color: #2563eb;
+  box-shadow: 0 20px 52px rgba(15, 23, 42, 0.42), 0 0 0 2px rgba(37, 99, 235, 0.3);
+}
+
+.floating-link-board:not(.active)::after {
+  content: "";
+  position: absolute;
+  inset: 38px 0 0;
+  z-index: 2;
+  background: transparent;
+}
+
+.floating-link-board-header {
+  position: relative;
+  z-index: 3;
+  height: 38px;
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 0 8px 0 12px;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.floating-link-board.active .floating-link-board-header {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.floating-link-board-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.floating-link-board-close:hover {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+.floating-link-board-content {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: #1e293b;
 }
 
 .side-menu button {

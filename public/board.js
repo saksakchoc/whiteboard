@@ -75,7 +75,22 @@
 
   // --- ボードID表示 ---
   const boardId = window.location.pathname.split("/").pop();
-  const followTargetUser = new URLSearchParams(window.location.search).get("follow") || "";
+  const viewParams = new URLSearchParams(window.location.search);
+  const followTargetUser = viewParams.get("follow") || "";
+  const linkBoardView = (() => {
+    const raw = viewParams.get("linkBoard");
+    if (!raw) return null;
+    try {
+      const rect = JSON.parse(raw);
+      if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)) return null;
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      return rect;
+    } catch {
+      return null;
+    }
+  })();
+  const draftBoardViewId = viewParams.get("draftBoard") || "";
+  const isDetachedBoardView = !!followTargetUser;
   const userStorageKey = "whiteboard-users-v1";
   const lastUserStorageKey = "whiteboard-last-user-v1";
   let boardTitle = boardId;
@@ -268,6 +283,9 @@
   let linkListOpen = false;
   const listPopupWindows = new Map();
   const listPanelHomes = new Map();
+  let floatingLinkBoardZ = 2200;
+  let textListFloatingFrame = null;
+  const openFloatingDraftBoardIds = new Set();
   let imageListOrderCounter = 0;
   const linkPreviewRefreshes = new Set();
 
@@ -705,7 +723,18 @@
     return !!imgObj && imgObj.user === currentUser && !!imgObj.draftBoardSource;
   }
 
+  function isFloatingDraftBoardObject(obj) {
+    if (!obj) return false;
+    if (obj.draftBoardSource) return !!obj.draftBoardSource.floating;
+    if (!obj.draftBoardId) return false;
+    const board = images.find((img) => img?.id === obj.draftBoardId);
+    return !!board?.draftBoardSource?.floating;
+  }
+
   function isStrokeVisible(stroke) {
+    if (draftBoardViewId) return stroke?.draftBoardId === draftBoardViewId;
+    if (isFloatingDraftBoardObject(stroke)) return false;
+    if (stroke?.draftBoardId && openFloatingDraftBoardIds.has(stroke.draftBoardId)) return false;
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer !== "draft" || stroke.user === currentUser;
@@ -716,6 +745,9 @@
   }
 
   function isTextVisible(text) {
+    if (draftBoardViewId) return text?.draftBoardId === draftBoardViewId;
+    if (isFloatingDraftBoardObject(text)) return false;
+    if (text?.draftBoardId && openFloatingDraftBoardIds.has(text.draftBoardId)) return false;
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer !== "draft" || text.user === currentUser;
@@ -726,7 +758,7 @@
   }
 
   function canInteractStroke(stroke) {
-    if (isOwnDraftBoardItem(stroke)) return false;
+    if (isOwnDraftBoardItem(stroke)) return draftBoardViewId === stroke.draftBoardId;
     const layer = stroke.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer === "draft" && stroke.user === currentUser;
@@ -737,7 +769,7 @@
   }
 
   function canInteractText(text) {
-    if (isOwnDraftBoardItem(text)) return false;
+    if (isOwnDraftBoardItem(text)) return draftBoardViewId === text.draftBoardId;
     const layer = text.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer === "draft" && text.user === currentUser;
@@ -747,6 +779,7 @@
   }
 
   function isLinkVisible(link) {
+    if (draftBoardViewId) return false;
     const layer = link.layer || "user";
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return layer !== "draft" || link.user === currentUser;
@@ -764,6 +797,14 @@
   }
 
   function isImageVisible(imgObj) {
+    if (draftBoardViewId) {
+      return imgObj?.id === draftBoardViewId || imgObj?.draftBoardId === draftBoardViewId;
+    }
+    if (isFloatingDraftBoardObject(imgObj)) return false;
+    if (
+      openFloatingDraftBoardIds.has(imgObj?.id) ||
+      (imgObj?.draftBoardId && openFloatingDraftBoardIds.has(imgObj.draftBoardId))
+    ) return false;
     if (activeLayer === "admin") return true;
     if (activeLayer === "draft") return (imgObj?.layer || "user") !== "draft" || imgObj?.user === currentUser;
     if (activeLayer === "image") return (imgObj?.layer || "image") === "image";
@@ -782,6 +823,8 @@
 
   function canInteractImage(imgObj = null) {
     if (!imgObj) return false;
+    if (draftBoardViewId && imgObj.id === draftBoardViewId) return false;
+    if (isOwnDraftBoardItem(imgObj)) return draftBoardViewId === imgObj.draftBoardId;
     const index = images.findIndex((img) => img?.id === imgObj.id);
     if (index >= 0 && !isFrameMemberVisible(imgObj, { type: "image", index })) return false;
     if (imgObj.frameId && imgObj.frameTab === "background") {
@@ -1071,6 +1114,11 @@
       applyFollowView(latestFollowView);
       return;
     }
+    if (linkBoardView) {
+      applyLinkBoardView();
+      return;
+    }
+    if (draftBoardViewId && applyDraftBoardView()) return;
     const rect = container.getBoundingClientRect();
     canvas.width = rect.width;
     canvas.height = rect.height;
@@ -2771,9 +2819,7 @@
 
   function openTextList() {
     textListOpen = true;
-    openListPopup(textListPanel, "テキスト一覧", () => {
-      textListOpen = false;
-    });
+    openFloatingTextList();
     textListPanel.classList.remove("hidden");
     positionTextListPanel();
     renderTextList();
@@ -2782,7 +2828,7 @@
   function closeTextList() {
     textListOpen = false;
     textListPanel.classList.add("hidden");
-    closeListPopup(textListPanel);
+    closeFloatingTextList();
     textListPanel.style.maxHeight = "";
     if (textListBody) textListBody.style.maxHeight = "";
     textListPanel.style.top = "";
@@ -3326,6 +3372,312 @@
     if (linkListOpen) renderLinkList();
   }
 
+  function activateFloatingAppWindow(frame) {
+    if (!frame) return;
+    document.querySelectorAll(".floating-app-window.active").forEach((item) => {
+      if (item !== frame) item.classList.remove("active");
+    });
+    frame.classList.add("active");
+    frame.style.zIndex = String(++floatingLinkBoardZ);
+    syncToolbarToActiveDraftBoard();
+  }
+
+  function activateTopFloatingAppWindow() {
+    const next = Array.from(document.querySelectorAll(".floating-app-window"))
+      .sort((a, b) => Number(b.style.zIndex) - Number(a.style.zIndex))[0];
+    next?.classList.add("active");
+  }
+
+  function getSharedToolbarState() {
+    return {
+      tool: pendingTextMode ? `text:${pendingTextMode}` : currentTool,
+      color: currentColor,
+      size: currentSize,
+      strokesDimmed,
+      user: currentUser,
+      glowColor: getCurrentFavoriteColor(),
+    };
+  }
+
+  function syncToolbarToActiveDraftBoard() {
+    if (draftBoardViewId || linkBoardView) return;
+    const iframe = document.querySelector(
+      ".floating-draft-board.active iframe, .floating-link-board.active iframe"
+    );
+    iframe?.contentWindow?.postMessage(
+      { type: "whiteboard:draft-toolbar", state: getSharedToolbarState() },
+      window.location.origin
+    );
+  }
+
+  function enableFloatingWindowDrag(frame, handle) {
+    let drag = null;
+    frame.addEventListener("pointerdown", () => activateFloatingAppWindow(frame));
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button, input, label, a")) return;
+      const rect = frame.getBoundingClientRect();
+      drag = { pointerId: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+      handle.setPointerCapture?.(event.pointerId);
+      activateFloatingAppWindow(frame);
+      event.preventDefault();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const minLeft = Math.min(0, 80 - frame.offsetWidth);
+      const maxLeft = Math.max(minLeft, window.innerWidth - 80);
+      const maxTop = Math.max(0, window.innerHeight - 38);
+      frame.style.left = `${Math.min(Math.max(minLeft, event.clientX - drag.dx), maxLeft)}px`;
+      frame.style.top = `${Math.min(Math.max(0, event.clientY - drag.dy), maxTop)}px`;
+      frame.style.right = "auto";
+      frame.style.bottom = "auto";
+    });
+    const endDrag = (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      drag = null;
+    };
+    handle.addEventListener("pointerup", endDrag);
+    handle.addEventListener("pointercancel", endDrag);
+  }
+
+  function openFloatingTextList() {
+    if (textListFloatingFrame?.isConnected) {
+      activateFloatingAppWindow(textListFloatingFrame);
+      return;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-text-list";
+    frame.style.left = "120px";
+    frame.style.top = "70px";
+    frame.style.width = "480px";
+    frame.style.height = "min(720px, calc(100vh - 90px))";
+    frame.appendChild(textListPanel);
+    document.body.appendChild(frame);
+    textListFloatingFrame = frame;
+    const handle = textListPanel.querySelector(".text-list-header");
+    if (handle) enableFloatingWindowDrag(frame, handle);
+    activateFloatingAppWindow(frame);
+  }
+
+  function closeFloatingTextList() {
+    const frame = textListFloatingFrame;
+    if (!frame) return;
+    const wasActive = frame.classList.contains("active");
+    document.body.appendChild(textListPanel);
+    frame.remove();
+    textListFloatingFrame = null;
+    if (wasActive) activateTopFloatingAppWindow();
+  }
+
+  function openFloatingTrackingWindow(user) {
+    const key = encodeURIComponent(user);
+    const existing = document.querySelector(`.floating-tracking-window[data-user="${CSS.escape(user)}"]`);
+    if (existing) {
+      activateFloatingAppWindow(existing);
+      return;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-tracking-window";
+    frame.dataset.user = user;
+    frame.style.left = `${140 + document.querySelectorAll(".floating-tracking-window").length * 26}px`;
+    frame.style.top = `${90 + document.querySelectorAll(".floating-tracking-window").length * 26}px`;
+    frame.style.width = "min(720px, calc(100vw - 40px))";
+    frame.style.height = "min(540px, calc(100vh - 60px))";
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.textContent = `👀 ${user} を追跡`;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "floating-app-window-close";
+    close.textContent = "×";
+    const iframe = document.createElement("iframe");
+    iframe.className = "floating-app-window-content";
+    iframe.src = `${window.location.pathname}?follow=${key}`;
+    iframe.title = `${user}を追跡`;
+    header.append(title, close);
+    frame.append(header, iframe);
+    document.body.appendChild(frame);
+    enableFloatingWindowDrag(frame, header);
+    close.addEventListener("click", () => {
+      const wasActive = frame.classList.contains("active");
+      frame.remove();
+      if (wasActive) activateTopFloatingAppWindow();
+    });
+    activateFloatingAppWindow(frame);
+  }
+
+  function openFloatingDraftBoard(boardImg) {
+    if (!boardImg?.id) return;
+    const existing = document.querySelector(`.floating-draft-board[data-board-id="${CSS.escape(boardImg.id)}"]`);
+    if (existing) {
+      activateFloatingAppWindow(existing);
+      return;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-draft-board";
+    frame.dataset.boardId = boardImg.id;
+    frame.style.left = "150px";
+    frame.style.top = "90px";
+    frame.style.width = "min(760px, calc(100vw - 40px))";
+    frame.style.height = "min(580px, calc(100vh - 60px))";
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.textContent = "下書きボード";
+    const actions = document.createElement("div");
+    actions.className = "floating-draft-board-actions";
+    const publish = document.createElement("button");
+    publish.type = "button";
+    publish.textContent = "ここに公開";
+    const publishSource = document.createElement("button");
+    publishSource.type = "button";
+    publishSource.textContent = "リンク元に公開";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "削除";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "floating-app-window-close";
+    close.textContent = "×";
+    actions.append(publish, publishSource, remove, close);
+    header.append(title, actions);
+    const iframe = document.createElement("iframe");
+    iframe.className = "floating-app-window-content";
+    iframe.src = `${window.location.pathname}?draftBoard=${encodeURIComponent(boardImg.id)}`;
+    iframe.title = "下書きボード";
+    frame.append(header, iframe);
+    document.body.appendChild(frame);
+    openFloatingDraftBoardIds.add(boardImg.id);
+    redraw();
+    enableFloatingWindowDrag(frame, header);
+    iframe.addEventListener("load", syncToolbarToActiveDraftBoard);
+    const closeFrame = () => {
+      const wasActive = frame.classList.contains("active");
+      frame.remove();
+      openFloatingDraftBoardIds.delete(boardImg.id);
+      redraw();
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    close.addEventListener("click", closeFrame);
+    publish.addEventListener("click", () => {
+      publish.disabled = true;
+      publishSource.disabled = true;
+      remove.disabled = true;
+      const iframeRect = iframe.getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      const topLeft = screenToWorld(iframeRect.left - canvasRect.left, iframeRect.top - canvasRect.top);
+      iframe.contentWindow?.postMessage(
+        {
+          type: "whiteboard:draft-command",
+          command: "publish",
+          toolbarState: getSharedToolbarState(),
+          targetRect: {
+            x: topLeft.x,
+            y: topLeft.y,
+            width: boardImg.width,
+            height: boardImg.height,
+          },
+        },
+        window.location.origin
+      );
+    });
+    publishSource.addEventListener("click", () => {
+      publish.disabled = true;
+      publishSource.disabled = true;
+      remove.disabled = true;
+      iframe.contentWindow?.postMessage(
+        {
+          type: "whiteboard:draft-command",
+          command: "publish-source",
+          toolbarState: getSharedToolbarState(),
+          originalObjectIds: Array.isArray(boardImg.draftBoardSource?.originalObjectIds)
+            ? boardImg.draftBoardSource.originalObjectIds.slice()
+            : null,
+        },
+        window.location.origin
+      );
+    });
+    remove.addEventListener("click", () => {
+      publish.disabled = true;
+      publishSource.disabled = true;
+      remove.disabled = true;
+      iframe.contentWindow?.postMessage(
+        { type: "whiteboard:draft-command", command: "delete" },
+        window.location.origin
+      );
+    });
+    activateFloatingAppWindow(frame);
+  }
+
+  function restoreFloatingDraftBoards() {
+    if (!currentUser || draftBoardViewId || linkBoardView || followTargetUser) return;
+    images.forEach((img) => {
+      if (
+        img?.user === currentUser &&
+        img.draftBoardSource?.floating &&
+        !document.querySelector(`.floating-draft-board[data-board-id="${CSS.escape(img.id)}"]`)
+      ) {
+        openFloatingDraftBoard(img);
+      }
+    });
+  }
+
+  function migrateLegacyDraftBoardOriginalIds() {
+    if (!currentUser || linkBoardView || followTargetUser) return;
+    const near = (a, b, tolerance = 1) => Math.abs((a || 0) - (b || 0)) <= tolerance;
+    images.forEach((board) => {
+      const source = board?.draftBoardSource;
+      if (!source || board.user !== currentUser || Array.isArray(source.originalObjectIds)) return;
+      const contentDest = {
+        x: board.x,
+        y: board.y + (source.headerHeight || 0),
+        width: board.width,
+        height: Math.max(1, board.height - (source.headerHeight || 0)),
+      };
+      const sourceRect = { x: source.x, y: source.y, width: source.width, height: source.height };
+      const ids = new Set();
+
+      draftStrokes
+        .filter((item) => item?.draftBoardId === board.id)
+        .forEach((draft) => {
+          const match = strokes.find((original) => {
+            if (!original || original.fill !== draft.fill || original.color !== draft.color) return false;
+            if ((original.points || []).length !== (draft.points || []).length) return false;
+            const mapped = (original.points || []).map((point) => mapRectPointBetweenRects(point, sourceRect, contentDest));
+            return mapped.every((point, index) => near(point.x, draft.points[index]?.x) && near(point.y, draft.points[index]?.y));
+          });
+          if (match) ids.add(draft.id);
+        });
+
+      texts
+        .filter((item) => item?.draftBoardId === board.id)
+        .forEach((draft) => {
+          const match = texts.find((original) => {
+            if (!original || original.draftBoardId || (original.lines || []).join("\n") !== (draft.lines || []).join("\n")) return false;
+            const mapped = mapRectPointBetweenRects({ x: original.x, y: original.y }, sourceRect, contentDest);
+            return near(mapped.x, draft.x) && near(mapped.y, draft.y);
+          });
+          if (match) ids.add(draft.id);
+        });
+
+      images
+        .filter((item) => item?.draftBoardId === board.id)
+        .forEach((draft) => {
+          const match = images.find((original) => {
+            if (!original || original.draftBoardId || original.id === board.id || original.src !== draft.src) return false;
+            const mapped = mapRectBetweenRects(getImageBoundsWorld(original), sourceRect, contentDest);
+            return near(mapped.x, draft.x) && near(mapped.y, draft.y) && near(mapped.width, draft.width) && near(mapped.height, draft.height);
+          });
+          if (match) ids.add(draft.id);
+        });
+
+      board.draftBoardSource = { ...source, floating: true, originalObjectIds: Array.from(ids) };
+      emitItemPatch("image", board, { draftBoardSource: board.draftBoardSource });
+    });
+  }
+
   function restoreListPanel(panel) {
     const home = listPanelHomes.get(panel);
     if (!home || panel.ownerDocument === document) return;
@@ -3688,6 +4040,7 @@
 
   function positionTextListPanel() {
     if (!textListPanel || textListPanel.classList.contains("hidden")) return;
+    if (textListFloatingFrame) return;
     if (isListPanelInPopup(textListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
@@ -3763,7 +4116,11 @@
 
   function updateBoardTitleDisplay() {
     boardTitleLabel.textContent = `${boardTitle}`;
-    document.title = followTargetUser ? `${followTargetUser}を追跡 - ${boardTitle}` : `${boardTitle}`;
+    document.title = followTargetUser
+      ? `${followTargetUser}を追跡 - ${boardTitle}`
+      : linkBoardView
+      ? `リンクボード - ${boardTitle}`
+      : `${boardTitle}`;
   }
 
   async function loadBoardUsersFromServer() {
@@ -3831,6 +4188,7 @@
 
   function requireUser() {
     if (currentUser) return true;
+    if (isDetachedBoardView) return false;
     openUserModal();
     return false;
   }
@@ -6158,11 +6516,12 @@
   });
 
   function identifyToServer() {
-    if (!socketConnected || !currentUser || followTargetUser) return;
+    if (!socketConnected || !currentUser || isDetachedBoardView) return;
     socket.emit("user:identify", {
       boardId,
       user: currentUser,
       favoriteColor: getCurrentRegisteredFavoriteColor(),
+      presence: !draftBoardViewId && !linkBoardView,
     });
   }
 
@@ -6173,6 +6532,17 @@
     latestFollowView = view;
 
     const targetAspect = view.width / view.height;
+    fitDetachedCanvas(targetAspect);
+
+    const worldWidth = view.width / view.scale;
+    const worldHeight = view.height / view.scale;
+    scale = Math.min(canvas.width / worldWidth, canvas.height / worldHeight);
+    offsetX = canvas.width / 2 - view.x * scale;
+    offsetY = canvas.height / 2 - view.y * scale;
+    redraw();
+  }
+
+  function fitDetachedCanvas(targetAspect) {
     const windowAspect = window.innerWidth / Math.max(1, window.innerHeight);
     let displayWidth;
     let displayHeight;
@@ -6195,16 +6565,35 @@
     const nextHeight = Math.max(1, Math.round(rect.height));
     if (canvas.width !== nextWidth) canvas.width = nextWidth;
     if (canvas.height !== nextHeight) canvas.height = nextHeight;
-    const worldWidth = view.width / view.scale;
-    const worldHeight = view.height / view.scale;
-    scale = Math.min(canvas.width / worldWidth, canvas.height / worldHeight);
-    offsetX = canvas.width / 2 - view.x * scale;
-    offsetY = canvas.height / 2 - view.y * scale;
+  }
+
+  function applyLinkBoardView() {
+    if (!linkBoardView) return;
+    fitDetachedCanvas(linkBoardView.width / linkBoardView.height);
+    scale = Math.min(
+      canvas.width / linkBoardView.width,
+      canvas.height / linkBoardView.height
+    );
+    offsetX = canvas.width / 2 - (linkBoardView.x + linkBoardView.width / 2) * scale;
+    offsetY = canvas.height / 2 - (linkBoardView.y + linkBoardView.height / 2) * scale;
     redraw();
   }
 
+  function applyDraftBoardView() {
+    if (!draftBoardViewId) return false;
+    const board = images.find((img) => img?.id === draftBoardViewId && img.draftBoardSource);
+    if (!board) return false;
+    const rect = { x: board.x, y: board.y, width: board.width, height: board.height };
+    fitDetachedCanvas(rect.width / rect.height);
+    scale = Math.min(canvas.width / rect.width, canvas.height / rect.height);
+    offsetX = canvas.width / 2 - (rect.x + rect.width / 2) * scale;
+    offsetY = canvas.height / 2 - (rect.y + rect.height / 2) * scale;
+    redraw();
+    return true;
+  }
+
   function emitCurrentViewPresence() {
-    if (followTargetUser || !socketConnected || !socketReady || !currentUser) return;
+    if (isDetachedBoardView || draftBoardViewId || linkBoardView || !socketConnected || !socketReady || !currentUser) return;
     const now = Date.now();
     const view = {
       x: (canvas.width / 2 - offsetX) / scale,
@@ -6860,6 +7249,10 @@
     refreshUserDatalist();
     updateFavButtons();
     refreshTextList();
+    if (draftBoardViewId) applyDraftBoardView();
+    else {
+      restoreFloatingDraftBoards();
+    }
   });
 
   socket.on("stroke:add", (stroke) => {
@@ -6883,6 +7276,8 @@
     draftOrderCounter = 0;
     (drafts || []).forEach((d) => addDraftFromNetwork(d, false));
     draftsLoaded = true;
+    migrateLegacyDraftBoardOriginalIds();
+    restoreFloatingDraftBoards();
     redraw();
     updateFooterByState();
   });
@@ -6897,8 +7292,9 @@
     renderWatchUsersMenu();
     if (followViewLabel && followTargetUser) {
       followViewLabel.textContent = onlineUsers.includes(followTargetUser)
-        ? `👀 ${followTargetUser} を追跡中`
+        ? `${followTargetUser}の位置にジャンブ`
         : `👀 ${followTargetUser} は現在オフラインです`;
+      followViewLabel.classList.toggle("is-jump-action", onlineUsers.includes(followTargetUser));
     }
   });
 
@@ -6911,6 +7307,74 @@
   socket.on("presence:view", (view) => {
     if (!followTargetUser || view?.user !== followTargetUser) return;
     applyFollowView(view);
+  });
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (data?.type === "whiteboard:draft-toolbar" && (draftBoardViewId || linkBoardView) && data.state) {
+      const state = data.state;
+      if (typeof state.user === "string" && state.user && state.user !== currentUser) {
+        setCurrentUser(state.user);
+      }
+      if (typeof state.color === "string") {
+        currentColor = state.color;
+        textDefaultColor = state.color;
+      }
+      if (Number.isFinite(state.size)) {
+        currentSize = state.size;
+        sizeRange.value = String(state.size);
+        sizeLabel.textContent = String(state.size);
+      }
+      strokesDimmed = !!state.strokesDimmed;
+      pendingTextMode = null;
+      if (typeof state.tool === "string" && state.tool.startsWith("text:")) {
+        pendingTextMode = state.tool.slice(5) === "grid" ? "grid" : "normal";
+        currentTool = "select";
+      } else if (["pen", "fill", "eraser", "select"].includes(state.tool)) {
+        currentTool = state.tool;
+      }
+      updateToolButtons();
+      redraw();
+      return;
+    }
+    if (data?.type === "whiteboard:draft-command" && draftBoardViewId) {
+      migrateLegacyDraftBoardOriginalIds();
+      const board = images.find((img) => img?.id === draftBoardViewId);
+      const toolbarState = data.toolbarState || {};
+      const publishOptions = {
+        owner: toolbarState.user || currentUser,
+        glowColor: toolbarState.glowColor || getUserRegisteredFavoriteColor(toolbarState.user || currentUser),
+        originalObjectIds: data.originalObjectIds,
+      };
+      if (data.command === "publish") publishDraftBoard(board, data.targetRect, publishOptions);
+      if (data.command === "publish-source") publishDraftBoard(board, null, { ...publishOptions, onlyNew: true });
+      if (data.command === "delete") deleteDraftBoard(board);
+      // 親画面は item:remove の受信後に閉じる。通信断時だけ完了通知をフォールバックにする。
+      setTimeout(() => {
+        window.parent.postMessage(
+          { type: "whiteboard:draft-command-complete", boardId: draftBoardViewId },
+          window.location.origin
+        );
+      }, 1000);
+      return;
+    }
+    if (data?.type === "whiteboard:draft-command-complete" && !draftBoardViewId) {
+      const frame = Array.from(document.querySelectorAll(".floating-draft-board"))
+        .find((item) => item.dataset.boardId === data.boardId);
+      frame?._closeFloating?.();
+      setActiveLayer("user");
+      return;
+    }
+    if (isDetachedBoardView) return;
+    if (data?.type !== "whiteboard:jump-to-follow-view" || !data.view) return;
+    const view = data.view;
+    if (![view.x, view.y, view.scale].every(Number.isFinite)) return;
+    scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale));
+    offsetX = canvas.width / 2 - view.x * scale;
+    offsetY = canvas.height / 2 - view.y * scale;
+    redraw();
+    showTransientFooterMessage(`${data.user || "ユーザー"}の表示位置へジャンプしました。`, 2500);
   });
 
   socket.on("attention:start", (data) => {
@@ -7012,6 +7476,9 @@
       removeAllById(images, id);
       invalidatePendingImageLoad(id);
       refreshImageList();
+      const draftFrame = Array.from(document.querySelectorAll(".floating-draft-board"))
+        .find((item) => item.dataset.boardId === id);
+      draftFrame?._closeFloating?.();
     } else if (type === "link") {
       removeAllById(links, id);
       refreshLinkList();
@@ -8179,6 +8646,7 @@
     // 1. すべての描画オブジェクトを統合して並び替え
     const combined = [];
     strokes.forEach((s, idx) => {
+      if (!isStrokeVisible(s)) return;
       const item = { type: "stroke", index: idx };
       if (!isFramedObjectNearViewport(s, item)) return;
       if (!isFrameMemberVisible(s, item)) return;
@@ -8190,6 +8658,7 @@
       });
     });
     draftStrokes.forEach((s, idx) => {
+      if (!isStrokeVisible(s)) return;
       const item = { type: "draft", index: idx };
       if (!isFramedObjectNearViewport(s, item)) return;
       if (!isFrameMemberVisible(s, item)) return;
@@ -8221,6 +8690,7 @@
       }
     });
     texts.forEach((t, idx) => {
+      if (!isTextVisible(t)) return;
       const item = { type: "text", index: idx };
       if (!isFramedObjectNearViewport(t, item)) return;
       if (!isFrameMemberVisible(t, item)) return;
@@ -8472,6 +8942,7 @@
       } else if (item.type === "draft-stroke") {
         const stroke = draftStrokes[item.index];
         if (!stroke || !stroke.points || stroke.points.length === 0) continue;
+        if (!isStrokeVisible(stroke)) continue;
         if (activeLayer !== "draft" && !(activeLayer === "user" && isOwnDraftBoardItem(stroke))) continue;
         if (stroke.user !== currentUser) continue;
         if (stroke.fill) {
@@ -9571,7 +10042,6 @@
     };
     clearLassoCopySelection();
     createLinkedBoardAt(source, dest, { lassoToolObject: true });
-    showTransientFooterMessage("リンクボードを作成しました。", 2500);
   }
 
   function mapRectPointBetweenRects(point, source, dest) {
@@ -9663,6 +10133,7 @@
       height: source.height,
     };
     const boardIdForDraft = genId();
+    const originalObjectIds = [];
     const boardImg = {
       id: boardIdForDraft,
       img: null,
@@ -9684,11 +10155,13 @@
         width: source.width,
         height: source.height,
         headerHeight: headerHeightWorld,
+        originalObjectIds,
+        newObjectIds: [],
+        floating: true,
       },
     };
     images.push(boardImg);
     registerUser(currentUser);
-    emitImageAdd(boardImg);
 
     const groupIds = new Map();
     const getDraftGroupId = (groupId) => {
@@ -9713,6 +10186,7 @@
         draftBoardId: boardIdForDraft,
       };
       draftStrokes.push(draft);
+      originalObjectIds.push(draft.id);
       if (socketConnected) socket.emit("draft:stroke:add", { boardId, stroke: draft });
       return true;
     };
@@ -9740,6 +10214,7 @@
         draftBoardId: boardIdForDraft,
       };
       texts.push(clone);
+      originalObjectIds.push(clone.id);
       emitTextAdd(clone);
     });
 
@@ -9775,8 +10250,15 @@
       }
       if (!clone) return;
       images.push(clone);
+      originalObjectIds.push(clone.id);
       emitImageAdd(clone);
     });
+
+    boardImg.draftBoardSource = {
+      ...boardImg.draftBoardSource,
+      originalObjectIds: originalObjectIds.slice(),
+    };
+    emitImageAdd(boardImg);
 
     refreshTextList();
     refreshImageList();
@@ -9784,28 +10266,63 @@
     const boardIndex = findIndexById(images, boardIdForDraft);
     selected = boardIndex >= 0 ? { type: "image", index: boardIndex } : null;
     multiSelection = null;
-    showTransientFooterMessage("下書きボードを作成しました。下書きボードを右クリックすると公開できます。", 4000);
+    showTransientFooterMessage("下書きボードを開きました。メインのツールバーで書き込めます。", 4000);
     updateToolButtons();
     redraw();
+    openFloatingDraftBoard(boardImg);
   }
 
-  function publishDraftBoard(imgObj) {
+  function publishDraftBoard(imgObj, publishTargetRect = null, options = {}) {
     if (!imgObj || !isDraftBoardImage(imgObj) || imgObj.user !== currentUser) return;
     ensureSnapshotForAction();
     const draftBoardId = imgObj.id;
-    const draftTargets = draftStrokes.filter((stroke) => stroke?.draftBoardId === draftBoardId && stroke.user === currentUser);
-    draftTargets.forEach((draft) => {
+    const boardRect = getImageBoundsWorld(imgObj);
+    const onlyNew = !!options.onlyNew;
+    const publishOwner = options.owner || currentUser;
+    const publishGlowColor = options.glowColor || getUserRegisteredFavoriteColor(publishOwner) || null;
+    const originalObjectIds = Array.isArray(options.originalObjectIds)
+      ? new Set(options.originalObjectIds)
+      : inferDraftBoardOriginalIds(imgObj);
+    const newObjectIds = new Set(imgObj.draftBoardSource?.newObjectIds || []);
+    const headerHeight = imgObj.draftBoardSource?.headerHeight || 0;
+    const sourceRect = onlyNew
+      ? {
+          x: boardRect.x,
+          y: boardRect.y + headerHeight,
+          width: boardRect.width,
+          height: Math.max(1, boardRect.height - headerHeight),
+        }
+      : boardRect;
+    const linkedSource = imgObj.draftBoardSource;
+    const targetRect =
+      publishTargetRect && publishTargetRect.width > 0 && publishTargetRect.height > 0
+        ? getNormalizedRect(publishTargetRect)
+        : onlyNew && linkedSource?.width > 0 && linkedSource?.height > 0
+        ? {
+            x: linkedSource.x,
+            y: linkedSource.y,
+            width: linkedSource.width,
+            height: linkedSource.height,
+          }
+        : sourceRect;
+    const mapPublishedPoint = (point) => mapRectPointBetweenRects(point, sourceRect, targetRect);
+    const sizeScale = Math.min(targetRect.width / sourceRect.width, targetRect.height / sourceRect.height);
+    const allDraftTargets = draftStrokes.filter((stroke) => stroke?.draftBoardId === draftBoardId && stroke.user === currentUser);
+    const draftTargets = onlyNew
+      ? allDraftTargets.filter((stroke) => newObjectIds.has(stroke.id))
+      : allDraftTargets;
+    allDraftTargets.forEach((draft) => {
       const stroke = {
         id: genId(),
         color: draft.color,
-        size: draft.size,
-        points: (draft.points || []).map((p) => ({ x: p.x, y: p.y })),
-        user: currentUser,
+        size: (draft.size || 1) * sizeScale,
+        points: (draft.points || []).map(mapPublishedPoint),
+        user: publishOwner,
         layer: "user",
         order: orderCounter++,
         fill: !!draft.fill,
         groupId: draft.groupId || null,
-        glowColor: draft.glowColor || getStrokeGlowColor(draft) || null,
+        glowColor: publishGlowColor,
       };
       strokes.push(stroke);
       emitStrokeAdd(stroke);
@@ -9816,17 +10333,56 @@
       if (socketConnected) socket.emit("draft:stroke:remove", { boardId, id: draft.id });
     });
 
-    texts.forEach((text) => {
+    texts.slice().forEach((text) => {
       if (!text || text.draftBoardId !== draftBoardId || text.user !== currentUser) return;
+      if (onlyNew && !newObjectIds.has(text.id)) {
+        const index = findIndexById(texts, text.id);
+        if (index >= 0) texts.splice(index, 1);
+        if (socketConnected) socket.emit("item:remove", { boardId, type: "text", id: text.id });
+        return;
+      }
+      const mapped = mapPublishedPoint({ x: text.x, y: text.y });
+      text.x = mapped.x;
+      text.y = mapped.y;
+      text.fontSize = (text.fontSize || 16) * sizeScale;
+      text.user = publishOwner;
       text.layer = "user";
       text.draftBoardId = null;
-      emitItemPatch("text", text, { layer: "user", draftBoardId: null });
+      emitItemPatch("text", text, {
+        x: text.x,
+        y: text.y,
+        fontSize: text.fontSize,
+        user: text.user,
+        layer: "user",
+        draftBoardId: null,
+      });
     });
     images.slice().forEach((img) => {
       if (!img || img.id === draftBoardId || img.draftBoardId !== draftBoardId || img.user !== currentUser) return;
+      if (onlyNew && !newObjectIds.has(img.id)) {
+        const index = findIndexById(images, img.id);
+        if (index >= 0) images.splice(index, 1);
+        invalidatePendingImageLoad(img.id);
+        if (socketConnected) socket.emit("item:remove", { boardId, type: "image", id: img.id });
+        return;
+      }
+      const mapped = mapRectBetweenRects(getImageBoundsWorld(img), sourceRect, targetRect);
+      img.x = mapped.x;
+      img.y = mapped.y;
+      img.width = mapped.width;
+      img.height = mapped.height;
+      img.user = publishOwner;
       img.layer = "user";
       img.draftBoardId = null;
-      emitItemPatch("image", img, { layer: "user", draftBoardId: null });
+      emitItemPatch("image", img, {
+        x: img.x,
+        y: img.y,
+        width: img.width,
+        height: img.height,
+        user: img.user,
+        layer: "user",
+        draftBoardId: null,
+      });
     });
 
     const boardIndex = findIndexById(images, draftBoardId);
@@ -9838,8 +10394,57 @@
     refreshImageList();
     selected = null;
     multiSelection = null;
-    showTransientFooterMessage("下書きボードを公開しました。", 3000);
+    showTransientFooterMessage(
+      onlyNew ? "下書きボード固有のオブジェクトをリンク元に公開しました。" : "下書きボードをここに公開しました。",
+      3000
+    );
     redraw();
+  }
+
+  function inferDraftBoardOriginalIds(board) {
+    const ids = new Set(board?.draftBoardSource?.originalObjectIds || []);
+    const source = board?.draftBoardSource;
+    if (!board || !source?.width || !source?.height) return ids;
+    const sourceRect = { x: source.x, y: source.y, width: source.width, height: source.height };
+    const contentDest = {
+      x: board.x,
+      y: board.y + (source.headerHeight || 0),
+      width: board.width,
+      height: Math.max(1, board.height - (source.headerHeight || 0)),
+    };
+    const near = (a, b, tolerance = 1) => Math.abs((a || 0) - (b || 0)) <= tolerance;
+
+    draftStrokes.filter((item) => item?.draftBoardId === board.id).forEach((draft) => {
+      const copied = strokes.some((original) => {
+        if (!original || !!original.fill !== !!draft.fill || original.color !== draft.color) return false;
+        if ((original.points || []).length !== (draft.points || []).length) return false;
+        return (original.points || []).every((point, index) => {
+          const mapped = mapRectPointBetweenRects(point, sourceRect, contentDest);
+          return near(mapped.x, draft.points[index]?.x) && near(mapped.y, draft.points[index]?.y);
+        });
+      });
+      if (copied) ids.add(draft.id);
+    });
+
+    texts.filter((item) => item?.draftBoardId === board.id).forEach((draft) => {
+      const copied = texts.some((original) => {
+        if (!original || original.draftBoardId) return false;
+        if ((original.lines || []).join("\n") !== (draft.lines || []).join("\n")) return false;
+        const mapped = mapRectPointBetweenRects({ x: original.x, y: original.y }, sourceRect, contentDest);
+        return near(mapped.x, draft.x) && near(mapped.y, draft.y);
+      });
+      if (copied) ids.add(draft.id);
+    });
+
+    images.filter((item) => item?.draftBoardId === board.id).forEach((draft) => {
+      const copied = images.some((original) => {
+        if (!original || original.draftBoardId || original.id === board.id || original.src !== draft.src) return false;
+        const mapped = mapRectBetweenRects(getImageBoundsWorld(original), sourceRect, contentDest);
+        return near(mapped.x, draft.x) && near(mapped.y, draft.y) && near(mapped.width, draft.width) && near(mapped.height, draft.height);
+      });
+      if (copied) ids.add(draft.id);
+    });
+    return ids;
   }
 
   function deleteDraftBoard(imgObj) {
@@ -10643,6 +11248,7 @@
   }
 
   function emitImageAdd(imgObj) {
+    registerDraftBoardNewObject(imgObj);
     const image = imageSnapshotPayload(imgObj);
     if (image?.id) pendingImageAdds.set(image.id, image);
     if (!socketConnected || !socketReady) {
@@ -10676,6 +11282,7 @@
   }
 
   function emitTextAdd(text) {
+    registerDraftBoardNewObject(text);
     if (!text?.id) return;
     pendingTextAdds.set(text.id, stableSnapshotValue(text));
     if (!socketConnected || !socketReady) {
@@ -10689,6 +11296,18 @@
       }
       pendingTextAdds.delete(text.id);
     });
+  }
+
+  function registerDraftBoardNewObject(item) {
+    if (!draftBoardViewId || !item?.id || item.draftBoardId !== draftBoardViewId) return;
+    const board = images.find((img) => img?.id === draftBoardViewId && img.draftBoardSource);
+    if (!board) return;
+    const ids = Array.isArray(board.draftBoardSource.newObjectIds)
+      ? board.draftBoardSource.newObjectIds
+      : [];
+    if (ids.includes(item.id)) return;
+    board.draftBoardSource = { ...board.draftBoardSource, newObjectIds: [...ids, item.id] };
+    emitItemPatch("image", board, { draftBoardSource: board.draftBoardSource });
   }
 
   function emitLinkAdd(link) {
@@ -11512,6 +12131,7 @@
         applyCurrentGlowColor(stroke);
         if (!draftBoard) applyFrameMembershipByPoint(stroke, drawWorldPos);
         draftStrokes.push(stroke);
+        registerDraftBoardNewObject(stroke);
         activeDraftId = stroke.id;
         isDrawing = true;
         isDrawingDraft = true;
@@ -12169,7 +12789,6 @@
           width: source.width,
           height: source.height,
         });
-        showTransientFooterMessage("リンクボードを作成しました。", 2500);
       } else {
         linkBoardMode = null;
         pendingLinkBoardSource = null;
@@ -12827,6 +13446,12 @@
     if (e.button === 1) e.preventDefault();
   });
   canvas.addEventListener("click", () => hideMenusIfCompact());
+  canvas.addEventListener("pointerdown", () => {
+    if (draftBoardViewId || linkBoardView || followTargetUser) return;
+    document.querySelectorAll(".floating-app-window.active").forEach((frame) => {
+      frame.classList.remove("active");
+    });
+  });
 
   function isInsideToolbar(target) {
     if (!target) return false;
@@ -12879,8 +13504,7 @@
       button.textContent = user === currentUser ? `${user}（自分）` : user;
       button.addEventListener("click", (e) => {
         e.stopPropagation();
-        const url = `${window.location.pathname}?follow=${encodeURIComponent(user)}`;
-        window.open(url, `whiteboard-follow-${boardId}-${user}`, "popup=yes,width=960,height=720,resizable=yes");
+        openFloatingTrackingWindow(user);
         watchUsersMenu.classList.add("hidden");
       });
       watchUsersMenu.appendChild(button);
@@ -13585,6 +14209,7 @@
     } else {
       canvas.style.cursor = "default";
     }
+    syncToolbarToActiveDraftBoard();
   }
   updateToolButtons();
 
@@ -13654,6 +14279,7 @@
       selected = null;
       updateToolButtons();
     }
+    syncToolbarToActiveDraftBoard();
   }
 
   function undoLast() {
@@ -13721,6 +14347,7 @@
   sizeRange.addEventListener("input", () => {
     currentSize = parseInt(sizeRange.value, 10);
     sizeLabel.textContent = currentSize;
+    syncToolbarToActiveDraftBoard();
   });
 
   penToolBtn.addEventListener("click", () => {
@@ -14209,6 +14836,7 @@
       strokeAlphaToggleBtn.textContent = "半透明";
     }
     redraw();
+    syncToolbarToActiveDraftBoard();
     showTransientFooterMessage(
       strokesDimmed ? "半透明：線と文字を薄く表示中です。" : "半透明解除：線と文字を通常の濃さで表示します。",
       4000
@@ -14436,12 +15064,27 @@
   undoBtn.addEventListener("click", undoLast);
 
   // 初期化
-  if (followTargetUser) {
+  if (draftBoardViewId) document.body.classList.add("draft-board-view");
+  if (linkBoardView) document.body.classList.add("link-board-view");
+  if (isDetachedBoardView) {
     document.body.classList.add("follow-view");
     userModal.classList.add("hidden");
     followViewLabel = document.createElement("div");
     followViewLabel.className = "follow-view-label";
     followViewLabel.textContent = `👀 ${followTargetUser} の位置を待っています`;
+    if (followTargetUser) {
+      followViewLabel.addEventListener("click", () => {
+        if (!latestFollowView || window.parent === window) return;
+        window.parent.postMessage(
+          {
+            type: "whiteboard:jump-to-follow-view",
+            user: followTargetUser,
+            view: latestFollowView,
+          },
+          window.location.origin
+        );
+      });
+    }
     document.body.appendChild(followViewLabel);
   }
   updateBoardTitleDisplay();
@@ -14450,7 +15093,7 @@
   updateLayerToggleUI();
   refreshCompactMode();
   updateFooterByState();
-  if (!followTargetUser) {
+  if (!isDetachedBoardView) {
     loadBoardUsersFromServer();
     const lastUser = loadLastUser().trim();
     if (lastUser) {
@@ -14578,46 +15221,93 @@
     closeInsertMenu();
   }
 
-  function createLinkedBoardAt(sourceRect, destRect, options = {}) {
-    if (!sourceRect || !destRect) return;
+  function createLinkedBoardAt(sourceRect, _destRect, _options = {}) {
+    if (!sourceRect) return false;
     const source = getNormalizedRect(sourceRect);
-    const dest = getNormalizedRect(destRect);
-    if (source.width < 8 || source.height < 8 || dest.width < 8 || dest.height < 8) return;
-    ensureSnapshotForAction();
-    const imgObj = {
-      id: genId(),
-      img: null,
-      src: TRANSPARENT_PIXEL_SRC,
-      x: dest.x,
-      y: dest.y,
-      width: dest.width,
-      height: dest.height,
-      layer: "user",
-      order: orderCounter++,
-      user: currentUser,
-      rotation: 0,
-      imageName: "リンクボード",
-      imageListOrder: bumpImageListOrderCounter(),
-      lassoToolObject: !!options.lassoToolObject,
-      linkBoardSource: {
-        x: source.x,
-        y: source.y,
-        width: source.width,
-        height: source.height,
-      },
+    if (source.width < 8 || source.height < 8) return false;
+    const aspect = source.width / source.height;
+    let frameWidth = Math.min(720, Math.max(360, window.innerWidth * 0.55));
+    let frameHeight = frameWidth / aspect + 38;
+    if (frameHeight > window.innerHeight * 0.75) {
+      frameHeight = Math.max(280, window.innerHeight * 0.75);
+      frameWidth = Math.max(360, (frameHeight - 38) * aspect);
+    }
+    const url = `${window.location.pathname}?linkBoard=${encodeURIComponent(JSON.stringify(source))}`;
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-link-board";
+    frame.style.width = `${Math.round(frameWidth)}px`;
+    frame.style.height = `${Math.round(frameHeight)}px`;
+    const existingCount = document.querySelectorAll(".floating-link-board").length;
+    frame.style.left = `${Math.min(120 + existingCount * 28, Math.max(12, window.innerWidth - frameWidth - 20))}px`;
+    frame.style.top = `${Math.min(80 + existingCount * 28, Math.max(12, window.innerHeight - frameHeight - 20))}px`;
+
+    const header = document.createElement("header");
+    header.className = "floating-link-board-header";
+    const title = document.createElement("span");
+    title.textContent = "リンクボード";
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "floating-link-board-close";
+    closeButton.textContent = "×";
+    closeButton.setAttribute("aria-label", "リンクボードを閉じる");
+    header.appendChild(title);
+    header.appendChild(closeButton);
+
+    const iframe = document.createElement("iframe");
+    iframe.className = "floating-link-board-content";
+    iframe.src = url;
+    iframe.title = "リンクボード";
+    frame.appendChild(header);
+    frame.appendChild(iframe);
+    document.body.appendChild(frame);
+    iframe.addEventListener("load", syncToolbarToActiveDraftBoard);
+
+    const activate = () => {
+      activateFloatingAppWindow(frame);
     };
-    images.push(imgObj);
-    registerUser(currentUser);
-    refreshImageList();
-    emitImageAdd(imgObj);
-    selected = { type: "image", index: images.length - 1 };
+    frame.addEventListener("pointerdown", activate);
+    activate();
+
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button")) return;
+      const rect = frame.getBoundingClientRect();
+      drag = { pointerId: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top };
+      header.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const minLeft = Math.min(0, 80 - frame.offsetWidth);
+      const maxLeft = Math.max(minLeft, window.innerWidth - 80);
+      const maxTop = Math.max(0, window.innerHeight - 38);
+      frame.style.left = `${Math.min(Math.max(minLeft, event.clientX - drag.dx), maxLeft)}px`;
+      frame.style.top = `${Math.min(Math.max(0, event.clientY - drag.dy), maxTop)}px`;
+      frame.style.right = "auto";
+      frame.style.bottom = "auto";
+    });
+    const endDrag = (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+    };
+    header.addEventListener("pointerup", endDrag);
+    header.addEventListener("pointercancel", endDrag);
+    closeButton.addEventListener("click", () => {
+      const wasActive = frame.classList.contains("active");
+      frame.remove();
+      if (wasActive) activateTopFloatingAppWindow();
+    });
     multiSelection = null;
+    selected = null;
     linkBoardMode = null;
     pendingLinkBoardSource = null;
     linkBoardPlaceStart = null;
     linkBoardPlacePreview = null;
     updateFooterByState();
     redraw();
+    showTransientFooterMessage("リンクボードをアプリ内の別窓で開きました。", 2500);
+    return true;
   }
 
   function renderInsertMenu() {

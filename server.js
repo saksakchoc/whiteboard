@@ -621,14 +621,16 @@ io.on("connection", (socket) => {
     socket.emit("presence:views", views);
   });
 
-  socket.on("user:identify", ({ boardId, user, favoriteColor }) => {
+  socket.on("user:identify", ({ boardId, user, favoriteColor, presence = true }) => {
     if (!boardId || !user) return;
     currentBoardId = boardId;
     currentUserName = user;
     addUser(user, favoriteColor || null);
     linkUserToBoard(boardId, user, favoriteColor || null);
-    getBoardPresence(boardId).set(socket.id, { user, view: null });
-    broadcastOnlineUsers(boardId);
+    if (presence) {
+      getBoardPresence(boardId).set(socket.id, { user, view: null });
+      broadcastOnlineUsers(boardId);
+    }
     const drafts = getDraftStrokes(boardId, user);
     socket.emit("draft:init", drafts);
   });
