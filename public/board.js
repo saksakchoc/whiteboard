@@ -10049,6 +10049,47 @@
     });
   }
 
+  function findAttentionPointerAt(screenX, screenY) {
+    const footerSpace = getFooterSpace();
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height - footerSpace;
+
+    // 後から描画されたポインターを優先する
+    const pointers = Array.from(attentionPointers.values()).reverse();
+    for (const p of pointers) {
+      const screen = worldToScreen(p.x, p.y);
+      const visible =
+        screen.x >= 0 && screen.x <= w && screen.y >= 0 && screen.y <= h;
+
+      if (visible) {
+        if (Math.hypot(screenX - screen.x, screenY - screen.y) <= 22) return p;
+        continue;
+      }
+
+      // 矢印は脈動するため、最大描画サイズを含む少し広めの範囲で判定する
+      const padding = 12;
+      let arrowX = Math.min(Math.max(screen.x, padding), w - padding);
+      let arrowY = Math.min(Math.max(screen.y, padding), h - padding - footerSpace);
+      if (screen.x < 0) arrowX = padding;
+      if (screen.x > w) arrowX = w - padding;
+      if (screen.y < 0) arrowY = padding;
+      if (screen.y > h) arrowY = h - padding - footerSpace;
+
+      if (Math.hypot(screenX - arrowX, screenY - arrowY) <= 68) return p;
+    }
+    return null;
+  }
+
+  function focusAttentionPointerAt(screenX, screenY) {
+    const pointer = findAttentionPointerAt(screenX, screenY);
+    if (!pointer) return false;
+    offsetX = canvas.width / 2 - pointer.x * scale;
+    offsetY = canvas.height / 2 - pointer.y * scale;
+    redraw();
+    return true;
+  }
+
   function drawLaser(x, y, color) {
     ctx.save();
     const radius = 10;
@@ -10937,6 +10978,15 @@
     if (e.touches && e.touches.length >= 2) {
       startPinchGesture(e);
       return;
+    }
+
+    const primaryButton = e.button == null || e.button === 0;
+    if (primaryButton) {
+      const canvasPos = getCanvasPointFromEvent(e);
+      if (focusAttentionPointerAt(canvasPos.x, canvasPos.y)) {
+        e.preventDefault();
+        return;
+      }
     }
 
     if (linkBoardMode && (e.button ?? 0) === 0) {
