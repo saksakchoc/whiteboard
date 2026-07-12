@@ -490,6 +490,24 @@ app.get("/api/link-image", async (req, res) => {
 // { strokes:[], texts:[], images:[] }
 const boardStates = new Map();
 const boardScreenShares = new Map();
+const boardPresence = new Map();
+
+function getBoardPresence(boardId) {
+  if (!boardPresence.has(boardId)) boardPresence.set(boardId, new Map());
+  return boardPresence.get(boardId);
+}
+
+function getOnlineUsers(boardId) {
+  const presence = boardPresence.get(boardId);
+  if (!presence) return [];
+  return Array.from(new Set(Array.from(presence.values()).map((entry) => entry.user).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b, "ja"));
+}
+
+function broadcastOnlineUsers(boardId) {
+  if (!boardId) return;
+  io.to(boardId).emit("presence:users", getOnlineUsers(boardId));
+}
 
 function getBoardScreenShares(boardId) {
   if (!boardScreenShares.has(boardId)) {
@@ -596,6 +614,11 @@ io.on("connection", (socket) => {
       user: info.user || "",
     })) : [];
     socket.emit("screen-share:active", activeShares);
+    socket.emit("presence:users", getOnlineUsers(boardId));
+    const views = Array.from(getBoardPresence(boardId).values())
+      .filter((entry) => entry.user && entry.view)
+      .map((entry) => ({ user: entry.user, ...entry.view }));
+    socket.emit("presence:views", views);
   });
 
   socket.on("user:identify", ({ boardId, user, favoriteColor }) => {
@@ -604,6 +627,8 @@ io.on("connection", (socket) => {
     currentUserName = user;
     addUser(user, favoriteColor || null);
     linkUserToBoard(boardId, user, favoriteColor || null);
+    getBoardPresence(boardId).set(socket.id, { user, view: null });
+    broadcastOnlineUsers(boardId);
     const drafts = getDraftStrokes(boardId, user);
     socket.emit("draft:init", drafts);
   });
@@ -754,6 +779,22 @@ io.on("connection", (socket) => {
     socket.to(boardId).emit("attention:end", { user });
   });
 
+  socket.on("presence:view", ({ boardId, view }) => {
+    if (boardId !== currentBoardId || !currentUserName || !view) return;
+    if (![view.x, view.y, view.scale, view.width, view.height].every(Number.isFinite)) return;
+    if (view.width <= 0 || view.height <= 0) return;
+    const safeView = {
+      x: view.x,
+      y: view.y,
+      scale: Math.min(4, Math.max(0.05, view.scale)),
+      width: view.width,
+      height: view.height,
+    };
+    const presence = getBoardPresence(boardId);
+    presence.set(socket.id, { user: currentUserName, view: safeView });
+    socket.to(boardId).emit("presence:view", { user: currentUserName, ...safeView });
+  });
+
   socket.on("presence:writing:start", ({ boardId, data }) => {
     if (boardId !== currentBoardId || !data) return;
     if (!Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
@@ -826,6 +867,12 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     stopSocketScreenShare(socket, currentBoardId);
     if (currentBoardId) {
+      const presence = boardPresence.get(currentBoardId);
+      if (presence) {
+        presence.delete(socket.id);
+        if (presence.size === 0) boardPresence.delete(currentBoardId);
+      }
+      broadcastOnlineUsers(currentBoardId);
       socket.to(currentBoardId).emit("presence:writing:end", {
         socketId: socket.id,
         user: currentUserName || "",

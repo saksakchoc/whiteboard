@@ -39,6 +39,8 @@
   const linkListPanel = document.getElementById("link-list-panel");
   const linkListBody = document.getElementById("link-list-body");
   const linkListCloseBtn = document.getElementById("link-list-close-btn");
+  const watchUsersBtn = document.getElementById("watch-users-btn");
+  const watchUsersMenu = document.getElementById("watch-users-menu");
   const otherMenuBtn = document.getElementById("other-menu-btn");
   const otherMenu = document.getElementById("other-menu");
   const changeUserBtn = document.getElementById("change-user-btn");
@@ -73,6 +75,7 @@
 
   // --- ボードID表示 ---
   const boardId = window.location.pathname.split("/").pop();
+  const followTargetUser = new URLSearchParams(window.location.search).get("follow") || "";
   const userStorageKey = "whiteboard-users-v1";
   const lastUserStorageKey = "whiteboard-last-user-v1";
   let boardTitle = boardId;
@@ -95,6 +98,12 @@
   let currentTool = "pen"; // "pen" | "fill" | "select" | "eraser" | "lasso-copy"
   let currentUser = "";
   let knownUsers = [];
+  let onlineUsers = [];
+  let latestFollowView = null;
+  let followViewLabel = null;
+  let lastViewPresenceEmitAt = 0;
+  let lastEmittedView = null;
+  let viewPresenceTimer = null;
   let boardUsersFromServer = [];
   let strokesDimmed = false;
   const DIM_ALPHA = 0.35;
@@ -1058,6 +1067,10 @@
   // --- キャンバスサイズ ---
   function resizeCanvas() {
     updateToolbarMetrics();
+    if (followTargetUser && latestFollowView) {
+      applyFollowView(latestFollowView);
+      return;
+    }
     const rect = container.getBoundingClientRect();
     canvas.width = rect.width;
     canvas.height = rect.height;
@@ -3750,7 +3763,7 @@
 
   function updateBoardTitleDisplay() {
     boardTitleLabel.textContent = `${boardTitle}`;
-    document.title = `${boardTitle}`;
+    document.title = followTargetUser ? `${followTargetUser}を追跡 - ${boardTitle}` : `${boardTitle}`;
   }
 
   async function loadBoardUsersFromServer() {
@@ -6145,12 +6158,81 @@
   });
 
   function identifyToServer() {
-    if (!socketConnected || !currentUser) return;
+    if (!socketConnected || !currentUser || followTargetUser) return;
     socket.emit("user:identify", {
       boardId,
       user: currentUser,
       favoriteColor: getCurrentRegisteredFavoriteColor(),
     });
+  }
+
+  function applyFollowView(view) {
+    if (!followTargetUser || !view) return;
+    if (![view.x, view.y, view.scale, view.width, view.height].every(Number.isFinite)) return;
+    if (view.width <= 0 || view.height <= 0 || view.scale <= 0) return;
+    latestFollowView = view;
+
+    const targetAspect = view.width / view.height;
+    const windowAspect = window.innerWidth / Math.max(1, window.innerHeight);
+    let displayWidth;
+    let displayHeight;
+    if (windowAspect > targetAspect) {
+      displayHeight = window.innerHeight;
+      displayWidth = displayHeight * targetAspect;
+    } else {
+      displayWidth = window.innerWidth;
+      displayHeight = displayWidth / targetAspect;
+    }
+    container.style.width = `${displayWidth}px`;
+    container.style.height = `${displayHeight}px`;
+    container.style.left = `${(window.innerWidth - displayWidth) / 2}px`;
+    container.style.top = `${(window.innerHeight - displayHeight) / 2}px`;
+    container.style.right = "auto";
+    container.style.bottom = "auto";
+
+    const rect = container.getBoundingClientRect();
+    const nextWidth = Math.max(1, Math.round(rect.width));
+    const nextHeight = Math.max(1, Math.round(rect.height));
+    if (canvas.width !== nextWidth) canvas.width = nextWidth;
+    if (canvas.height !== nextHeight) canvas.height = nextHeight;
+    const worldWidth = view.width / view.scale;
+    const worldHeight = view.height / view.scale;
+    scale = Math.min(canvas.width / worldWidth, canvas.height / worldHeight);
+    offsetX = canvas.width / 2 - view.x * scale;
+    offsetY = canvas.height / 2 - view.y * scale;
+    redraw();
+  }
+
+  function emitCurrentViewPresence() {
+    if (followTargetUser || !socketConnected || !socketReady || !currentUser) return;
+    const now = Date.now();
+    const view = {
+      x: (canvas.width / 2 - offsetX) / scale,
+      y: (canvas.height / 2 - offsetY) / scale,
+      scale,
+      width: canvas.width,
+      height: canvas.height,
+    };
+    const changed =
+      !lastEmittedView ||
+      Math.abs(view.x - lastEmittedView.x) > 0.01 ||
+      Math.abs(view.y - lastEmittedView.y) > 0.01 ||
+      Math.abs(view.scale - lastEmittedView.scale) > 0.0001 ||
+      view.width !== lastEmittedView.width ||
+      view.height !== lastEmittedView.height;
+    if (!changed && now - lastViewPresenceEmitAt < 1000) return;
+    if (now - lastViewPresenceEmitAt < 50) {
+      if (!viewPresenceTimer) {
+        viewPresenceTimer = setTimeout(() => {
+          viewPresenceTimer = null;
+          emitCurrentViewPresence();
+        }, 50 - (now - lastViewPresenceEmitAt));
+      }
+      return;
+    }
+    lastViewPresenceEmitAt = now;
+    lastEmittedView = view;
+    socket.emit("presence:view", { boardId, view });
   }
 
   function updateScreenShareLayout() {
@@ -6808,6 +6890,27 @@
   socket.on("board:title:update", ({ title }) => {
     boardTitle = title || boardId;
     updateBoardTitleDisplay();
+  });
+
+  socket.on("presence:users", (users) => {
+    onlineUsers = Array.isArray(users) ? users.filter((name) => typeof name === "string" && name) : [];
+    renderWatchUsersMenu();
+    if (followViewLabel && followTargetUser) {
+      followViewLabel.textContent = onlineUsers.includes(followTargetUser)
+        ? `👀 ${followTargetUser} を追跡中`
+        : `👀 ${followTargetUser} は現在オフラインです`;
+    }
+  });
+
+  socket.on("presence:views", (views) => {
+    if (!followTargetUser || !Array.isArray(views)) return;
+    const view = views.slice().reverse().find((entry) => entry?.user === followTargetUser);
+    if (view) applyFollowView(view);
+  });
+
+  socket.on("presence:view", (view) => {
+    if (!followTargetUser || view?.user !== followTargetUser) return;
+    applyFollowView(view);
   });
 
   socket.on("attention:start", (data) => {
@@ -8632,6 +8735,7 @@
     drawAttentionPointers();
     drawWritingLabels();
     frameRenderCache = null;
+    emitCurrentViewPresence();
   }
 
   function getRenderItemKey(item) {
@@ -12759,6 +12863,42 @@
     if (listMenu) listMenu.classList.remove("hidden");
   }
 
+  function renderWatchUsersMenu() {
+    if (!watchUsersMenu) return;
+    watchUsersMenu.innerHTML = "";
+    if (!onlineUsers.length) {
+      const empty = document.createElement("div");
+      empty.className = "watch-users-empty";
+      empty.textContent = "現在いるユーザーはいません";
+      watchUsersMenu.appendChild(empty);
+      return;
+    }
+    onlineUsers.forEach((user) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = user === currentUser ? `${user}（自分）` : user;
+      button.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const url = `${window.location.pathname}?follow=${encodeURIComponent(user)}`;
+        window.open(url, `whiteboard-follow-${boardId}-${user}`, "popup=yes,width=960,height=720,resizable=yes");
+        watchUsersMenu.classList.add("hidden");
+      });
+      watchUsersMenu.appendChild(button);
+    });
+  }
+
+  function openWatchUsersMenu() {
+    closeListMenu();
+    closeOtherMenu();
+    if (textToolMenu) textToolMenu.classList.add("hidden");
+    renderWatchUsersMenu();
+    watchUsersMenu?.classList.remove("hidden");
+  }
+
+  function closeWatchUsersMenu() {
+    watchUsersMenu?.classList.add("hidden");
+  }
+
   function openOtherMenu() {
     if (otherMenu) {
       if (otherMenu._closeTimer) {
@@ -14220,6 +14360,22 @@
     listMenu.addEventListener("click", () => closeListMenu());
   }
 
+  if (watchUsersBtn && watchUsersMenu) {
+    watchUsersBtn.addEventListener("mouseenter", openWatchUsersMenu);
+    watchUsersMenu.addEventListener("mouseenter", openWatchUsersMenu);
+    watchUsersBtn.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!watchUsersBtn.matches(":hover") && !watchUsersMenu.matches(":hover")) closeWatchUsersMenu();
+    }, 150));
+    watchUsersMenu.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!watchUsersBtn.matches(":hover") && !watchUsersMenu.matches(":hover")) closeWatchUsersMenu();
+    }, 150));
+    watchUsersBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (watchUsersMenu.classList.contains("hidden")) openWatchUsersMenu();
+      else closeWatchUsersMenu();
+    });
+  }
+
   if (otherMenuBtn) {
     otherMenuBtn.addEventListener("mouseenter", () => openOtherMenu());
     otherMenuBtn.addEventListener("mouseleave", () => closeOtherMenu(800));
@@ -14254,10 +14410,15 @@
       textToolMenu &&
       textToolBtn &&
       (textToolMenu.contains(target) || textToolBtn.contains(target));
+    const insideWatchUsers =
+      watchUsersMenu &&
+      watchUsersBtn &&
+      (watchUsersMenu.contains(target) || watchUsersBtn.contains(target));
 
     if (!insideInsert) closeInsertMenu();
     if (!insideOther) closeOtherMenu();
     if (!insideList) closeListMenu();
+    if (!insideWatchUsers) closeWatchUsersMenu();
     if (!insideTextTool && textToolMenu) textToolMenu.classList.add("hidden");
   });
   window.addEventListener("resize", () => {
@@ -14274,18 +14435,28 @@
   undoBtn.addEventListener("click", undoLast);
 
   // 初期化
+  if (followTargetUser) {
+    document.body.classList.add("follow-view");
+    userModal.classList.add("hidden");
+    followViewLabel = document.createElement("div");
+    followViewLabel.className = "follow-view-label";
+    followViewLabel.textContent = `👀 ${followTargetUser} の位置を待っています`;
+    document.body.appendChild(followViewLabel);
+  }
   updateBoardTitleDisplay();
   refreshUserDatalist();
   loadTemplates();
   updateLayerToggleUI();
   refreshCompactMode();
   updateFooterByState();
-  loadBoardUsersFromServer();
-  const lastUser = loadLastUser().trim();
-  if (lastUser) {
-    setCurrentUser(lastUser);
-  } else {
-    openUserModal();
+  if (!followTargetUser) {
+    loadBoardUsersFromServer();
+    const lastUser = loadLastUser().trim();
+    if (lastUser) {
+      setCurrentUser(lastUser);
+    } else {
+      openUserModal();
+    }
   }
   function getShapeTargetLayer() {
     if (activeLayer === "image") return isAdminUser() ? "image" : "base";

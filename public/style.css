@@ -745,6 +745,7 @@ button:hover {
 
 .side-others,
 .side-list-tool,
+.side-watch-tool,
 .side-lasso-tool,
 .side-text-tool {
   position: relative;
@@ -766,6 +767,58 @@ button:hover {
 
 .side-menu.hidden {
   display: none;
+}
+
+.watch-users-menu {
+  min-width: 180px;
+}
+
+.watch-users-menu button,
+.watch-users-empty {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.watch-users-empty {
+  padding: 8px 10px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+body.follow-view #toolbar,
+body.follow-view #side-toolbar,
+body.follow-view #footer-hint,
+body.follow-view #screen-share-view {
+  display: none !important;
+}
+
+body.follow-view #canvas-container {
+  inset: 0;
+}
+
+body.follow-view {
+  background: #1e293b;
+}
+
+body.follow-view #board-canvas {
+  pointer-events: none;
+  cursor: default;
+}
+
+.follow-view-label {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2100;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #fff;
+  font-size: 13px;
+  pointer-events: none;
 }
 
 .side-menu button {
