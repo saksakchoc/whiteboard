@@ -743,6 +743,12 @@ button:hover {
   border-color: #0b4ea2;
 }
 
+#fill-tool-btn.active {
+  background: #0b4ea2;
+  color: #fff;
+  border-color: #0b4ea2;
+}
+
 .side-others,
 .side-list-tool,
 .side-watch-tool,

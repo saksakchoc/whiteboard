@@ -13578,7 +13578,7 @@
       insertMenuBtn.title = creationLocked ? "このレイヤーでは挿入は使えません" : "挿入";
     }
     if (otherMenuBtn) {
-      otherMenuBtn.classList.toggle("active", isInsertMode);
+      otherMenuBtn.classList.toggle("active", isInsertMode || isFill);
     }
     if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill" || currentTool === "lasso-copy") {
       canvas.style.cursor = "crosshair";
@@ -13754,6 +13754,7 @@
       redraw();
       showTransientFooterMessage("塗りつぶし：閉じた線の内側をクリックしてください。", 5000);
       resetShapeMode();
+      closeOtherMenu();
     });
   }
 
