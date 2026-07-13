@@ -287,7 +287,24 @@ body {
   font-size: 18px;
 }
 
-.spreadsheet-content,
+.spreadsheet-viewport {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: #fff;
+}
+
+.spreadsheet-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  border: 0;
+  background: #fff;
+  transform-origin: left top;
+}
+
 .floating-spreadsheet-content {
   display: block;
   width: 100%;
@@ -306,6 +323,10 @@ body {
   cursor: nwse-resize;
   touch-action: none;
   background: linear-gradient(135deg, transparent 48%, #64748b 49%, #64748b 58%, transparent 59%);
+}
+
+.spreadsheet-resize.scale-mode {
+  background: linear-gradient(135deg, transparent 44%, #2563eb 45%, #2563eb 56%, transparent 57%, transparent 66%, #2563eb 67%, #2563eb 78%, transparent 79%);
 }
 
 .floating-spreadsheet-window {

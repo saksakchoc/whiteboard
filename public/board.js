@@ -15825,6 +15825,8 @@
       siteName: "Google Sheets",
       linkType: "spreadsheet",
       sourceUrl: getSpreadsheetSourceUrlFromInput(raw, url),
+      spreadsheetScale: 1,
+      spreadsheetResizeMode: "fixed",
       x: center.x - width / 2,
       y: center.y - height / 2,
       width,
@@ -15911,6 +15913,59 @@
     showContextMenu(event.clientX, event.clientY);
   }
 
+  let spreadsheetResizeModeMenu = null;
+
+  function hideSpreadsheetResizeModeMenu() {
+    if (!spreadsheetResizeModeMenu) return;
+    spreadsheetResizeModeMenu.style.display = "none";
+    spreadsheetResizeModeMenu._link = null;
+  }
+
+  function showSpreadsheetResizeModeMenu(event, link) {
+    if (!spreadsheetResizeModeMenu) {
+      spreadsheetResizeModeMenu = document.createElement("div");
+      spreadsheetResizeModeMenu.className = "text-memo-context-menu memo-resize-mode-menu";
+      [
+        { mode: "fixed", label: "枠のみ" },
+        { mode: "scale", label: "全体の縮尺" },
+      ].forEach(({ mode, label }) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.mode = mode;
+        button.textContent = label;
+        button.addEventListener("click", () => {
+          const target = spreadsheetResizeModeMenu._link;
+          hideSpreadsheetResizeModeMenu();
+          if (!target || !canInteractLink(target)) return;
+          target.spreadsheetResizeMode = mode;
+          if (!Number.isFinite(target.spreadsheetScale) || target.spreadsheetScale <= 0) {
+            target.spreadsheetScale = 1;
+          }
+          emitItemPatch("link", target, {
+            spreadsheetResizeMode: target.spreadsheetResizeMode,
+            spreadsheetScale: target.spreadsheetScale,
+          });
+          redraw();
+        });
+        spreadsheetResizeModeMenu.appendChild(button);
+      });
+      document.body.appendChild(spreadsheetResizeModeMenu);
+      window.addEventListener("pointerdown", (pointerEvent) => {
+        if (!spreadsheetResizeModeMenu?.contains(pointerEvent.target)) hideSpreadsheetResizeModeMenu();
+      });
+    }
+    spreadsheetResizeModeMenu._link = link;
+    spreadsheetResizeModeMenu.querySelectorAll("button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.mode === (link.spreadsheetResizeMode || "fixed"));
+    });
+    spreadsheetResizeModeMenu.style.display = "block";
+    spreadsheetResizeModeMenu.style.left = `${event.clientX}px`;
+    spreadsheetResizeModeMenu.style.top = `${event.clientY}px`;
+    const rect = spreadsheetResizeModeMenu.getBoundingClientRect();
+    spreadsheetResizeModeMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`;
+    spreadsheetResizeModeMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`;
+  }
+
   function createSpreadsheetElement(link) {
     const element = document.createElement("article");
     element.className = "spreadsheet-object";
@@ -15918,7 +15973,8 @@
     element.innerHTML =
       '<header class="spreadsheet-header"><span class="spreadsheet-badge">▦</span><span class="spreadsheet-title"></span>' +
       '<button type="button" class="spreadsheet-reload" title="スプレッドシートを再読み込み" aria-label="スプレッドシートを再読み込み">↺</button></header>' +
-      '<iframe class="spreadsheet-content"></iframe><div class="spreadsheet-resize" title="枠の大きさを変更"></div>';
+      '<div class="spreadsheet-viewport"><iframe class="spreadsheet-content"></iframe></div>' +
+      '<div class="spreadsheet-resize" title="枠の大きさを変更（右クリックでモード変更）"></div>';
     spreadsheetLayer.appendChild(element);
     const header = element.querySelector(".spreadsheet-header");
     const iframe = element.querySelector("iframe");
@@ -15976,6 +16032,12 @@
 
     const handle = element.querySelector(".spreadsheet-resize");
     let resizing = null;
+    handle.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const current = getLink();
+      if (current) showSpreadsheetResizeModeMenu(event, current);
+    });
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       const current = getLink();
@@ -15990,6 +16052,8 @@
         clientY: event.clientY,
         width: current.width,
         height: current.height,
+        spreadsheetScale: current.spreadsheetScale || 1,
+        mode: current.spreadsheetResizeMode === "scale" ? "scale" : "fixed",
       };
       handle.setPointerCapture?.(event.pointerId);
       event.preventDefault();
@@ -15999,8 +16063,25 @@
       if (!resizing || resizing.pointerId !== event.pointerId) return;
       const current = getLink();
       if (!current) return;
-      current.width = Math.max(320, resizing.width + (event.clientX - resizing.clientX) / scale);
-      current.height = Math.max(220, resizing.height + (event.clientY - resizing.clientY) / scale);
+      const dx = (event.clientX - resizing.clientX) / scale;
+      const dy = (event.clientY - resizing.clientY) / scale;
+      if (resizing.mode === "scale") {
+        const denominator = resizing.width * resizing.width + resizing.height * resizing.height;
+        const projection = denominator > 0 ? (dx * resizing.width + dy * resizing.height) / denominator : 0;
+        const minFactor = Math.max(
+          320 / resizing.width,
+          220 / resizing.height,
+          0.25 / resizing.spreadsheetScale
+        );
+        const maxFactor = 4 / resizing.spreadsheetScale;
+        const factor = Math.max(minFactor, Math.min(maxFactor, 1 + projection));
+        current.width = resizing.width * factor;
+        current.height = resizing.height * factor;
+        current.spreadsheetScale = resizing.spreadsheetScale * factor;
+      } else {
+        current.width = Math.max(320, resizing.width + dx);
+        current.height = Math.max(220, resizing.height + dy);
+      }
       syncSpreadsheetElementPosition(element, current);
     });
     const finishResize = (event) => {
@@ -16008,7 +16089,11 @@
       handle.releasePointerCapture?.(event.pointerId);
       resizing = null;
       const current = getLink();
-      if (current) emitItemPatch("link", current, { width: current.width, height: current.height });
+      if (current) emitItemPatch("link", current, {
+        width: current.width,
+        height: current.height,
+        spreadsheetScale: current.spreadsheetScale || 1,
+      });
       actionSnapshotTaken = false;
       redraw();
     };
@@ -16030,13 +16115,29 @@
     element.style.top = `${point.y}px`;
     element.style.width = `${(link.width || 720) * scale}px`;
     element.style.height = `${(link.height || 460) * scale}px`;
-    element.style.setProperty("--sheet-scale", String(scale));
+    const resizeMode = link.spreadsheetResizeMode === "scale" ? "scale" : "fixed";
+    const storedScale = Number.isFinite(link.spreadsheetScale) && link.spreadsheetScale > 0 ? link.spreadsheetScale : 1;
+    const contentScale = resizeMode === "scale" ? Math.max(0.1, scale * storedScale) : 1;
+    const headerScale = resizeMode === "scale" ? scale * storedScale : scale;
+    element.style.setProperty("--sheet-scale", String(headerScale));
     element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
     element.classList.toggle("read-only", !canInteractLink(link));
     const title = element.querySelector(".spreadsheet-title");
     if (title) title.textContent = link.title || "スプレッドシート";
     const iframe = element.querySelector("iframe");
-    if (iframe && iframe.src !== link.url) iframe.src = link.url;
+    if (iframe) {
+      iframe.style.width = `${100 / contentScale}%`;
+      iframe.style.height = `${100 / contentScale}%`;
+      iframe.style.transform = `scale(${contentScale})`;
+      if (iframe.src !== link.url) iframe.src = link.url;
+    }
+    const resizeHandle = element.querySelector(".spreadsheet-resize");
+    if (resizeHandle) {
+      resizeHandle.classList.toggle("scale-mode", resizeMode === "scale");
+      resizeHandle.title = resizeMode === "scale"
+        ? "全体の縮尺を変更（右クリックでモード変更）"
+        : "枠の大きさを変更（右クリックでモード変更）";
+    }
   }
 
   function syncSpreadsheetElements() {

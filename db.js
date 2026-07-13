@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS links_v1 (
   site_name TEXT,
   link_type TEXT,
   source_url TEXT,
+  spreadsheet_scale REAL,
+  spreadsheet_resize_mode TEXT,
   x REAL NOT NULL,
   y REAL NOT NULL,
   width REAL NOT NULL,
@@ -326,6 +328,8 @@ try {
   ["links_v1", "favicon TEXT"],
   ["links_v1", "link_type TEXT"],
   ["links_v1", "source_url TEXT"],
+  ["links_v1", "spreadsheet_scale REAL"],
+  ["links_v1", "spreadsheet_resize_mode TEXT"],
 ].forEach(([table, column]) => {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
@@ -622,8 +626,8 @@ function deleteImage(boardId, id) {
 // --- links_v1 ---
 function saveLink(link) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO links_v1 (id, board_id, user, url, title, description, image, favicon, site_name, link_type, source_url, x, y, width, height, layer, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO links_v1 (id, board_id, user, url, title, description, image, favicon, site_name, link_type, source_url, spreadsheet_scale, spreadsheet_resize_mode, x, y, width, height, layer, "order", created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     link.id,
@@ -637,6 +641,8 @@ function saveLink(link) {
     link.siteName || null,
     link.linkType || null,
     link.sourceUrl || null,
+    link.spreadsheetScale || 1,
+    link.spreadsheetResizeMode || "fixed",
     link.x,
     link.y,
     link.width || 320,
@@ -675,7 +681,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const linksStmt = db.prepare(`
-    SELECT id, user, url, title, description, image, favicon, site_name, link_type, source_url, x, y, width, height, layer, "order", created_at
+    SELECT id, user, url, title, description, image, favicon, site_name, link_type, source_url, spreadsheet_scale, spreadsheet_resize_mode, x, y, width, height, layer, "order", created_at
     FROM links_v1
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -768,6 +774,8 @@ function getBoardState(boardId) {
     siteName: row.site_name || "",
     linkType: row.link_type || "link",
     sourceUrl: row.source_url || "",
+    spreadsheetScale: row.spreadsheet_scale || 1,
+    spreadsheetResizeMode: row.spreadsheet_resize_mode === "scale" ? "scale" : "fixed",
     x: row.x,
     y: row.y,
     width: row.width,
