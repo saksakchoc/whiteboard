@@ -41,6 +41,7 @@ const {
   createDriveFolder,
   renameDriveFolder,
   createDriveImage,
+  listBoardImagesForDrive,
   getDriveImage,
   renameDriveImage,
   deleteDriveImage,
@@ -259,7 +260,9 @@ app.delete("/api/boards/:boardId", (req, res) => {
     const driveRoot = getBoardDriveRoot(boardId);
     if (driveRoot) {
       const driveData = deleteDriveFolder(driveRoot.id);
-      driveData?.images.forEach((image) => removeDriveUpload(image.src));
+      driveData?.images.forEach((image) => {
+        if (!image.source_image_id) removeDriveUpload(image.src);
+      });
     }
     const deleted = deleteBoard(boardId);
     if (!deleted) return res.status(404).json({ error: "board not found" });
@@ -305,13 +308,36 @@ function driveImageResponse(row) {
   return {
     id: row.id,
     folderId: row.folder_id || null,
-    name: row.name,
+    name: normalizeUploadedFilename(row.name),
     src: row.src,
     mimeType: row.mime_type || "",
     size: row.size || 0,
     capturedAt: row.captured_at || null,
+    linkedFromBoard: !!row.source_image_id,
     createdAt: row.created_at,
   };
+}
+
+function normalizeUploadedFilename(value) {
+  const raw = String(value || "image");
+  if (!/[\u0080-\u00ff]/.test(raw)) return raw;
+  const decoded = Buffer.from(raw, "latin1").toString("utf8");
+  return decoded.includes("\ufffd") ? raw : decoded;
+}
+
+function inferImageMimeType(src) {
+  const dataMime = String(src || "").match(/^data:(image\/[a-zA-Z0-9.+-]+);/i)?.[1];
+  if (dataMime) return dataMime.toLowerCase();
+  const extension = path.extname(String(src || "").split(/[?#]/, 1)[0]).toLowerCase();
+  return {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+  }[extension] || "image/png";
 }
 
 function readExifCapturedAt(filePath, mimeType) {
@@ -471,7 +497,7 @@ app.post("/api/boards/:boardId/drive/images", (req, res) => {
       const images = uploadedFiles.map((file) => createDriveImage({
         id: crypto.randomUUID(),
         folderId,
-        name: String(file.originalname || "image").slice(0, 255),
+        name: normalizeUploadedFilename(file.originalname).slice(0, 255),
         src: `/uploads/drive/${file.filename}`,
         mimeType: file.mimetype,
         size: file.size,
@@ -485,6 +511,44 @@ app.post("/api/boards/:boardId/drive/images", (req, res) => {
       res.status(500).json({ error: "failed to save images" });
     }
   });
+});
+
+app.post("/api/boards/:boardId/drive/import-board-images", (req, res) => {
+  try {
+    const board = getBoard(req.params.boardId);
+    if (!board) return res.status(404).json({ error: "board not found" });
+    const root = ensureBoardDrive(board.id, getBoardTitle(board.id) || board.id, crypto.randomUUID(), true);
+    const sourceImages = listBoardImagesForDrive(board.id);
+    const importedAt = Date.now();
+    let added = 0;
+    const images = sourceImages.map((source, index) => {
+      let fallbackName = `board-image-${index + 1}`;
+      try {
+        const filename = path.basename(String(source.src || "").split(/[?#]/, 1)[0]);
+        if (filename && filename.length < 256) fallbackName = decodeURIComponent(filename);
+      } catch {
+        // use generated fallback name
+      }
+      const id = crypto.randomUUID();
+      const image = createDriveImage({
+        id,
+        folderId: root.id,
+        name: normalizeUploadedFilename(source.image_name || fallbackName),
+        src: source.src,
+        mimeType: inferImageMimeType(source.src),
+        size: 0,
+        sourceBoardId: board.id,
+        sourceImageId: source.id,
+        createdAt: importedAt + index,
+      });
+      if (image?.id === id) added += 1;
+      return image;
+    }).filter(Boolean);
+    res.json({ added, existing: images.length - added, total: images.length, images: images.map(driveImageResponse) });
+  } catch (err) {
+    console.error("Failed to link board images to drive", err);
+    res.status(500).json({ error: "failed to import board images" });
+  }
 });
 
 app.patch("/api/boards/:boardId/drive/images/:imageId", (req, res) => {
@@ -526,7 +590,7 @@ app.delete("/api/boards/:boardId/drive/images/:imageId", (req, res) => {
     }
     const image = deleteDriveImage(req.params.imageId);
     if (!image) return res.status(404).json({ error: "image not found" });
-    removeDriveUpload(image.src);
+    if (!image.source_image_id) removeDriveUpload(image.src);
     res.json({ ok: true });
   } catch (err) {
     console.error("Failed to delete drive image", err);
@@ -542,7 +606,9 @@ app.delete("/api/boards/:boardId/drive/folders/:folderId", (req, res) => {
     }
     const deleted = deleteDriveFolder(req.params.folderId);
     if (!deleted) return res.status(404).json({ error: "folder not found" });
-    deleted.images.forEach((image) => removeDriveUpload(image.src));
+    deleted.images.forEach((image) => {
+      if (!image.source_image_id) removeDriveUpload(image.src);
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error("Failed to delete drive folder", err);

@@ -62,6 +62,7 @@
   const driveBreadcrumb = document.getElementById("drive-breadcrumb");
   const driveNewFolderBtn = document.getElementById("drive-new-folder-btn");
   const driveUploadBtn = document.getElementById("drive-upload-btn");
+  const driveImportBoardImagesBtn = document.getElementById("drive-import-board-images-btn");
   const driveSelectAllBtn = document.getElementById("drive-select-all-btn");
   const driveSortControl = document.getElementById("drive-sort-control");
   const driveSortOrderSelect = document.getElementById("drive-sort-order");
@@ -15015,6 +15016,7 @@
     driveFileInput.click();
   });
   driveFileInput?.addEventListener("change", () => uploadDriveImages(driveFileInput.files));
+  driveImportBoardImagesBtn?.addEventListener("click", importAllBoardImagesToDrive);
   driveSelectAllBtn?.addEventListener("click", toggleSelectAllDriveImages);
   driveSortOrderSelect?.addEventListener("change", () => {
     renderDriveContents();
@@ -15820,6 +15822,7 @@
     driveGrid.innerHTML = '<div class="drive-empty">読み込み中...</div>';
     if (driveNewFolderBtn) driveNewFolderBtn.disabled = true;
     if (driveUploadBtn) driveUploadBtn.disabled = true;
+    if (driveImportBoardImagesBtn) driveImportBoardImagesBtn.disabled = true;
     if (driveSelectAllBtn) driveSelectAllBtn.disabled = true;
     if (driveSortOrderSelect) driveSortOrderSelect.disabled = true;
     driveSortControl?.classList.add("hidden");
@@ -15899,6 +15902,7 @@
     driveVirtualHome = false;
     if (driveNewFolderBtn) driveNewFolderBtn.disabled = false;
     if (driveUploadBtn) driveUploadBtn.disabled = false;
+    if (driveImportBoardImagesBtn) driveImportBoardImagesBtn.disabled = false;
     if (driveSortOrderSelect) driveSortOrderSelect.disabled = false;
     driveSortControl?.classList.remove("hidden");
     driveBreadcrumb.innerHTML = "";
@@ -16304,8 +16308,31 @@
       return;
     }
 
+    let directory;
     try {
-      const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+      directory = await window.showDirectoryPicker({
+        id: "whiteboard-drive-download",
+        mode: "readwrite",
+        startIn: "downloads",
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      console.error(err);
+      window.alert(`保存先フォルダを開けませんでした。\n${err?.name || "Error"}: ${err?.message || "不明なエラー"}`);
+      return;
+    }
+
+    try {
+      const permissionOptions = { mode: "readwrite" };
+      let permission = typeof directory.queryPermission === "function"
+        ? await directory.queryPermission(permissionOptions)
+        : "granted";
+      if (permission !== "granted" && typeof directory.requestPermission === "function") {
+        permission = await directory.requestPermission(permissionOptions);
+      }
+      if (permission !== "granted") {
+        throw new DOMException("フォルダへの書き込みが許可されていません。", "NotAllowedError");
+      }
       const usedNames = new Set();
       for (let index = 0; index < selectedImages.length; index += 1) {
         const image = selectedImages[index];
@@ -16313,8 +16340,9 @@
         if (!response.ok) throw new Error(`failed to download ${image.name}`);
         const blob = await response.blob();
         const baseName = String(image.name || `image-${index + 1}`)
-          .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
-          .replace(/[. ]+$/g, "") || `image-${index + 1}`;
+          .replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f]/g, "_")
+          .replace(/[. ]+$/g, "")
+          .slice(0, 180) || `image-${index + 1}`;
         const dotIndex = baseName.lastIndexOf(".");
         const stem = dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName;
         const extension = dotIndex > 0 ? baseName.slice(dotIndex) : "";
@@ -16325,7 +16353,27 @@
           suffix += 1;
         }
         usedNames.add(filename.toLocaleLowerCase());
-        const fileHandle = await directory.getFileHandle(filename, { create: true });
+        let fileHandle;
+        try {
+          fileHandle = await directory.getFileHandle(filename, { create: true });
+        } catch (err) {
+          if (err?.name !== "TypeError") throw err;
+          const mimeExtension = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+            "image/avif": ".avif",
+          }[blob.type] || extension || "";
+          let fallbackNumber = index + 1;
+          do {
+            filename = `image-${String(fallbackNumber).padStart(3, "0")}${mimeExtension}`;
+            fallbackNumber += 1;
+          } while (usedNames.has(filename.toLocaleLowerCase()));
+          usedNames.add(filename.toLocaleLowerCase());
+          fileHandle = await directory.getFileHandle(filename, { create: true });
+        }
         const writable = await fileHandle.createWritable();
         await writable.write(blob);
         await writable.close();
@@ -16334,9 +16382,14 @@
       setDriveStatus(`${selectedImages.length}件選択中`);
       showTransientFooterMessage(`${selectedImages.length}件を選択したフォルダへ保存しました。`, 4000);
     } catch (err) {
-      if (err?.name === "AbortError") return;
       console.error(err);
-      window.alert("選択したフォルダへ画像を保存できませんでした。");
+      const reason = {
+        NotAllowedError: "フォルダへの書き込みが許可されていません。別のフォルダを選択してください。",
+        NoModificationAllowedError: "ファイルが使用中か、保存先が読み取り専用です。",
+        NotFoundError: "保存中にフォルダまたはファイルが見つからなくなりました。",
+        AbortError: "ブラウザーの安全確認により書き込みが中止されました。",
+      }[err?.name] || err?.message || "不明なエラーです。";
+      window.alert(`選択したフォルダへ画像を保存できませんでした。\n${reason}\n(${err?.name || "Error"})`);
     }
   }
 
@@ -16411,6 +16464,28 @@
       console.error(err);
       setDriveStatus("アップロードに失敗しました");
       window.alert("画像をアップロードできませんでした（1枚20MBまで）。");
+    }
+  }
+
+  async function importAllBoardImagesToDrive() {
+    if (!driveImportBoardImagesBtn || driveVirtualHome) return;
+    driveImportBoardImagesBtn.disabled = true;
+    setDriveStatus("ボード画像を登録中...");
+    try {
+      const res = await fetch(`${getDriveApiBase()}/import-board-images`, { method: "POST" });
+      if (!res.ok) throw new Error("board image import failed");
+      const result = await res.json();
+      await loadDriveFolder(driveRootFolderId);
+      const message = result.added > 0
+        ? `${result.added}件の画像をドライブへ登録しました。`
+        : "すべての画像は登録済みです。";
+      showTransientFooterMessage(message, 4000);
+    } catch (err) {
+      console.error(err);
+      setDriveStatus("登録に失敗しました");
+      window.alert("ボード画像をドライブへ登録できませんでした。");
+    } finally {
+      driveImportBoardImagesBtn.disabled = false;
     }
   }
 

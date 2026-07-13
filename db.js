@@ -172,6 +172,8 @@ CREATE TABLE IF NOT EXISTS drive_images (
   mime_type TEXT,
   size INTEGER NOT NULL DEFAULT 0,
   captured_at TEXT,
+  source_board_id TEXT,
+  source_image_id TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -195,6 +197,21 @@ try {
 } catch (e) {
   // ignore if column already exists
 }
+try {
+  db.exec("ALTER TABLE drive_images ADD COLUMN source_board_id TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE drive_images ADD COLUMN source_image_id TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_images_source
+  ON drive_images(source_board_id, source_image_id)
+  WHERE source_board_id IS NOT NULL AND source_image_id IS NOT NULL
+`);
 
 // 既存テーブルへの列追加（存在しない場合だけ）
 try {
@@ -535,7 +552,7 @@ function listDriveFolder(parentId = null) {
       ORDER BY name COLLATE NOCASE ASC, created_at ASC
     `).all(...args),
     images: db.prepare(`
-      SELECT id, folder_id, name, src, mime_type, size, captured_at, created_at
+      SELECT id, folder_id, name, src, mime_type, size, captured_at, source_board_id, source_image_id, created_at
       FROM drive_images WHERE folder_id ${where}
       ORDER BY created_at ASC, rowid ASC
     `).all(...args),
@@ -568,9 +585,10 @@ function renameDriveFolder(id, name) {
 }
 
 function createDriveImage(image) {
-  db.prepare(`
-    INSERT INTO drive_images (id, folder_id, name, src, mime_type, size, captured_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO drive_images
+      (id, folder_id, name, src, mime_type, size, captured_at, source_board_id, source_image_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     image.id,
     normalizeDriveParentId(image.folderId),
@@ -579,9 +597,25 @@ function createDriveImage(image) {
     image.mimeType || null,
     image.size || 0,
     image.capturedAt || null,
+    image.sourceBoardId || null,
+    image.sourceImageId || null,
     image.createdAt || Date.now()
   );
-  return db.prepare("SELECT * FROM drive_images WHERE id = ?").get(image.id);
+  if (result.changes) return db.prepare("SELECT * FROM drive_images WHERE id = ?").get(image.id);
+  if (image.sourceBoardId && image.sourceImageId) {
+    return db.prepare("SELECT * FROM drive_images WHERE source_board_id = ? AND source_image_id = ?")
+      .get(image.sourceBoardId, image.sourceImageId);
+  }
+  return null;
+}
+
+function listBoardImagesForDrive(boardId) {
+  return db.prepare(`
+    SELECT id, src, image_name, created_at
+    FROM images_v2
+    WHERE board_id = ?
+    ORDER BY created_at ASC, rowid ASC
+  `).all(boardId);
 }
 
 function getDriveImage(id) {
@@ -1020,6 +1054,7 @@ module.exports = {
   createDriveFolder,
   renameDriveFolder,
   createDriveImage,
+  listBoardImagesForDrive,
   getDriveImage,
   renameDriveImage,
   deleteDriveImage,
