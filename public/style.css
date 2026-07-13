@@ -187,6 +187,142 @@ body {
   z-index: 20;
 }
 
+.spreadsheet-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 19;
+}
+
+.spreadsheet-object {
+  --sheet-scale: 1;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: auto;
+  border: max(1px, calc(1px * var(--sheet-scale))) solid #64748b;
+  border-radius: calc(9px * var(--sheet-scale));
+  background: #fff;
+  box-shadow: 0 calc(8px * var(--sheet-scale)) calc(24px * var(--sheet-scale)) rgba(15, 23, 42, 0.22);
+}
+
+.spreadsheet-object.selected {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 max(1px, calc(2px * var(--sheet-scale))) rgba(37, 99, 235, 0.32),
+    0 calc(8px * var(--sheet-scale)) calc(24px * var(--sheet-scale)) rgba(15, 23, 42, 0.22);
+}
+
+.spreadsheet-object.read-only .spreadsheet-header,
+.spreadsheet-object.read-only .spreadsheet-resize {
+  cursor: default;
+}
+
+.spreadsheet-header {
+  min-height: calc(38px * var(--sheet-scale));
+  flex: 0 0 calc(38px * var(--sheet-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--sheet-scale));
+  box-sizing: border-box;
+  padding: 0 calc(12px * var(--sheet-scale));
+  overflow: hidden;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: max(9px, calc(13px * var(--sheet-scale)));
+  font-weight: 700;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.spreadsheet-object.selected .spreadsheet-header {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.spreadsheet-badge {
+  color: #15803d;
+  white-space: nowrap;
+}
+
+.spreadsheet-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spreadsheet-reload,
+.floating-spreadsheet-reload {
+  flex: 0 0 auto;
+  width: calc(28px * var(--sheet-scale, 1));
+  height: calc(28px * var(--sheet-scale, 1));
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: calc(6px * var(--sheet-scale, 1));
+  background: transparent;
+  color: currentColor;
+  font-size: max(13px, calc(18px * var(--sheet-scale, 1)));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.spreadsheet-reload:hover,
+.floating-spreadsheet-reload:hover {
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
+}
+
+.floating-spreadsheet-reload {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 18px;
+}
+
+.spreadsheet-content,
+.floating-spreadsheet-content {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: #fff;
+}
+
+.spreadsheet-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: max(14px, calc(18px * var(--sheet-scale)));
+  height: max(14px, calc(18px * var(--sheet-scale)));
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 48%, #64748b 49%, #64748b 58%, transparent 59%);
+}
+
+.floating-spreadsheet-window {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, calc(100vw - 40px));
+  height: min(600px, calc(100vh - 40px));
+}
+
+.floating-spreadsheet-window .floating-app-window-header {
+  flex: 0 0 38px;
+}
+
+.floating-spreadsheet-window .floating-spreadsheet-content {
+  height: auto;
+}
+
 .text-memo-object {
   --memo-scale: 1;
   position: absolute;

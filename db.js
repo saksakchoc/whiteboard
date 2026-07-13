@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS links_v1 (
   image TEXT,
   favicon TEXT,
   site_name TEXT,
+  link_type TEXT,
+  source_url TEXT,
   x REAL NOT NULL,
   y REAL NOT NULL,
   width REAL NOT NULL,
@@ -322,6 +324,8 @@ try {
   ["draft_strokes", "glow_color TEXT"],
   ["draft_strokes", "draft_board_id TEXT"],
   ["links_v1", "favicon TEXT"],
+  ["links_v1", "link_type TEXT"],
+  ["links_v1", "source_url TEXT"],
 ].forEach(([table, column]) => {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
@@ -618,8 +622,8 @@ function deleteImage(boardId, id) {
 // --- links_v1 ---
 function saveLink(link) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO links_v1 (id, board_id, user, url, title, description, image, favicon, site_name, x, y, width, height, layer, "order", created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO links_v1 (id, board_id, user, url, title, description, image, favicon, site_name, link_type, source_url, x, y, width, height, layer, "order", created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     link.id,
@@ -631,6 +635,8 @@ function saveLink(link) {
     link.image || null,
     link.favicon || null,
     link.siteName || null,
+    link.linkType || null,
+    link.sourceUrl || null,
     link.x,
     link.y,
     link.width || 320,
@@ -669,7 +675,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const linksStmt = db.prepare(`
-    SELECT id, user, url, title, description, image, favicon, site_name, x, y, width, height, layer, "order", created_at
+    SELECT id, user, url, title, description, image, favicon, site_name, link_type, source_url, x, y, width, height, layer, "order", created_at
     FROM links_v1
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -760,6 +766,8 @@ function getBoardState(boardId) {
     image: row.image || "",
     favicon: row.favicon || "",
     siteName: row.site_name || "",
+    linkType: row.link_type || "link",
+    sourceUrl: row.source_url || "",
     x: row.x,
     y: row.y,
     width: row.width,

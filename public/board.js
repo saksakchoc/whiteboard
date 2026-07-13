@@ -2,6 +2,7 @@
 (() => {
   const canvas = document.getElementById("board-canvas");
   const container = document.getElementById("canvas-container");
+  const spreadsheetLayer = document.getElementById("spreadsheet-layer");
   const textMemoLayer = document.getElementById("text-memo-layer");
   const boardIdLabel = document.getElementById("board-id-label");
   const boardTitleLabel = document.getElementById("board-title");
@@ -286,6 +287,7 @@
   let linkListOpen = false;
   const listFloatingFrames = new Map();
   const floatingPopupWindows = new Map();
+  const floatingSpreadsheetWindows = new Map();
   let floatingPopupCounter = 0;
   let floatingLinkBoardZ = 2200;
   let textListFloatingFrame = null;
@@ -791,6 +793,10 @@
     if (activeLayer === "user") return layer === "user" || layer === "base";
     if (activeLayer === "base") return layer === "base";
     return false;
+  }
+
+  function isSpreadsheetLink(link) {
+    return link?.linkType === "spreadsheet";
   }
 
   function canInteractLink(link) {
@@ -2865,10 +2871,13 @@
   function chooseTextMemoForAppend() {
     const memos = texts.filter((text) => text.textMemo && isTextVisible(text) && canInteractText(text));
     if (memos.length === 0) return createTextMemo({ focus: false });
-    if (memos.length === 1) return memos[0];
-    const choices = memos.map((memo, index) => `${index + 1}: ${memo.memoTitle || "テキストメモ"}`).join("\n");
+    const choices = [
+      "0: 新規作成",
+      ...memos.map((memo, index) => `${index + 1}: ${memo.memoTitle || "テキストメモ"}`),
+    ].join("\n");
     const answer = window.prompt(`追加先のテキストメモを番号で選択してください。\n\n${choices}`, "1");
     if (answer === null) return null;
+    if (answer.trim() === "0") return createTextMemo({ focus: false });
     const index = Number.parseInt(answer, 10) - 1;
     if (!Number.isInteger(index) || !memos[index]) {
       showTransientFooterMessage("追加先の番号が正しくありません。", 3000);
@@ -3961,7 +3970,7 @@
   }
 
   function shouldRefreshLinkPreview(link) {
-    if (!link?.url) return false;
+    if (!link?.url || isSpreadsheetLink(link)) return false;
     return !link.image || !link.title || link.title === link.url;
   }
 
@@ -4534,6 +4543,7 @@
       const idx = findIndexById(links, id);
       if (idx >= 0) {
         links.splice(idx, 1);
+        floatingSpreadsheetWindows.get(id)?._closeFloating?.();
         if (socketConnected) {
           socket.emit("item:remove", { boardId, type: "link", id });
         }
@@ -5094,6 +5104,22 @@
         texts.push(clone);
         refreshTextList();
         emitTextAdd(clone);
+      } else if (item.type === "link" && activeLayer !== "image") {
+        const link = links[item.index];
+        if (!link || !isLayerMatch(link.layer)) return;
+        const clone = {
+          ...link,
+          id: genId(),
+          x: link.x + offset,
+          y: link.y + offset,
+          order: orderCounter++,
+          user: currentUser,
+          createdAt: Date.now(),
+        };
+        delete clone._img;
+        links.push(clone);
+        refreshLinkList();
+        emitLinkAdd(clone);
       }
     });
     redraw();
@@ -5276,7 +5302,11 @@
       pendingImageLoadTokens.delete(imgObj.id);
       console.error("failed to load image", imgObj?.id);
     };
-    img.src = imgObj.src;
+    // A remote image drawn directly onto the board taints the whole canvas.
+    // Lasso screenshots then fail at toDataURL(), even when the selected area
+    // does not contain that image. Load HTTP(S) images through our same-origin
+    // image endpoint so the scissors copy tool can always export the canvas.
+    img.src = getCanvasSafeImageSrc(imgObj.src);
     return img;
   }
 
@@ -7104,15 +7134,22 @@
     };
   }
 
-  function getLinkImageSrc(src) {
+  function getCanvasSafeImageSrc(src) {
     if (!src) return "";
     try {
       const parsed = new URL(src, window.location.href);
-      if (parsed.origin === window.location.origin) return parsed.toString();
-      return `/api/link-image?url=${encodeURIComponent(parsed.toString())}`;
+      const isRemoteHttp =
+        (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+        parsed.origin !== window.location.origin;
+      if (isRemoteHttp) return `/api/link-image?url=${encodeURIComponent(parsed.toString())}`;
+      return parsed.toString();
     } catch {
       return src;
     }
+  }
+
+  function getLinkImageSrc(src) {
+    return getCanvasSafeImageSrc(src);
   }
 
   function getYouTubeVideoId(url) {
@@ -7297,6 +7334,8 @@
 
   function applyInitialState(state) {
     pendingImageLoadTokens.clear();
+    floatingSpreadsheetWindows.forEach((frame) => frame?._closeFloating?.());
+    floatingSpreadsheetWindows.clear();
     images.forEach((imgObj) => {
       if (imgObj?.id && imgObj?.src && imgObj?.img) {
         imageElementCache.set(imgObj.id, { src: imgObj.src, img: imgObj.img });
@@ -7692,6 +7731,7 @@
         .find((item) => item.matches(".floating-draft-board") && item.dataset.boardId === id);
       draftFrame?._closeFloating?.();
     } else if (type === "link") {
+      floatingSpreadsheetWindows.get(id)?._closeFloating?.();
       removeAllById(links, id);
       refreshLinkList();
     }
@@ -9279,6 +9319,7 @@
       } else if (item.type === "link") {
         const link = links[item.index];
         if (!link) continue;
+        if (isSpreadsheetLink(link)) continue;
         drawLinkCard(link);
         if (selected && selected.type === "link" && selected.index === item.index) {
           drawSelectionBoundsWorld(getLinkBoundsWorld(link), 0);
@@ -9420,6 +9461,7 @@
     // 3. 最前面オーバーレイ：レーザーポインタ／記入中ラベル
     drawAttentionPointers();
     drawWritingLabels();
+    syncSpreadsheetElements();
     syncTextMemoElements();
     frameRenderCache = null;
     emitCurrentViewPresence();
@@ -13785,7 +13827,7 @@
   // --- イベント登録 ---
   function suppressBoardContextMenu(e) {
     const target = e.target;
-    if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object")) return;
+    if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object, .spreadsheet-object")) return;
     const isBoardContext =
       target === canvas ||
       (container && container.contains(target)) ||
@@ -14981,9 +15023,18 @@
     const hasImageTabTarget = selectionHasImageTabTarget();
     const draftBoardOnlySelection =
       hasAny && selectionItems.every((item) => item.type === "image" && isDraftBoardImage(images[item.index]));
+    const spreadsheetOnlySelection =
+      selectionItems.length === 1 &&
+      selectionItems[0].type === "link" &&
+      isSpreadsheetLink(links[selectionItems[0].index]);
+    const spreadsheetSelectionEditable =
+      spreadsheetOnlySelection && canInteractLink(links[selectionItems[0].index]);
 
     const isActionVisible = (action) => {
       if (!hasAny) return false;
+      if (spreadsheetOnlySelection && !spreadsheetSelectionEditable) {
+        return action === "open-spreadsheet-window" || action === "open-spreadsheet-source";
+      }
       if (action === "apply-draft") return hasDraft;
       if (action === "move-base") return hasMoveTarget;
       if (action === "move-image") return hasMoveImageTarget;
@@ -15004,8 +15055,10 @@
       if (action === "lasso-link-board") return false;
       if (action === "lasso-draft-board") return false;
       if (action === "publish-draft-board") return false;
-      if (action === "duplicate") return hasAny;
-      if (action === "delete") return hasAny;
+      if (action === "open-spreadsheet-window") return spreadsheetOnlySelection;
+      if (action === "open-spreadsheet-source") return spreadsheetOnlySelection;
+      if (action === "duplicate") return hasAny && (!spreadsheetOnlySelection || spreadsheetSelectionEditable);
+      if (action === "delete") return hasAny && (!spreadsheetOnlySelection || spreadsheetSelectionEditable);
       return false;
     };
 
@@ -15086,6 +15139,14 @@
           .map((item) => (item.type === "image" ? images[item.index] : null))
           .find((img) => isDraftBoardImage(img));
         publishDraftBoard(board);
+      } else if (action === "open-spreadsheet-window") {
+        const item = getSelectionItems()[0];
+        if (item?.type === "link") openFloatingSpreadsheet(links[item.index]);
+      } else if (action === "open-spreadsheet-source") {
+        const item = getSelectionItems()[0];
+        const link = item?.type === "link" ? links[item.index] : null;
+        const sourceUrl = getSpreadsheetSourceUrl(link);
+        if (sourceUrl) window.open(sourceUrl, "_blank", "noopener");
       }
       hideContextMenu();
     });
@@ -15691,6 +15752,313 @@
     redraw();
     showTransientFooterMessage("リンクボードをアプリ内の別窓で開きました。", 2500);
     return true;
+  }
+
+  function normalizeSpreadsheetEmbedUrl(rawValue) {
+    let value = String(rawValue || "").trim();
+    const iframeMatch = value.match(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/i);
+    if (iframeMatch) value = iframeMatch[1].replace(/&amp;/g, "&");
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return "";
+    }
+    if (parsed.protocol !== "https:" || parsed.hostname !== "docs.google.com") return "";
+    if (!parsed.pathname.includes("/spreadsheets/")) return "";
+    if (/\/edit(?:\/|$)/.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\/edit(?:\/|$).*/, "/preview");
+      parsed.search = "";
+    }
+    if (parsed.pathname.endsWith("/pubhtml")) {
+      parsed.searchParams.set("widget", "true");
+      parsed.searchParams.set("headers", "false");
+    }
+    return parsed.toString();
+  }
+
+  function getSpreadsheetSourceUrlFromInput(rawValue, embedUrl = "") {
+    let value = String(rawValue || "").trim();
+    const iframeMatch = value.match(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/i);
+    if (iframeMatch) value = iframeMatch[1].replace(/&amp;/g, "&");
+    let parsed;
+    try {
+      parsed = new URL(value || embedUrl);
+    } catch {
+      return embedUrl;
+    }
+    if (/\/(?:edit|preview)(?:\/|$)/.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\/(?:edit|preview)(?:\/|$).*/, "/edit");
+      return parsed.toString();
+    }
+    return embedUrl || parsed.toString();
+  }
+
+  function getSpreadsheetSourceUrl(link) {
+    if (!isSpreadsheetLink(link)) return "";
+    if (link.sourceUrl) return link.sourceUrl;
+    return getSpreadsheetSourceUrlFromInput(link.url, link.url);
+  }
+
+  function createSpreadsheetEmbed() {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image" || activeLayer === "draft") return;
+    const raw = window.prompt(
+      "Googleスプレッドシートの「ウェブに公開」で取得したURL、または埋め込みコードを貼り付けてください。"
+    );
+    if (raw == null) return;
+    const url = normalizeSpreadsheetEmbedUrl(raw);
+    if (!url) {
+      window.alert("Googleスプレッドシートの公開URLまたは埋め込みコードを確認してください。");
+      return;
+    }
+    ensureSnapshotForAction();
+    const width = 720;
+    const height = 460;
+    const center = getCanvasCenterWorld();
+    const link = {
+      id: genId(),
+      url,
+      title: "スプレッドシート",
+      description: "",
+      image: "",
+      favicon: "",
+      siteName: "Google Sheets",
+      linkType: "spreadsheet",
+      sourceUrl: getSpreadsheetSourceUrlFromInput(raw, url),
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      width,
+      height,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : activeLayer === "admin" ? "admin" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    emitLinkAdd(link);
+    refreshLinkList();
+    selected = { type: "link", index: links.length - 1 };
+    multiSelection = null;
+    switchToSelectTool();
+    redraw();
+    showTransientFooterMessage("スプレッドシートを埋め込みました。枠の見出しをドラッグして移動できます。", 5000);
+  }
+
+  function openFloatingSpreadsheet(link) {
+    if (!isSpreadsheetLink(link)) return;
+    const existing = floatingSpreadsheetWindows.get(link.id);
+    if (existing?.isConnected || floatingPopupWindows.has(existing)) {
+      activateFloatingAppWindow(existing);
+      return;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-spreadsheet-window";
+    frame.dataset.linkId = link.id;
+    frame.style.left = `${Math.max(12, Math.min(140, window.innerWidth - 360))}px`;
+    frame.style.top = `${Math.max(12, Math.min(90, window.innerHeight - 280))}px`;
+
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.className = "floating-spreadsheet-title";
+    title.textContent = link.title || "スプレッドシート";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    const reload = document.createElement("button");
+    reload.type = "button";
+    reload.className = "floating-spreadsheet-reload";
+    reload.textContent = "↺";
+    reload.title = "スプレッドシートを再読み込み";
+    reload.setAttribute("aria-label", "スプレッドシートを再読み込み");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "floating-app-window-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "別窓を閉じる");
+    actions.append(reload, close);
+    header.append(title, actions);
+
+    const iframe = document.createElement("iframe");
+    iframe.className = "floating-spreadsheet-content";
+    iframe.src = link.url;
+    iframe.title = link.title || "スプレッドシート";
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    frame.append(header, iframe);
+    document.body.appendChild(frame);
+    floatingSpreadsheetWindows.set(link.id, frame);
+    enableFloatingWindowDrag(frame, header);
+    const closeFrame = () => {
+      if (floatingSpreadsheetWindows.get(link.id) === frame) floatingSpreadsheetWindows.delete(link.id);
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    reload.addEventListener("click", () => reloadSpreadsheetIframe(iframe));
+    close.addEventListener("click", closeFrame);
+    activateFloatingAppWindow(frame);
+  }
+
+  function showSpreadsheetContextMenu(event, link) {
+    event.preventDefault();
+    event.stopPropagation();
+    const index = findIndexById(links, link.id);
+    if (index < 0) return;
+    selected = { type: "link", index };
+    multiSelection = null;
+    redraw();
+    showContextMenu(event.clientX, event.clientY);
+  }
+
+  function createSpreadsheetElement(link) {
+    const element = document.createElement("article");
+    element.className = "spreadsheet-object";
+    element.dataset.linkId = link.id;
+    element.innerHTML =
+      '<header class="spreadsheet-header"><span class="spreadsheet-badge">▦</span><span class="spreadsheet-title"></span>' +
+      '<button type="button" class="spreadsheet-reload" title="スプレッドシートを再読み込み" aria-label="スプレッドシートを再読み込み">↺</button></header>' +
+      '<iframe class="spreadsheet-content"></iframe><div class="spreadsheet-resize" title="枠の大きさを変更"></div>';
+    spreadsheetLayer.appendChild(element);
+    const header = element.querySelector(".spreadsheet-header");
+    const iframe = element.querySelector("iframe");
+    iframe.src = link.url;
+    iframe.title = link.title || "スプレッドシート";
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    element.querySelector(".spreadsheet-reload").addEventListener("click", (event) => {
+      event.stopPropagation();
+      reloadSpreadsheetIframe(iframe);
+    });
+
+    const getLink = () => links.find((item) => item.id === element.dataset.linkId);
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    element.addEventListener("contextmenu", (event) => {
+      const current = getLink();
+      if (current) showSpreadsheetContextMenu(event, current);
+    });
+
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest("button")) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      const index = findIndexById(links, current.id);
+      selected = { type: "link", index };
+      multiSelection = null;
+      drag = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: current.x, y: current.y };
+      header.setPointerCapture?.(event.pointerId);
+      element.classList.add("dragging");
+      event.preventDefault();
+      redraw();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.x = drag.x + (event.clientX - drag.clientX) / scale;
+      current.y = drag.y + (event.clientY - drag.clientY) / scale;
+      syncSpreadsheetElementPosition(element, current);
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      element.classList.remove("dragging");
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { x: current.x, y: current.y });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    const handle = element.querySelector(".spreadsheet-resize");
+    let resizing = null;
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      const index = findIndexById(links, current.id);
+      selected = { type: "link", index };
+      multiSelection = null;
+      resizing = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        width: current.width,
+        height: current.height,
+      };
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      redraw();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.width = Math.max(320, resizing.width + (event.clientX - resizing.clientX) / scale);
+      current.height = Math.max(220, resizing.height + (event.clientY - resizing.clientY) / scale);
+      syncSpreadsheetElementPosition(element, current);
+    });
+    const finishResize = (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      resizing = null;
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { width: current.width, height: current.height });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    handle.addEventListener("pointerup", finishResize);
+    handle.addEventListener("pointercancel", finishResize);
+    return element;
+  }
+
+  function reloadSpreadsheetIframe(iframe) {
+    if (!iframe?.src) return;
+    const src = iframe.src;
+    iframe.src = src;
+    showTransientFooterMessage("スプレッドシートを再読み込みしました。", 2500);
+  }
+
+  function syncSpreadsheetElementPosition(element, link) {
+    const point = worldToScreen(link.x, link.y);
+    element.style.left = `${point.x}px`;
+    element.style.top = `${point.y}px`;
+    element.style.width = `${(link.width || 720) * scale}px`;
+    element.style.height = `${(link.height || 460) * scale}px`;
+    element.style.setProperty("--sheet-scale", String(scale));
+    element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
+    element.classList.toggle("read-only", !canInteractLink(link));
+    const title = element.querySelector(".spreadsheet-title");
+    if (title) title.textContent = link.title || "スプレッドシート";
+    const iframe = element.querySelector("iframe");
+    if (iframe && iframe.src !== link.url) iframe.src = link.url;
+  }
+
+  function syncSpreadsheetElements() {
+    if (!spreadsheetLayer) return;
+    const activeIds = new Set();
+    links.forEach((link) => {
+      if (!isSpreadsheetLink(link) || !isLinkVisible(link)) return;
+      activeIds.add(link.id);
+      let element = spreadsheetLayer.querySelector(`[data-link-id="${CSS.escape(link.id)}"]`);
+      if (!element) element = createSpreadsheetElement(link);
+      syncSpreadsheetElementPosition(element, link);
+      const floating = floatingSpreadsheetWindows.get(link.id);
+      if (floating) {
+        const title = floating.querySelector(".floating-spreadsheet-title");
+        if (title) title.textContent = link.title || "スプレッドシート";
+        const iframe = floating.querySelector("iframe");
+        if (iframe && iframe.src !== link.url) iframe.src = link.url;
+      }
+    });
+    spreadsheetLayer.querySelectorAll(".spreadsheet-object").forEach((element) => {
+      if (!activeIds.has(element.dataset.linkId)) element.remove();
+    });
   }
 
   function normalizeCalculatorState(value) {
@@ -17129,6 +17497,7 @@
 
     addSection("ツール", [
       { label: "計算機", onClick: () => createCalculator() },
+      { label: "スプレッドシート", onClick: () => createSpreadsheetEmbed() },
     ]);
 
     addSection("フレーム", [
