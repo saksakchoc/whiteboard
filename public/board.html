@@ -205,6 +205,7 @@
     <div id="drive-slideshow-modal" class="modal-backdrop drive-slideshow-backdrop hidden">
       <section class="drive-slideshow" role="dialog" aria-modal="true" aria-label="画像スライドショー">
         <button id="drive-slideshow-back-btn" class="drive-slideshow-back-btn" type="button">← ドライブに戻る</button>
+        <button id="drive-slideshow-place-btn" class="drive-slideshow-place-btn" type="button">ボードに配置</button>
         <div class="drive-slide-stage">
           <button id="drive-slide-prev-btn" class="drive-slide-nav" type="button" aria-label="前の画像">‹</button>
           <img id="drive-slide-image" alt="" />
@@ -216,12 +217,14 @@
 
     <div id="drive-selection-menu" class="context-menu drive-selection-menu hidden">
       <button type="button" data-drive-action="insert">ボードに貼り付け</button>
+      <button type="button" data-drive-action="insert-slideshow">スライドショーとして貼り付け</button>
       <button type="button" data-drive-action="download">ダウンロード</button>
       <button type="button" data-drive-action="rename">画像名を変更</button>
       <button type="button" data-drive-action="delete">削除</button>
     </div>
 
     <div id="drive-folder-menu" class="context-menu drive-selection-menu hidden">
+      <button type="button" data-drive-folder-action="insert-slideshow">スライドショーとしてボードに配置</button>
       <button type="button" data-drive-folder-action="rename">フォルダ名を変更</button>
       <button type="button" data-drive-folder-action="delete">フォルダを削除</button>
     </div>

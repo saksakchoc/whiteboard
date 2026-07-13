@@ -37,6 +37,7 @@ const {
   ensureBoardDrive,
   isDriveFolderInBoard,
   listDriveFolder,
+  listDriveFolderImagesRecursive,
   getDriveBreadcrumb,
   createDriveFolder,
   renameDriveFolder,
@@ -158,6 +159,34 @@ function materializeImageSrc(boardId, image) {
     ...image,
     src: `/uploads/${safeFilePart(boardId, "board")}/${filename}`,
   };
+}
+
+function materializeBoardImage(boardId, image) {
+  if (!image || !Array.isArray(image.slideshowSlides) || !image.slideshowSlides.length) {
+    return materializeImageSrc(boardId, image);
+  }
+  const slides = image.slideshowSlides.slice(0, 500).map((slide, index) => {
+    const normalized = typeof slide === "string" ? { src: slide, name: "" } : slide || {};
+    const stored = materializeImageSrc(boardId, {
+      id: `${image.id}_slide_${index + 1}`,
+      src: String(normalized.src || ""),
+    });
+    return {
+      src: stored.src,
+      name: String(normalized.name || ""),
+      zoom: Math.max(0.25, Math.min(Number(normalized.zoom) || 1, 8)),
+      panX: Math.max(-1, Math.min(Number(normalized.panX) || 0, 1)),
+      panY: Math.max(-1, Math.min(Number(normalized.panY) || 0, 1)),
+      driveImageId: normalized.driveImageId ? String(normalized.driveImageId) : undefined,
+    };
+  }).filter((slide) => slide.src);
+  const slideshowIndex = Math.max(0, Math.min(Number(image.slideshowIndex) || 0, slides.length - 1));
+  return materializeImageSrc(boardId, {
+    ...image,
+    slideshowSlides: slides,
+    slideshowIndex,
+    src: slides[slideshowIndex]?.src || image.src,
+  });
 }
 
 function removeBoardUploads(boardId) {
@@ -507,6 +536,24 @@ app.get("/api/boards/:boardId/drive", (req, res) => {
   } catch (err) {
     console.error("Failed to list drive", err);
     res.status(500).json({ error: "failed to list drive" });
+  }
+});
+
+app.get("/api/boards/:boardId/drive/folder-images", (req, res) => {
+  try {
+    const board = getBoard(req.params.boardId);
+    if (!board) return res.status(404).json({ error: "board not found" });
+    const folderId = String(req.query.folderId || "").trim();
+    if (!folderId || !isDriveFolderInBoard(board.id, folderId)) {
+      return res.status(404).json({ error: "folder not found" });
+    }
+    res.json({
+      folderId,
+      images: listDriveFolderImagesRecursive(folderId).map(driveImageResponse),
+    });
+  } catch (err) {
+    console.error("Failed to list recursive drive images", err);
+    res.status(500).json({ error: "failed to list folder images" });
   }
 });
 
@@ -1013,7 +1060,7 @@ function ensureBoardState(boardId) {
   if (!boardStates.has(boardId)) {
     const dbState = getBoardState(boardId);
     const images = (dbState.images || []).map((img) => {
-      const materialized = materializeImageSrc(boardId, img);
+      const materialized = materializeBoardImage(boardId, img);
       if (materialized.src !== img.src) {
         saveImage({ ...materialized, board_id: boardId });
       }
@@ -1116,7 +1163,7 @@ io.on("connection", (socket) => {
       return;
     }
     try {
-      const storedImage = materializeImageSrc(boardId, image);
+      const storedImage = materializeBoardImage(boardId, image);
       saveImage({ ...storedImage, board_id: boardId });
       const state = ensureBoardState(boardId);
       upsertById(state.images, storedImage);
@@ -1160,7 +1207,7 @@ io.on("connection", (socket) => {
         } else if (type === "text") {
           saveText({ ...updated, board_id: boardId });
         } else if (type === "image") {
-          const storedImage = materializeImageSrc(boardId, updated);
+          const storedImage = materializeBoardImage(boardId, updated);
           if (storedImage.src !== updated.src) {
             patch = { ...patch, src: storedImage.src };
           }

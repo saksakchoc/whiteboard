@@ -102,7 +102,11 @@ CREATE TABLE IF NOT EXISTS images_v2 (
   draft_board_source TEXT,
   draft_board_id TEXT,
   lasso_tool_object INTEGER NOT NULL DEFAULT 0,
-  lasso_outline_path TEXT
+  lasso_outline_path TEXT,
+  slideshow_slides TEXT,
+  slideshow_index INTEGER NOT NULL DEFAULT 0,
+  slideshow_drive_board_id TEXT,
+  slideshow_drive_folder_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS links_v1 (
@@ -204,6 +208,27 @@ try {
 }
 try {
   db.exec("ALTER TABLE drive_images ADD COLUMN source_image_id TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
+
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN slideshow_slides TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN slideshow_index INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN slideshow_drive_board_id TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE images_v2 ADD COLUMN slideshow_drive_folder_id TEXT");
 } catch (e) {
   // ignore if column already exists
 }
@@ -561,6 +586,23 @@ function listDriveFolder(parentId = null) {
   };
 }
 
+function listDriveFolderImagesRecursive(folderId) {
+  if (!folderId) return [];
+  return db.prepare(`
+    WITH RECURSIVE folder_tree(id) AS (
+      SELECT id FROM drive_folders WHERE id = ?
+      UNION ALL
+      SELECT child.id FROM drive_folders child
+      JOIN folder_tree parent ON child.parent_id = parent.id
+    )
+    SELECT id, folder_id, name, src, mime_type, size, captured_at,
+           source_board_id, source_image_id, created_at
+    FROM drive_images
+    WHERE folder_id IN (SELECT id FROM folder_tree)
+    ORDER BY created_at ASC, rowid ASC
+  `).all(folderId);
+}
+
 function getDriveBreadcrumb(folderId) {
   const breadcrumb = [];
   const visited = new Set();
@@ -837,8 +879,8 @@ function deleteText(boardId, id) {
 // --- images_v2 ---
 function saveImage(img) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source, draft_board_source, draft_board_id, lasso_tool_object, lasso_outline_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO images_v2 (id, board_id, user, src, x, y, width, height, layer, "order", created_at, rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source, draft_board_source, draft_board_id, lasso_tool_object, lasso_outline_path, slideshow_slides, slideshow_index, slideshow_drive_board_id, slideshow_drive_folder_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     img.id,
@@ -866,7 +908,11 @@ function saveImage(img) {
     img.draftBoardSource ? JSON.stringify(img.draftBoardSource) : null,
     img.draftBoardId || null,
     img.lassoToolObject ? 1 : 0,
-    Array.isArray(img.lassoOutlinePath) ? JSON.stringify(img.lassoOutlinePath) : null
+    Array.isArray(img.lassoOutlinePath) ? JSON.stringify(img.lassoOutlinePath) : null,
+    Array.isArray(img.slideshowSlides) ? JSON.stringify(img.slideshowSlides) : null,
+    Number.isInteger(img.slideshowIndex) ? img.slideshowIndex : 0,
+    img.slideshowDriveBoardId || null,
+    img.slideshowDriveFolderId || null
   );
 }
 
@@ -927,7 +973,7 @@ function getBoardState(boardId) {
     ORDER BY "order" ASC
   `);
   const imagesStmt = db.prepare(`
-    SELECT id, user, src, x, y, width, height, layer, "order", rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source, draft_board_source, draft_board_id, lasso_tool_object, lasso_outline_path
+    SELECT id, user, src, x, y, width, height, layer, "order", rotation, mirrored, tag_type, tag_label, image_name, image_list_order, frame_id, frame_tab, frame_tabs, active_frame_tab, link_board_source, draft_board_source, draft_board_id, lasso_tool_object, lasso_outline_path, slideshow_slides, slideshow_index, slideshow_drive_board_id, slideshow_drive_folder_id
     FROM images_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -1013,6 +1059,10 @@ function getBoardState(boardId) {
     draftBoardId: row.draft_board_id || null,
     lassoToolObject: !!row.lasso_tool_object,
     lassoOutlinePath: row.lasso_outline_path ? JSON.parse(row.lasso_outline_path) : null,
+    slideshowSlides: row.slideshow_slides ? JSON.parse(row.slideshow_slides) : null,
+    slideshowIndex: Number.isInteger(row.slideshow_index) ? row.slideshow_index : 0,
+    slideshowDriveBoardId: row.slideshow_drive_board_id || null,
+    slideshowDriveFolderId: row.slideshow_drive_folder_id || null,
   }));
 
   const links = linksStmt.all(boardId).map((row) => ({
@@ -1069,6 +1119,7 @@ module.exports = {
   ensureBoardDrive,
   isDriveFolderInBoard,
   listDriveFolder,
+  listDriveFolderImagesRecursive,
   getDriveBreadcrumb,
   createDriveFolder,
   renameDriveFolder,

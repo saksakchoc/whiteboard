@@ -72,6 +72,7 @@
   const driveGrid = document.getElementById("drive-grid");
   const driveSlideshowModal = document.getElementById("drive-slideshow-modal");
   const driveSlideshowBackBtn = document.getElementById("drive-slideshow-back-btn");
+  const driveSlideshowPlaceBtn = document.getElementById("drive-slideshow-place-btn");
   const driveSlideImage = document.getElementById("drive-slide-image");
   const driveSlidePrevBtn = document.getElementById("drive-slide-prev-btn");
   const driveSlideNextBtn = document.getElementById("drive-slide-next-btn");
@@ -168,6 +169,11 @@
   let lassoCopySelection = null; // { mode, worldPath, worldBounds }
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
+  const slideshowPreviewCache = new Map();
+  const slideshowThumbnailOffsets = new Map();
+  let slideshowWheelZoomState = null;
+  let slideshowWheelZoomTimer = null;
+  let slideshowImagePanDrag = null;
   const pendingStrokeAdds = new Map();
   const pendingTextAdds = new Map();
   const pendingMemoUpdates = new Map();
@@ -521,6 +527,12 @@
         lassoOutlinePath: Array.isArray(img.lassoOutlinePath)
           ? img.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
           : null,
+        slideshowSlides: Array.isArray(img.slideshowSlides)
+          ? img.slideshowSlides.map((slide) => ({ ...slide }))
+          : null,
+        slideshowIndex: Number.isInteger(img.slideshowIndex) ? img.slideshowIndex : 0,
+        slideshowDriveBoardId: img.slideshowDriveBoardId || null,
+        slideshowDriveFolderId: img.slideshowDriveFolderId || null,
       }));
 
     return {
@@ -642,6 +654,12 @@
       lassoOutlinePath: Array.isArray(img.lassoOutlinePath)
         ? img.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
         : null,
+      slideshowSlides: Array.isArray(img.slideshowSlides)
+        ? img.slideshowSlides.map((slide) => ({ ...slide }))
+        : null,
+      slideshowIndex: Number.isInteger(img.slideshowIndex) ? img.slideshowIndex : 0,
+      slideshowDriveBoardId: img.slideshowDriveBoardId || null,
+      slideshowDriveFolderId: img.slideshowDriveFolderId || null,
     };
   }
 
@@ -7491,6 +7509,12 @@
       lassoOutlinePath: Array.isArray(imgData.lassoOutlinePath)
         ? imgData.lassoOutlinePath.map((p) => ({ x: p.x, y: p.y }))
         : null,
+      slideshowSlides: Array.isArray(imgData.slideshowSlides)
+        ? imgData.slideshowSlides.map((slide) => ({ ...slide }))
+        : null,
+      slideshowIndex: Number.isInteger(imgData.slideshowIndex) ? imgData.slideshowIndex : 0,
+      slideshowDriveBoardId: imgData.slideshowDriveBoardId || null,
+      slideshowDriveFolderId: imgData.slideshowDriveFolderId || null,
       img,
     };
     images.push(imageObj);
@@ -8451,6 +8475,386 @@
     return bestHit ? bestHit.index : -1;
   }
 
+  function isSlideshowImage(imgObj) {
+    return Array.isArray(imgObj?.slideshowSlides) && imgObj.slideshowSlides.length > 0;
+  }
+
+  function getBoardSlideshowLayout(imgObj) {
+    if (!isSlideshowImage(imgObj)) return null;
+    const position = worldToScreen(imgObj.x, imgObj.y);
+    const width = Math.max(1, imgObj.width * scale);
+    const height = Math.max(1, imgObj.height * scale);
+    const headerHeight = Math.max(20, Math.min(32, height * 0.1));
+    const thumbnailHeight = Math.max(44, Math.min(72, height * 0.2));
+    const stageTop = -height / 2 + headerHeight;
+    const stageBottom = height / 2 - thumbnailHeight;
+    const stageHeight = Math.max(1, stageBottom - stageTop);
+    const thumbnailWidth = Math.max(38, Math.min(58, thumbnailHeight - 12));
+    const thumbnailGap = 6;
+    const maxWithoutScrollButtons = Math.max(1, Math.floor((width - 20) / (thumbnailWidth + thumbnailGap)));
+    const thumbnailsScrollable = imgObj.slideshowSlides.length > maxWithoutScrollButtons;
+    const maxVisible = Math.max(1, Math.floor(
+      (width - (thumbnailsScrollable ? 72 : 20)) / (thumbnailWidth + thumbnailGap)
+    ));
+    const activeIndex = Math.max(0, Math.min(Number(imgObj.slideshowIndex) || 0, imgObj.slideshowSlides.length - 1));
+    const visibleCount = Math.min(maxVisible, imgObj.slideshowSlides.length);
+    const defaultFirstIndex = Math.max(0, Math.min(
+      activeIndex - Math.floor(visibleCount / 2),
+      imgObj.slideshowSlides.length - visibleCount
+    ));
+    const storedFirstIndex = slideshowThumbnailOffsets.get(imgObj.id);
+    const firstIndex = Math.max(0, Math.min(
+      Number.isInteger(storedFirstIndex) ? storedFirstIndex : defaultFirstIndex,
+      imgObj.slideshowSlides.length - visibleCount
+    ));
+    const stripWidth = visibleCount * thumbnailWidth + Math.max(0, visibleCount - 1) * thumbnailGap;
+    const thumbnails = Array.from({ length: visibleCount }, (_, visibleIndex) => ({
+      slideIndex: firstIndex + visibleIndex,
+      x: -stripWidth / 2 + visibleIndex * (thumbnailWidth + thumbnailGap),
+      y: height / 2 - thumbnailHeight + 6,
+      width: thumbnailWidth,
+      height: thumbnailHeight - 12,
+    }));
+    return {
+      center: { x: position.x + width / 2, y: position.y + height / 2 },
+      rotation: normalizeRotation(imgObj.rotation || 0),
+      width,
+      height,
+      headerHeight,
+      thumbnailHeight,
+      stageTop,
+      stageBottom,
+      stageHeight,
+      activeIndex,
+      thumbnails,
+      thumbnailsScrollable,
+      firstIndex,
+      visibleCount,
+      thumbnailPrevious: { x: -width / 2 + 16, y: height / 2 - thumbnailHeight / 2 },
+      thumbnailNext: { x: width / 2 - 16, y: height / 2 - thumbnailHeight / 2 },
+      previous: { x: -width / 2 + 26, y: stageTop + stageHeight / 2 },
+      next: { x: width / 2 - 26, y: stageTop + stageHeight / 2 },
+    };
+  }
+
+  function getSlideshowPreviewImage(src) {
+    if (!src) return null;
+    if (slideshowPreviewCache.has(src)) return slideshowPreviewCache.get(src);
+    const image = new Image();
+    image.onload = redraw;
+    image.src = src;
+    slideshowPreviewCache.set(src, image);
+    return image;
+  }
+
+  function getContainedImageMetrics(image, width, height, zoom = 1) {
+    const sourceWidth = image?.naturalWidth || image?.videoWidth || image?.width || 0;
+    const sourceHeight = image?.naturalHeight || image?.videoHeight || image?.height || 0;
+    const sourceReady = image instanceof HTMLCanvasElement || image?.complete !== false;
+    if (!sourceReady || !sourceWidth || !sourceHeight || width <= 0 || height <= 0) return null;
+    const ratio = Math.min(width / sourceWidth, height / sourceHeight)
+      * Math.max(0.25, Math.min(Number(zoom) || 1, 8));
+    return {
+      drawWidth: sourceWidth * ratio,
+      drawHeight: sourceHeight * ratio,
+      overflowX: Math.max(0, sourceWidth * ratio - width),
+      overflowY: Math.max(0, sourceHeight * ratio - height),
+    };
+  }
+
+  function drawContainedImage(image, x, y, width, height, mirrored = false, zoom = 1, panX = 0, panY = 0) {
+    const metrics = getContainedImageMetrics(image, width, height, zoom);
+    if (!metrics) return;
+    const { drawWidth, drawHeight, overflowX, overflowY } = metrics;
+    const offsetX = Math.max(-1, Math.min(Number(panX) || 0, 1)) * overflowX / 2;
+    const offsetY = Math.max(-1, Math.min(Number(panY) || 0, 1)) * overflowY / 2;
+    ctx.save();
+    if (mirrored) {
+      ctx.translate(x + width / 2, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-(x + width / 2), 0);
+    }
+    ctx.drawImage(
+      image,
+      x + (width - drawWidth) / 2 + offsetX,
+      y + (height - drawHeight) / 2 + offsetY,
+      drawWidth,
+      drawHeight
+    );
+    ctx.restore();
+  }
+
+  function drawBoardSlideshowFrame(imgObj, renderImg) {
+    const layout = getBoardSlideshowLayout(imgObj);
+    if (!layout) return;
+    const { width, height } = layout;
+    ctx.save();
+    ctx.translate(layout.center.x, layout.center.y);
+    if (layout.rotation) ctx.rotate((layout.rotation * Math.PI) / 180);
+
+    ctx.shadowColor = "rgba(15,23,42,0.34)";
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(-width / 2, -height / 2, width, height);
+    ctx.shadowColor = "transparent";
+    ctx.strokeStyle = "#3b82f6";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-width / 2, -height / 2, width, height);
+
+    ctx.fillStyle = "#172554";
+    ctx.fillRect(-width / 2, -height / 2, width, layout.headerHeight);
+    ctx.fillStyle = "#dbeafe";
+    ctx.font = `bold ${Math.max(11, Math.min(15, layout.headerHeight * 0.48))}px sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("▣  スライドショー", -width / 2 + 10, -height / 2 + layout.headerHeight / 2);
+    ctx.textAlign = "right";
+    ctx.fillText(`${layout.activeIndex + 1} / ${imgObj.slideshowSlides.length}`, width / 2 - 10, -height / 2 + layout.headerHeight / 2);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-width / 2 + 4, layout.stageTop + 4, width - 8, Math.max(1, layout.stageHeight - 8));
+    ctx.clip();
+    drawContainedImage(
+      renderImg,
+      -width / 2 + 8,
+      layout.stageTop + 8,
+      width - 16,
+      Math.max(1, layout.stageHeight - 16),
+      !!imgObj.mirrored,
+      imgObj.slideshowSlides[layout.activeIndex]?.zoom || 1,
+      imgObj.slideshowSlides[layout.activeIndex]?.panX || 0,
+      imgObj.slideshowSlides[layout.activeIndex]?.panY || 0
+    );
+    ctx.restore();
+
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(-width / 2, layout.stageBottom, width, layout.thumbnailHeight);
+    layout.thumbnails.forEach((thumbnail) => {
+      const slide = imgObj.slideshowSlides[thumbnail.slideIndex];
+      ctx.fillStyle = thumbnail.slideIndex === layout.activeIndex ? "#2563eb" : "#374151";
+      ctx.fillRect(thumbnail.x - 2, thumbnail.y - 2, thumbnail.width + 4, thumbnail.height + 4);
+      ctx.fillStyle = "#030712";
+      ctx.fillRect(thumbnail.x, thumbnail.y, thumbnail.width, thumbnail.height);
+      drawContainedImage(getSlideshowPreviewImage(slide?.src), thumbnail.x, thumbnail.y, thumbnail.width, thumbnail.height);
+    });
+    if (layout.thumbnailsScrollable) {
+      const thumbnailButtons = [
+        { point: layout.thumbnailPrevious, enabled: layout.firstIndex > 0 },
+        {
+          point: layout.thumbnailNext,
+          enabled: layout.firstIndex + layout.visibleCount < imgObj.slideshowSlides.length,
+        },
+      ];
+      thumbnailButtons.forEach(({ point, enabled }) => {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 13, 0, Math.PI * 2);
+        ctx.fillStyle = enabled ? "rgba(37, 99, 235, 0.9)" : "rgba(75, 85, 99, 0.65)";
+        ctx.fill();
+      });
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 18px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("‹", layout.thumbnailPrevious.x, layout.thumbnailPrevious.y - 1);
+      ctx.fillText("›", layout.thumbnailNext.x, layout.thumbnailNext.y - 1);
+    }
+
+    [layout.previous, layout.next].forEach((point) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 17, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.82)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.72)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 22px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("‹", layout.previous.x, layout.previous.y - 1);
+    ctx.fillText("›", layout.next.x, layout.next.y - 1);
+    ctx.restore();
+  }
+
+  function hitTestBoardSlideshowControl(screenX, screenY) {
+    for (let index = images.length - 1; index >= 0; index -= 1) {
+      const imgObj = images[index];
+      if (!isSlideshowImage(imgObj) || !canInteractImage(imgObj)) continue;
+      const layout = getBoardSlideshowLayout(imgObj);
+      const local = rotatePointByDegrees(
+        { x: screenX, y: screenY },
+        layout.center,
+        -layout.rotation
+      );
+      const localX = local.x - layout.center.x;
+      const localY = local.y - layout.center.y;
+      if (Math.hypot(localX - layout.previous.x, localY - layout.previous.y) <= 22) {
+        return { index, offset: -1 };
+      }
+      if (Math.hypot(localX - layout.next.x, localY - layout.next.y) <= 22) {
+        return { index, offset: 1 };
+      }
+      if (layout.thumbnailsScrollable
+        && Math.hypot(localX - layout.thumbnailPrevious.x, localY - layout.thumbnailPrevious.y) <= 18) {
+        return { index, thumbnailScroll: -1 };
+      }
+      if (layout.thumbnailsScrollable
+        && Math.hypot(localX - layout.thumbnailNext.x, localY - layout.thumbnailNext.y) <= 18) {
+        return { index, thumbnailScroll: 1 };
+      }
+      const thumbnail = layout.thumbnails.find((item) =>
+        localX >= item.x && localX <= item.x + item.width
+        && localY >= item.y && localY <= item.y + item.height
+      );
+      if (thumbnail) return { index, slideIndex: thumbnail.slideIndex };
+    }
+    return null;
+  }
+
+  function hitTestBoardSlideshowImagePan(screenX, screenY) {
+    for (let index = images.length - 1; index >= 0; index -= 1) {
+      const imgObj = images[index];
+      if (!isSlideshowImage(imgObj) || !canInteractImage(imgObj)) continue;
+      const layout = getBoardSlideshowLayout(imgObj);
+      const local = rotatePointByDegrees({ x: screenX, y: screenY }, layout.center, -layout.rotation);
+      const localX = local.x - layout.center.x;
+      const localY = local.y - layout.center.y;
+      const stageX = -layout.width / 2 + 8;
+      const stageY = layout.stageTop + 8;
+      const stageWidth = layout.width - 16;
+      const stageHeight = Math.max(1, layout.stageHeight - 16);
+      if (localX < stageX || localX > stageX + stageWidth || localY < stageY || localY > stageY + stageHeight) {
+        continue;
+      }
+      const slide = imgObj.slideshowSlides[layout.activeIndex];
+      const renderImage = imgObj.renderImg || imgObj.img;
+      const metrics = getContainedImageMetrics(renderImage, stageWidth, stageHeight, slide?.zoom || 1);
+      if (!metrics || (!metrics.overflowX && !metrics.overflowY)) continue;
+      return { index, layout, metrics, slide };
+    }
+    return null;
+  }
+
+  function moveBoardSlideshow(imgObj, offset) {
+    if (!isSlideshowImage(imgObj) || imgObj.slideshowSlides.length <= 1) return;
+    const count = imgObj.slideshowSlides.length;
+    const index = ((Number(imgObj.slideshowIndex) || 0) + offset + count) % count;
+    setBoardSlideshowIndex(imgObj, index);
+  }
+
+  function scrollBoardSlideshowThumbnails(imgObj, offset) {
+    const layout = getBoardSlideshowLayout(imgObj);
+    if (!layout?.thumbnailsScrollable) return;
+    const maxFirstIndex = Math.max(0, imgObj.slideshowSlides.length - layout.visibleCount);
+    const nextFirstIndex = Math.max(0, Math.min(
+      layout.firstIndex + offset * Math.max(1, layout.visibleCount - 1),
+      maxFirstIndex
+    ));
+    slideshowThumbnailOffsets.set(imgObj.id, nextFirstIndex);
+    redraw();
+  }
+
+  function setBoardSlideshowIndex(imgObj, index) {
+    if (!isSlideshowImage(imgObj)) return;
+    index = Math.max(0, Math.min(Number(index) || 0, imgObj.slideshowSlides.length - 1));
+    if (index === imgObj.slideshowIndex && imgObj.src === imgObj.slideshowSlides[index]?.src) return;
+    const slide = imgObj.slideshowSlides[index];
+    imgObj.slideshowIndex = index;
+    slideshowThumbnailOffsets.delete(imgObj.id);
+    imgObj.src = slide.src;
+    imgObj.imageName = slide.name || imgObj.imageName;
+    invalidatePendingImageLoad(imgObj.id);
+    imageElementCache.delete(imgObj.id);
+    imgObj.img = null;
+    imgObj.renderImg = null;
+    ensureImageElementForImage(imgObj, { redrawOnLoad: true });
+    emitItemPatch("image", imgObj, {
+      slideshowIndex: index,
+      src: slide.src,
+      imageName: imgObj.imageName,
+    });
+    refreshImageList();
+    redraw();
+  }
+
+  async function syncLinkedDriveSlideshows() {
+    if (!socketConnected || !socketReady) return;
+    const linkedObjects = images.filter((image) =>
+      isSlideshowImage(image) && image.slideshowDriveBoardId && image.slideshowDriveFolderId
+    );
+    const groups = new Map();
+    linkedObjects.forEach((image) => {
+      const key = `${image.slideshowDriveBoardId}:${image.slideshowDriveFolderId}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(image);
+    });
+    await Promise.all(Array.from(groups.values()).map(async (objects) => {
+      const sample = objects[0];
+      try {
+        const response = await fetch(
+          `${getDriveApiBase(sample.slideshowDriveBoardId)}/folder-images?folderId=${encodeURIComponent(sample.slideshowDriveFolderId)}`
+        );
+        if (!response.ok) return;
+        const driveImages = (await response.json()).images || [];
+        objects.forEach((imgObj) => {
+          const previousById = new Map(
+            imgObj.slideshowSlides.filter((slide) => slide.driveImageId).map((slide) => [slide.driveImageId, slide])
+          );
+          const activeDriveImageId = imgObj.slideshowSlides[imgObj.slideshowIndex]?.driveImageId;
+          const nextSlides = driveImages.map((image) => {
+            const previous = previousById.get(image.id);
+            return {
+              src: image.src,
+              name: image.name || previous?.name || "",
+              driveImageId: image.id,
+              zoom: previous?.zoom || 1,
+              panX: previous?.panX || 0,
+              panY: previous?.panY || 0,
+            };
+          });
+          if (!nextSlides.length) return;
+          const beforeSignature = imgObj.slideshowSlides
+            .map((slide) => `${slide.driveImageId || ""}:${slide.src}:${slide.name || ""}`)
+            .join("|");
+          const afterSignature = nextSlides
+            .map((slide) => `${slide.driveImageId}:${slide.src}:${slide.name}`)
+            .join("|");
+          if (beforeSignature === afterSignature) return;
+          let nextIndex = nextSlides.findIndex((slide) => slide.driveImageId === activeDriveImageId);
+          if (nextIndex < 0) nextIndex = Math.min(imgObj.slideshowIndex || 0, nextSlides.length - 1);
+          const nextSrc = nextSlides[nextIndex].src;
+          const srcChanged = imgObj.src !== nextSrc;
+          imgObj.slideshowSlides = nextSlides;
+          imgObj.slideshowIndex = nextIndex;
+          imgObj.src = nextSrc;
+          imgObj.imageName = `スライドショー（${nextSlides.length}枚）`;
+          if (srcChanged) {
+            invalidatePendingImageLoad(imgObj.id);
+            imageElementCache.delete(imgObj.id);
+            imgObj.img = null;
+            imgObj.renderImg = null;
+            ensureImageElementForImage(imgObj, { redrawOnLoad: true });
+          }
+          emitItemPatch("image", imgObj, {
+            slideshowSlides: nextSlides.map((slide) => ({ ...slide })),
+            slideshowIndex: nextIndex,
+            src: nextSrc,
+            imageName: imgObj.imageName,
+          });
+          refreshImageList();
+          redraw();
+        });
+      } catch (err) {
+        console.warn("Failed to sync linked drive slideshow", err);
+      }
+    }));
+  }
+
+  setInterval(syncLinkedDriveSlideshows, 4000);
+
   function collectTextTagsAtWorldPoint(worldPoint) {
     const tags = [];
     const addTag = (img) => {
@@ -9159,7 +9563,9 @@
         const h = imgObj.height * scale;
         const rotation = normalizeRotation(imgObj.rotation || 0);
         try {
-          if (imgObj.tagType) {
+          if (isSlideshowImage(imgObj)) {
+            drawBoardSlideshowFrame(imgObj, renderImg);
+          } else if (imgObj.tagType) {
             drawFrameTagImage(ctx, imgObj, p, w, h, rotation);
           } else {
             ctx.save();
@@ -9522,7 +9928,7 @@
   function isStaticLayerCacheItem(item) {
     if (item?.type !== "image") return false;
     const imgObj = images[item.index];
-    if (!imgObj || imgObj.tagType || imgObj.frameId || isBoardOverlayImage(imgObj)) return false;
+    if (!imgObj || imgObj.tagType || imgObj.frameId || isBoardOverlayImage(imgObj) || isSlideshowImage(imgObj)) return false;
     if (selected?.type === "image" && selected.index === item.index) return false;
     const layer = imgObj.layer || "base";
     return layer === "image" || layer === "base";
@@ -12250,6 +12656,41 @@
     }
 
     if (e.button === 0 && currentTool === "select") {
+      const slideshowHit = hitTestBoardSlideshowControl(canvasPos.x, canvasPos.y);
+      if (slideshowHit) {
+        e.preventDefault();
+        selected = { type: "image", index: slideshowHit.index };
+        multiSelection = null;
+        if (Number.isInteger(slideshowHit.thumbnailScroll)) {
+          scrollBoardSlideshowThumbnails(images[slideshowHit.index], slideshowHit.thumbnailScroll);
+        } else if (Number.isInteger(slideshowHit.slideIndex)) {
+          setBoardSlideshowIndex(images[slideshowHit.index], slideshowHit.slideIndex);
+        } else {
+          moveBoardSlideshow(images[slideshowHit.index], slideshowHit.offset);
+        }
+        return;
+      }
+      const slideshowPanHit = hitTestBoardSlideshowImagePan(canvasPos.x, canvasPos.y);
+      if (slideshowPanHit) {
+        e.preventDefault();
+        pushSnapshot();
+        selected = { type: "image", index: slideshowPanHit.index };
+        multiSelection = null;
+        slideshowImagePanDrag = {
+          index: slideshowPanHit.index,
+          imageId: images[slideshowPanHit.index].id,
+          startScreen: { x: canvasPos.x, y: canvasPos.y },
+          center: slideshowPanHit.layout.center,
+          rotation: slideshowPanHit.layout.rotation,
+          overflowX: slideshowPanHit.metrics.overflowX,
+          overflowY: slideshowPanHit.metrics.overflowY,
+          startPanX: Number(slideshowPanHit.slide?.panX) || 0,
+          startPanY: Number(slideshowPanHit.slide?.panY) || 0,
+          slideIndex: slideshowPanHit.layout.activeIndex,
+        };
+        redraw();
+        return;
+      }
       const linkedLabelHit = hitTestLinkedBoardLabel(canvasPos.x, canvasPos.y);
       if (linkedLabelHit) {
         e.preventDefault();
@@ -12748,6 +13189,32 @@
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
+    if (slideshowImagePanDrag) {
+      const drag = slideshowImagePanDrag;
+      const imgObj = images[drag.index]?.id === drag.imageId
+        ? images[drag.index]
+        : images.find((image) => image.id === drag.imageId);
+      const slide = imgObj?.slideshowSlides?.[drag.slideIndex];
+      if (imgObj && slide) {
+        const startLocal = rotatePointByDegrees(drag.startScreen, drag.center, -drag.rotation);
+        const currentLocal = rotatePointByDegrees(canvasPos, drag.center, -drag.rotation);
+        if (drag.overflowX > 0) {
+          slide.panX = Math.max(-1, Math.min(
+            drag.startPanX + (currentLocal.x - startLocal.x) * 2 / drag.overflowX,
+            1
+          ));
+        }
+        if (drag.overflowY > 0) {
+          slide.panY = Math.max(-1, Math.min(
+            drag.startPanY + (currentLocal.y - startLocal.y) * 2 / drag.overflowY,
+            1
+          ));
+        }
+        redraw();
+      }
+      e.preventDefault();
+      return;
+    }
     updateFrameTabTooltip(canvasPos, e.clientX, e.clientY);
     if (linkedBoardLabelDrag) {
       const dx = canvasPos.x - linkedBoardLabelDrag.startScreen.x;
@@ -13053,9 +13520,9 @@
         const anchorX = resizeInfo.anchorX ?? imgObj.x;
         const anchorY = resizeInfo.anchorY ?? imgObj.y;
         const handle = resizeInfo.handle || "br";
-        if (isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj)) {
-          const minW = 16;
-          const minH = 16;
+        if (isFrameContainer(imgObj) || isOmoteUraTagImage(imgObj) || isSlideshowImage(imgObj)) {
+          const minW = isSlideshowImage(imgObj) ? 120 : 16;
+          const minH = isSlideshowImage(imgObj) ? 100 : 16;
           const newW = Math.max(Math.abs(worldPos.x - anchorX), minW);
           const newH = Math.max(Math.abs(worldPos.y - anchorY), minH);
           imgObj.x = handle === "tr" || handle === "br" ? anchorX : anchorX - newW;
@@ -13115,6 +13582,23 @@
         pinchActive = false;
       }
       isPanning = false;
+    }
+
+    if (slideshowImagePanDrag) {
+      const drag = slideshowImagePanDrag;
+      slideshowImagePanDrag = null;
+      const imgObj = images[drag.index]?.id === drag.imageId
+        ? images[drag.index]
+        : images.find((image) => image.id === drag.imageId);
+      if (imgObj && isSlideshowImage(imgObj)) {
+        emitItemPatch("image", imgObj, {
+          slideshowSlides: imgObj.slideshowSlides.map((slide) => ({ ...slide })),
+        });
+      }
+      actionSnapshotTaken = false;
+      e.preventDefault();
+      redraw();
+      return;
     }
 
     const wasRightButton = e.button === 2 || (e.button === 0 && rightButtonDown);
@@ -13758,8 +14242,55 @@
   }
 
   // --- ズーム ---
+  function commitSlideshowWheelZoom() {
+    if (slideshowWheelZoomTimer) clearTimeout(slideshowWheelZoomTimer);
+    slideshowWheelZoomTimer = null;
+    const imageId = slideshowWheelZoomState?.imageId;
+    slideshowWheelZoomState = null;
+    const imgObj = imageId ? images.find((image) => image.id === imageId) : null;
+    if (!imgObj || !isSlideshowImage(imgObj)) return;
+    emitSlideshowViewState(imgObj);
+  }
+
+  function emitSlideshowViewState(imgObj) {
+    if (!imgObj || !isSlideshowImage(imgObj)) return;
+    emitItemPatch("image", imgObj, {
+      slideshowSlides: imgObj.slideshowSlides.map((slide) => ({ ...slide })),
+    });
+  }
+
+  function zoomSelectedSlideshowImageByWheel(deltaY) {
+    if (selected?.type !== "image") return false;
+    const imgObj = images[selected.index];
+    if (!isSlideshowImage(imgObj) || !canInteractImage(imgObj)) return false;
+    if (slideshowWheelZoomState?.imageId !== imgObj.id) {
+      commitSlideshowWheelZoom();
+      pushSnapshot();
+      slideshowWheelZoomState = { imageId: imgObj.id, lastEmitAt: 0 };
+    }
+    const activeIndex = Math.max(0, Math.min(
+      Number(imgObj.slideshowIndex) || 0,
+      imgObj.slideshowSlides.length - 1
+    ));
+    const slide = imgObj.slideshowSlides[activeIndex];
+    const currentZoom = Math.max(0.25, Math.min(Number(slide.zoom) || 1, 8));
+    slide.zoom = Math.max(0.25, Math.min(currentZoom * Math.exp(-deltaY * 0.0015), 8));
+    const now = performance.now();
+    if (now - (slideshowWheelZoomState.lastEmitAt || 0) >= 80) {
+      emitSlideshowViewState(imgObj);
+      slideshowWheelZoomState.lastEmitAt = now;
+    }
+    clearTimeout(slideshowWheelZoomTimer);
+    slideshowWheelZoomTimer = setTimeout(commitSlideshowWheelZoom, 180);
+    redraw();
+    updateFooterByState();
+    return true;
+  }
+
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+
+    if (zoomSelectedSlideshowImageByWheel(e.deltaY)) return;
 
     const canvasPos = getCanvasPointFromEvent(e);
     lastMouseScreen = { x: canvasPos.x, y: canvasPos.y };
@@ -13773,20 +14304,86 @@
     offsetY += canvasPos.y - afterScreenY;
     redraw();
     updateFooterByState();
-  });
+  }, { passive: false });
 
   function getImageFilesFromDataTransfer(dataTransfer) {
     if (!dataTransfer) return [];
     if (dataTransfer.files && dataTransfer.files.length > 0) {
-      return Array.from(dataTransfer.files).filter((file) => file.type && file.type.startsWith("image/"));
+      return Array.from(dataTransfer.files).filter(isImageFile);
     }
     if (dataTransfer.items && dataTransfer.items.length > 0) {
       return Array.from(dataTransfer.items)
         .filter((item) => item.kind === "file")
         .map((item) => item.getAsFile())
-        .filter((file) => file && file.type && file.type.startsWith("image/"));
+        .filter(isImageFile);
     }
     return [];
+  }
+
+  function isImageFile(file) {
+    if (!file) return false;
+    if (String(file.type || "").startsWith("image/")) return true;
+    return /\.(?:png|jpe?g|gif|webp|bmp|avif)$/i.test(String(file.name || ""));
+  }
+
+  function hasImageFiles(dataTransfer) {
+    if (!dataTransfer) return false;
+    if (Array.from(dataTransfer.files || []).some(isImageFile)) return true;
+    return Array.from(dataTransfer.items || []).some((item) =>
+      item.kind === "file" && String(item.type || "").startsWith("image/")
+    );
+  }
+
+  function hasDraggedWebImage(dataTransfer) {
+    const types = Array.from(dataTransfer?.types || []);
+    return types.includes("text/uri-list") || types.includes("text/html") || types.includes("text/plain");
+  }
+
+  function normalizeDraggedImageUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (/^data:image\//i.test(raw)) return raw;
+    try {
+      const parsed = new URL(raw, window.location.href);
+      return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function getDraggedWebImageUrl(dataTransfer) {
+    if (!dataTransfer) return "";
+    const html = dataTransfer.getData("text/html");
+    if (html) {
+      const documentFragment = new DOMParser().parseFromString(html, "text/html");
+      const imageUrl = normalizeDraggedImageUrl(documentFragment.querySelector("img")?.getAttribute("src"));
+      if (imageUrl) return imageUrl;
+    }
+    const uriList = dataTransfer.getData("text/uri-list");
+    const uri = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#"));
+    return normalizeDraggedImageUrl(uri) || normalizeDraggedImageUrl(dataTransfer.getData("text/plain"));
+  }
+
+  function getWebImageFilename(url, mimeType) {
+    let name = "web-image";
+    try {
+      name = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || name);
+    } catch {
+      // data URLなど、ファイル名を持たない画像は既定名を使う
+    }
+    name = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(0, 180) || "web-image";
+    if (!/\.(?:png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) {
+      const extension = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/avif": ".avif",
+      }[mimeType] || ".png";
+      name += extension;
+    }
+    return name;
   }
 
   function handleImageDrag(e) {
@@ -13820,6 +14417,21 @@
 
   // --- クリップボード貼り付け ---
   window.addEventListener("paste", (e) => {
+    const clipboard = e.clipboardData;
+    if (!clipboard) return;
+
+    const pastedImageFiles = getImageFilesFromDataTransfer(clipboard);
+    const driveIsOpen = driveModal && !driveModal.classList.contains("hidden");
+    if (driveIsOpen && pastedImageFiles.length) {
+      e.preventDefault();
+      if (driveVirtualHome) {
+        setDriveStatus("保存先のボードフォルダを開いてから貼り付けてください");
+        return;
+      }
+      uploadDriveImages(pastedImageFiles);
+      return;
+    }
+
     const target = e.target;
     if (
       target &&
@@ -13830,9 +14442,6 @@
     ) {
       return;
     }
-
-    const clipboard = e.clipboardData;
-    if (!clipboard) return;
 
     const items = clipboard.items ? Array.from(clipboard.items) : [];
     const rect = canvas.getBoundingClientRect();
@@ -15025,17 +15634,35 @@
   });
   driveSelectionOrderSelect?.addEventListener("change", syncDriveSelectionUi);
   driveGrid?.addEventListener("pointerdown", startDriveMarqueeSelection);
+  driveGrid?.addEventListener("contextmenu", (event) => {
+    if (driveVirtualHome || event.target.closest(".drive-item")) return;
+    event.preventDefault();
+    const currentFolder = driveContents.breadcrumb?.[driveContents.breadcrumb.length - 1];
+    if (!currentFolder || !driveCurrentFolderId) return;
+    driveContextFolder = {
+      id: driveCurrentFolderId,
+      name: currentFolder.name,
+      boardId: driveScopeBoardId,
+      isRoot: driveCurrentFolderId === driveRootFolderId,
+    };
+    showDriveFolderMenu(event.clientX, event.clientY);
+  });
   driveGrid?.addEventListener("pointermove", updateDriveMarqueeSelection);
   driveGrid?.addEventListener("pointerup", finishDriveMarqueeSelection);
   driveGrid?.addEventListener("pointercancel", finishDriveMarqueeSelection);
+  driveGrid?.addEventListener("dragover", handleDriveGridDragOver);
+  driveGrid?.addEventListener("dragleave", handleDriveGridDragLeave);
+  driveGrid?.addEventListener("drop", handleDriveGridDrop);
   driveSlidePrevBtn?.addEventListener("click", () => moveDriveSlide(-1));
   driveSlideNextBtn?.addEventListener("click", () => moveDriveSlide(1));
   driveSlideshowBackBtn?.addEventListener("click", closeDriveSlideshow);
+  driveSlideshowPlaceBtn?.addEventListener("click", () => insertDriveSlideshowObject(getDriveImagesInDisplayOrder(), driveSlideIndex));
   driveSelectionMenu?.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-drive-action]");
     if (!button) return;
     const action = button.dataset.driveAction;
     if (action === "insert") insertSelectedDriveImages();
+    else if (action === "insert-slideshow") insertDriveSlideshowObject(getSelectedDriveImages(), 0);
     else if (action === "download") downloadSelectedDriveImages();
     else if (action === "rename") renameSelectedDriveImage();
     else if (action === "delete") deleteSelectedDriveImages();
@@ -15043,7 +15670,8 @@
   driveFolderMenu?.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-drive-folder-action]");
     if (!button) return;
-    if (button.dataset.driveFolderAction === "rename") renameDriveContextFolder();
+    if (button.dataset.driveFolderAction === "insert-slideshow") insertDriveFolderSlideshow();
+    else if (button.dataset.driveFolderAction === "rename") renameDriveContextFolder();
     else if (button.dataset.driveFolderAction === "delete") deleteDriveContextFolder();
   });
   document.addEventListener("pointerdown", (event) => {
@@ -15857,7 +16485,7 @@
           driveScopeBoardId = folder.boardId;
           loadDriveFolder(folder.id);
         });
-        installDriveFolderDropTarget(item, folder.id);
+        installDriveFolderDropTarget(item, folder.id, folder.boardId);
         item.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           driveContextFolder = { ...folder, isRoot: true };
@@ -16157,25 +16785,61 @@
     driveMarqueeElement = null;
   }
 
-  function installDriveFolderDropTarget(element, folderId) {
+  function installDriveFolderDropTarget(element, folderId, scopeBoardId = driveScopeBoardId) {
     element.addEventListener("dragover", (event) => {
-      if (!driveDraggingImageIds.length) return;
+      const isDriveMove = driveDraggingImageIds.length > 0;
+      const isImageUpload = folderId != null &&
+        (hasImageFiles(event.dataTransfer) || hasDraggedWebImage(event.dataTransfer));
+      if (!isDriveMove && !isImageUpload) return;
       event.preventDefault();
       event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
+      event.dataTransfer.dropEffect = isDriveMove ? "move" : "copy";
+      driveGrid?.classList.remove("drive-drop-target");
       element.classList.add("drive-drop-target");
     });
     element.addEventListener("dragleave", (event) => {
       if (!element.contains(event.relatedTarget)) element.classList.remove("drive-drop-target");
     });
     element.addEventListener("drop", (event) => {
-      if (!driveDraggingImageIds.length) return;
+      const imageFiles = getImageFilesFromDataTransfer(event.dataTransfer);
+      const imageUrl = imageFiles.length ? "" : getDraggedWebImageUrl(event.dataTransfer);
+      if (!driveDraggingImageIds.length && ((!imageFiles.length && !imageUrl) || folderId == null)) return;
       event.preventDefault();
       event.stopPropagation();
-      element.classList.remove("drive-drop-target");
-      const imageIds = [...driveDraggingImageIds];
-      moveSelectedDriveImages(folderId, imageIds);
+      clearDriveDropTargets();
+      if (driveDraggingImageIds.length) {
+        const imageIds = [...driveDraggingImageIds];
+        moveSelectedDriveImages(folderId, imageIds);
+      } else {
+        if (imageFiles.length) uploadDriveImages(imageFiles, folderId, scopeBoardId);
+        else uploadDriveImageUrl(imageUrl, folderId, scopeBoardId);
+      }
     });
+  }
+
+  function handleDriveGridDragOver(event) {
+    const canImport = hasImageFiles(event.dataTransfer) || hasDraggedWebImage(event.dataTransfer);
+    if (driveDraggingImageIds.length || driveVirtualHome || !canImport) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    driveGrid?.classList.add("drive-drop-target");
+  }
+
+  function handleDriveGridDragLeave(event) {
+    if (!driveGrid?.contains(event.relatedTarget)) driveGrid?.classList.remove("drive-drop-target");
+  }
+
+  function handleDriveGridDrop(event) {
+    if (driveDraggingImageIds.length || driveVirtualHome) return;
+    const imageFiles = getImageFilesFromDataTransfer(event.dataTransfer);
+    const imageUrl = imageFiles.length ? "" : getDraggedWebImageUrl(event.dataTransfer);
+    if (!imageFiles.length && !imageUrl) return;
+    event.preventDefault();
+    event.stopPropagation();
+    driveGrid?.classList.remove("drive-drop-target");
+    if (imageFiles.length) uploadDriveImages(imageFiles);
+    else uploadDriveImageUrl(imageUrl);
   }
 
   function clearDriveDropTargets() {
@@ -16563,21 +17227,47 @@
     await loadDriveFolder(driveCurrentFolderId);
   }
 
-  async function uploadDriveImages(files) {
-    const imageFiles = Array.from(files || []).filter((file) => file.type?.startsWith("image/"));
+  async function uploadDriveImages(files, folderId = driveCurrentFolderId, scopeBoardId = driveScopeBoardId) {
+    const imageFiles = Array.from(files || []).filter(isImageFile);
     if (!imageFiles.length) return;
     const data = new FormData();
-    data.append("folderId", driveCurrentFolderId || "");
+    data.append("folderId", folderId || "");
     imageFiles.forEach((file) => data.append("images", file));
     setDriveStatus("アップロード中...");
     try {
-      const res = await fetch(`${getDriveApiBase()}/images`, { method: "POST", body: data });
+      const res = await fetch(`${getDriveApiBase(scopeBoardId)}/images`, { method: "POST", body: data });
       if (!res.ok) throw new Error("upload failed");
-      await loadDriveFolder(driveCurrentFolderId);
+      if (driveVirtualHome) await renderDriveHome();
+      else await loadDriveFolder(driveCurrentFolderId);
     } catch (err) {
       console.error(err);
       setDriveStatus("アップロードに失敗しました");
       window.alert("画像をアップロードできませんでした（1枚20MBまで）。");
+    }
+  }
+
+  async function uploadDriveImageUrl(url, folderId = driveCurrentFolderId, scopeBoardId = driveScopeBoardId) {
+    if (!url) return;
+    setDriveStatus("WEB画像を取り込み中...");
+    try {
+      const response = /^data:image\//i.test(url)
+        ? await fetch(url)
+        : await fetch(`/api/link-image?url=${encodeURIComponent(url)}`);
+      if (!response.ok) throw new Error("web image fetch failed");
+      const blob = await response.blob();
+      const rawMimeType = String(blob.type || "").split(";", 1)[0].toLowerCase();
+      const mimeType = rawMimeType === "image/jpg" ? "image/jpeg" : rawMimeType;
+      const supportedTypes = new Set([
+        "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif",
+      ]);
+      if (!supportedTypes.has(mimeType)) throw new Error("unsupported web image type");
+      if (blob.size > 20 * 1024 * 1024) throw new Error("image is too large");
+      const file = new File([blob], getWebImageFilename(url, mimeType), { type: mimeType });
+      await uploadDriveImages([file], folderId, scopeBoardId);
+    } catch (err) {
+      console.error(err);
+      setDriveStatus("WEB画像の取り込みに失敗しました");
+      window.alert("WEB上の画像を取り込めませんでした。画像のURLやサイズを確認してください。");
     }
   }
 
@@ -16672,6 +17362,105 @@
     } catch (err) {
       console.error(err);
       window.alert("画像をボードに貼り付けられませんでした。");
+    }
+  }
+
+  function loadSlideshowSourceImage(src) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = getCanvasSafeImageSrc(src);
+    });
+  }
+
+  async function insertDriveFolderSlideshow() {
+    const folder = driveContextFolder ? { ...driveContextFolder } : null;
+    hideDriveFolderMenu();
+    if (!folder || !requireUser() || !canCreateOnCurrentLayer()) return;
+    setDriveStatus("フォルダ内の画像を読み込み中...");
+    try {
+      const response = await fetch(
+        `${getDriveApiBase(folder.boardId)}/folder-images?folderId=${encodeURIComponent(folder.id)}`
+      );
+      if (!response.ok) throw new Error("folder images fetch failed");
+      const result = await response.json();
+      if (!result.images?.length) {
+        window.alert("このフォルダには画像がありません。");
+        return;
+      }
+      await insertDriveSlideshowObject(result.images, 0, { linkedFolder: folder });
+    } catch (err) {
+      console.error(err);
+      window.alert("フォルダからスライドショーを作成できませんでした。");
+    }
+  }
+
+  async function insertDriveSlideshowObject(sourceImages, startIndex = 0, options = {}) {
+    const driveImages = Array.from(sourceImages || []).filter((image) => image?.src);
+    if (!driveImages.length || !requireUser() || !canCreateOnCurrentLayer()) return;
+    hideDriveSelectionMenu();
+    setDriveStatus("スライドショーを作成中...");
+    try {
+      const assets = await Promise.all(driveImages.map(async (image, index) => {
+        if (options.linkedFolder) {
+          return {
+            src: image.src,
+            img: await loadSlideshowSourceImage(image.src),
+            name: image.name || `スライド ${index + 1}`,
+            driveImageId: image.id,
+          };
+        }
+        const response = await fetch(image.src);
+        if (!response.ok) throw new Error("image fetch failed");
+        const blob = await response.blob();
+        const file = new File([blob], image.name || `slide-${index + 1}`, {
+          type: blob.type || image.mimeType || "image/png",
+        });
+        const loaded = await loadImageFromFile(file);
+        return { src: loaded.src, img: loaded.img, name: image.name || `スライド ${index + 1}` };
+      }));
+      const activeIndex = Math.max(0, Math.min(Number(startIndex) || 0, assets.length - 1));
+      const active = assets[activeIndex];
+      const size = getInsertedImageWorldSize(active.img);
+      const center = getCanvasCenterWorld();
+      const framedHeight = size.height + 96 / Math.max(scale, 0.01);
+      const imgObj = {
+        id: genId(),
+        img: active.img,
+        src: active.src,
+        x: center.x - size.width / 2,
+        y: center.y - framedHeight / 2,
+        width: size.width,
+        height: framedHeight,
+        layer: getImageTargetLayer(),
+        order: orderCounter++,
+        user: currentUser,
+        rotation: 0,
+        imageName: `スライドショー（${assets.length}枚）`,
+        imageListOrder: bumpImageListOrderCounter(),
+        slideshowSlides: assets.map(({ src, name, driveImageId }) => ({ src, name, driveImageId })),
+        slideshowIndex: activeIndex,
+        slideshowDriveBoardId: options.linkedFolder?.boardId || null,
+        slideshowDriveFolderId: options.linkedFolder?.id || null,
+      };
+      applyFrameMembershipByPoint(imgObj, center);
+      images.push(imgObj);
+      registerUser(currentUser);
+      refreshImageList();
+      emitImageAdd(imgObj);
+      selected = { type: "image", index: images.length - 1 };
+      multiSelection = null;
+      resetShapeMode();
+      switchToSelectTool();
+      closeDrive();
+      updateFooterByState();
+      redraw();
+      showTransientFooterMessage(`${assets.length}枚のスライドショーをボードに配置しました。`, 3500);
+    } catch (err) {
+      console.error(err);
+      setDriveStatus("スライドショーの作成に失敗しました");
+      window.alert("スライドショーをボードに配置できませんでした。");
     }
   }
 
