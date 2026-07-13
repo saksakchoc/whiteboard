@@ -16117,8 +16117,10 @@
     element.style.height = `${(link.height || 460) * scale}px`;
     const resizeMode = link.spreadsheetResizeMode === "scale" ? "scale" : "fixed";
     const storedScale = Number.isFinite(link.spreadsheetScale) && link.spreadsheetScale > 0 ? link.spreadsheetScale : 1;
-    const contentScale = resizeMode === "scale" ? Math.max(0.1, scale * storedScale) : 1;
-    const headerScale = resizeMode === "scale" ? scale * storedScale : scale;
+    // シートの縮尺はリサイズモードとは独立して保持する。
+    // ホワイトボード全体のズームは、保存済み縮尺に常に重ねて適用する。
+    const contentScale = scale * storedScale;
+    const headerScale = scale * storedScale;
     element.style.setProperty("--sheet-scale", String(headerScale));
     element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
     element.classList.toggle("read-only", !canInteractLink(link));
