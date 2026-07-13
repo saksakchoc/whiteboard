@@ -207,10 +207,12 @@ try {
 } catch (e) {
   // ignore if column already exists
 }
+// A board image may have one link in its board drive and another link in Drive Home.
+// Duplicate prevention is therefore handled per board-drive tree when importing.
 db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_images_source
+  DROP INDEX IF EXISTS idx_drive_images_source;
+  CREATE INDEX IF NOT EXISTS idx_drive_images_source_lookup
   ON drive_images(source_board_id, source_image_id)
-  WHERE source_board_id IS NOT NULL AND source_image_id IS NOT NULL
 `);
 
 // 既存テーブルへの列追加（存在しない場合だけ）
@@ -601,12 +603,17 @@ function createDriveImage(image) {
     image.sourceImageId || null,
     image.createdAt || Date.now()
   );
-  if (result.changes) return db.prepare("SELECT * FROM drive_images WHERE id = ?").get(image.id);
-  if (image.sourceBoardId && image.sourceImageId) {
-    return db.prepare("SELECT * FROM drive_images WHERE source_board_id = ? AND source_image_id = ?")
-      .get(image.sourceBoardId, image.sourceImageId);
-  }
-  return null;
+  return getDriveImage(image.id);
+}
+
+function getBoardDriveImageBySource(boardId, sourceImageId) {
+  if (!boardId || !sourceImageId) return null;
+  const candidates = db.prepare(`
+    SELECT * FROM drive_images
+    WHERE source_board_id = ? AND source_image_id = ? AND folder_id IS NOT NULL
+    ORDER BY created_at ASC, rowid ASC
+  `).all(boardId, sourceImageId);
+  return candidates.find((image) => isDriveFolderInBoard(boardId, image.folder_id)) || null;
 }
 
 function listBoardImagesForDrive(boardId) {
@@ -626,6 +633,18 @@ function getDriveImage(id) {
 function renameDriveImage(id, name) {
   const result = db.prepare("UPDATE drive_images SET name = ? WHERE id = ?").run(name, id);
   return result.changes ? getDriveImage(id) : null;
+}
+
+function moveDriveImages(imageIds, targetFolderId) {
+  const move = db.transaction((ids) => {
+    const stmt = db.prepare("UPDATE drive_images SET folder_id = ? WHERE id = ?");
+    let changes = 0;
+    ids.forEach((id) => {
+      changes += stmt.run(normalizeDriveParentId(targetFolderId), id).changes;
+    });
+    return changes;
+  });
+  return move(imageIds);
 }
 
 function deleteDriveImage(id) {
@@ -1054,9 +1073,11 @@ module.exports = {
   createDriveFolder,
   renameDriveFolder,
   createDriveImage,
+  getBoardDriveImageBySource,
   listBoardImagesForDrive,
   getDriveImage,
   renameDriveImage,
+  moveDriveImages,
   deleteDriveImage,
   deleteDriveFolder,
 };

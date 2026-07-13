@@ -1399,6 +1399,26 @@ button:hover {
   box-shadow: 0 0 0 3px rgba(22, 119, 210, 0.22);
 }
 
+.drive-item[draggable="true"] {
+  cursor: grab;
+}
+
+.drive-item.is-dragging {
+  opacity: 0.48;
+}
+
+.drive-item.drive-drop-target {
+  border-color: #1677d2;
+  box-shadow: 0 0 0 4px rgba(22, 119, 210, 0.24);
+  background: #eef6ff;
+}
+
+.drive-breadcrumb button.drive-drop-target {
+  border-radius: 5px;
+  background: #ddecff;
+  box-shadow: 0 0 0 2px #1677d2;
+}
+
 .drive-select-toggle {
   position: absolute;
   top: 7px;

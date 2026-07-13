@@ -41,9 +41,11 @@ const {
   createDriveFolder,
   renameDriveFolder,
   createDriveImage,
+  getBoardDriveImageBySource,
   listBoardImagesForDrive,
   getDriveImage,
   renameDriveImage,
+  moveDriveImages,
   deleteDriveImage,
   deleteDriveFolder,
 } = require("./db");
@@ -422,10 +424,62 @@ app.get("/api/drive/home", (_req, res) => {
       name: root.name,
       createdAt: root.created_at,
     }));
-    res.json({ folders });
+    const images = listDriveFolder(null).images.map(driveImageResponse);
+    res.json({ folders, images });
   } catch (err) {
     console.error("Failed to list drive home", err);
     res.status(500).json({ error: "failed to list drive home" });
+  }
+});
+
+app.post("/api/drive/move-images", (req, res) => {
+  try {
+    const imageIds = Array.from(new Set(
+      (Array.isArray(req.body?.imageIds) ? req.body.imageIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )).slice(0, 1000);
+    const targetFolderId = req.body?.targetFolderId == null
+      ? null
+      : String(req.body.targetFolderId).trim() || null;
+    if (!imageIds.length) return res.status(400).json({ error: "invalid params" });
+    if (targetFolderId && !getDriveFolder(targetFolderId)) {
+      return res.status(404).json({ error: "target folder not found" });
+    }
+    if (imageIds.some((id) => !getDriveImage(id))) {
+      return res.status(404).json({ error: "image not found" });
+    }
+    const moved = moveDriveImages(imageIds, targetFolderId);
+    res.json({ moved, targetFolderId });
+  } catch (err) {
+    console.error("Failed to move drive images", err);
+    res.status(500).json({ error: "failed to move images" });
+  }
+});
+
+app.patch("/api/drive/images/:imageId", (req, res) => {
+  try {
+    const image = getDriveImage(req.params.imageId);
+    if (!image) return res.status(404).json({ error: "image not found" });
+    const name = String(req.body?.name || "").trim().slice(0, 255);
+    if (!name) return res.status(400).json({ error: "name is required" });
+    res.json(driveImageResponse(renameDriveImage(image.id, name)));
+  } catch (err) {
+    console.error("Failed to rename home drive image", err);
+    res.status(500).json({ error: "failed to rename image" });
+  }
+});
+
+app.delete("/api/drive/images/:imageId", (req, res) => {
+  try {
+    const image = getDriveImage(req.params.imageId);
+    if (!image) return res.status(404).json({ error: "image not found" });
+    deleteDriveImage(image.id);
+    if (!image.source_image_id) removeDriveUpload(image.src);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to delete home drive image", err);
+    res.status(500).json({ error: "failed to delete image" });
   }
 });
 
@@ -522,6 +576,8 @@ app.post("/api/boards/:boardId/drive/import-board-images", (req, res) => {
     const importedAt = Date.now();
     let added = 0;
     const images = sourceImages.map((source, index) => {
+      const existing = getBoardDriveImageBySource(board.id, source.id);
+      if (existing) return existing;
       let fallbackName = `board-image-${index + 1}`;
       try {
         const filename = path.basename(String(source.src || "").split(/[?#]/, 1)[0]);
@@ -548,6 +604,33 @@ app.post("/api/boards/:boardId/drive/import-board-images", (req, res) => {
   } catch (err) {
     console.error("Failed to link board images to drive", err);
     res.status(500).json({ error: "failed to import board images" });
+  }
+});
+
+app.post("/api/boards/:boardId/drive/move-images", (req, res) => {
+  try {
+    const board = getBoard(req.params.boardId);
+    if (!board) return res.status(404).json({ error: "board not found" });
+    const imageIds = Array.from(new Set(
+      (Array.isArray(req.body?.imageIds) ? req.body.imageIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )).slice(0, 1000);
+    const targetFolderId = String(req.body?.targetFolderId || "").trim();
+    if (!imageIds.length || !targetFolderId) return res.status(400).json({ error: "invalid params" });
+    if (!isDriveFolderInBoard(board.id, targetFolderId)) {
+      return res.status(404).json({ error: "target folder not found" });
+    }
+    const invalidImage = imageIds.some((id) => {
+      const image = getDriveImage(id);
+      return !image || !isDriveFolderInBoard(board.id, image.folder_id);
+    });
+    if (invalidImage) return res.status(404).json({ error: "image not found" });
+    const moved = moveDriveImages(imageIds, targetFolderId);
+    res.json({ moved, targetFolderId });
+  } catch (err) {
+    console.error("Failed to move drive images", err);
+    res.status(500).json({ error: "failed to move images" });
   }
 });
 

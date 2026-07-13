@@ -221,6 +221,7 @@
   let driveContextFolder = null;
   let driveMarquee = null;
   let driveMarqueeElement = null;
+  let driveDraggingImageIds = [];
   let hiddenCommandBuffer = "";
   let localScreenStream = null;
   let localScreenShareActive = false;
@@ -15799,7 +15800,7 @@
     }
   }
 
-  function appendDriveBreadcrumbButton(label, folderId, onClick = null) {
+  function appendDriveBreadcrumbButton(label, folderId, onClick = null, dropFolderId = folderId) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
@@ -15809,6 +15810,7 @@
       if (onClick) onClick();
       else loadDriveFolder(folderId);
     });
+    if (dropFolderId !== undefined) installDriveFolderDropTarget(button, dropFolderId);
     driveBreadcrumb.appendChild(button);
   }
 
@@ -15818,7 +15820,7 @@
     driveVirtualHome = true;
     driveCurrentFolderId = null;
     driveBreadcrumb.innerHTML = "";
-    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome);
+    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome, null);
     driveGrid.innerHTML = '<div class="drive-empty">読み込み中...</div>';
     if (driveNewFolderBtn) driveNewFolderBtn.disabled = true;
     if (driveUploadBtn) driveUploadBtn.disabled = true;
@@ -15834,6 +15836,8 @@
       const data = await res.json();
       if (!driveVirtualHome) return;
       const folders = data.folders || [];
+      const images = data.images || [];
+      driveContents = { folders, images, breadcrumb: [], folderId: null, rootFolderId: driveRootFolderId };
       driveGrid.innerHTML = "";
       folders.forEach((folder) => {
         const item = document.createElement("article");
@@ -15853,6 +15857,7 @@
           driveScopeBoardId = folder.boardId;
           loadDriveFolder(folder.id);
         });
+        installDriveFolderDropTarget(item, folder.id);
         item.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           driveContextFolder = { ...folder, isRoot: true };
@@ -15861,8 +15866,15 @@
         item.appendChild(main);
         driveGrid.appendChild(item);
       });
-      if (!folders.length) driveGrid.innerHTML = '<div class="drive-empty">ボードフォルダがありません。</div>';
-      setDriveStatus(`${folders.length}件（ボード専用フォルダ）`);
+      images.forEach((image, index) => appendDriveImageCard(image, index));
+      if (driveSelectAllBtn) {
+        driveSelectAllBtn.disabled = images.length === 0;
+        driveSelectAllBtn.textContent = "全件選択";
+      }
+      if (driveSortOrderSelect) driveSortOrderSelect.disabled = images.length === 0;
+      driveSortControl?.classList.toggle("hidden", images.length === 0);
+      if (!folders.length && !images.length) driveGrid.innerHTML = '<div class="drive-empty">ボードフォルダがありません。</div>';
+      setDriveStatus(`${folders.length + images.length}件（フォルダ ${folders.length}件・画像 ${images.length}件）`);
     } catch (err) {
       console.error(err);
       if (!driveVirtualHome) return;
@@ -15906,7 +15918,7 @@
     if (driveSortOrderSelect) driveSortOrderSelect.disabled = false;
     driveSortControl?.classList.remove("hidden");
     driveBreadcrumb.innerHTML = "";
-    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome);
+    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome, null);
     (driveContents.breadcrumb || []).forEach((folder) => {
       const separator = document.createElement("span");
       separator.className = "separator";
@@ -15942,6 +15954,7 @@
       name.textContent = folder.name;
       main.append(icon, name);
       main.addEventListener("click", () => loadDriveFolder(folder.id));
+      installDriveFolderDropTarget(item, folder.id);
       item.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         driveContextFolder = { ...folder, boardId: driveScopeBoardId, isRoot: false };
@@ -15951,10 +15964,14 @@
       driveGrid.appendChild(item);
     });
 
-    driveImages.forEach((image, index) => {
+    driveImages.forEach((image, index) => appendDriveImageCard(image, index));
+  }
+
+  function appendDriveImageCard(image, index) {
       const item = document.createElement("article");
       item.className = "drive-item";
       item.dataset.driveImageId = image.id;
+      item.draggable = false;
       const main = document.createElement("button");
       main.type = "button";
       main.className = "drive-item-main";
@@ -16002,9 +16019,24 @@
         }
         showDriveSelectionMenu(event.clientX, event.clientY);
       });
+      item.addEventListener("dragstart", (event) => {
+        if (!selectedDriveImageIds.has(image.id)) {
+          event.preventDefault();
+          return;
+        }
+        driveDraggingImageIds = Array.from(selectedDriveImageIds);
+        item.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("application/x-whiteboard-drive-images", driveDraggingImageIds.join(","));
+        event.dataTransfer.setData("text/plain", `${driveDraggingImageIds.length}件の画像`);
+      });
+      item.addEventListener("dragend", () => {
+        driveDraggingImageIds = [];
+        clearDriveDropTargets();
+        item.classList.remove("is-dragging");
+      });
       item.append(main, selectToggle);
       driveGrid.appendChild(item);
-    });
   }
 
   function clearDriveLongPress() {
@@ -16125,6 +16157,68 @@
     driveMarqueeElement = null;
   }
 
+  function installDriveFolderDropTarget(element, folderId) {
+    element.addEventListener("dragover", (event) => {
+      if (!driveDraggingImageIds.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      element.classList.add("drive-drop-target");
+    });
+    element.addEventListener("dragleave", (event) => {
+      if (!element.contains(event.relatedTarget)) element.classList.remove("drive-drop-target");
+    });
+    element.addEventListener("drop", (event) => {
+      if (!driveDraggingImageIds.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      element.classList.remove("drive-drop-target");
+      const imageIds = [...driveDraggingImageIds];
+      moveSelectedDriveImages(folderId, imageIds);
+    });
+  }
+
+  function clearDriveDropTargets() {
+    document.querySelectorAll(".drive-drop-target").forEach((element) => {
+      element.classList.remove("drive-drop-target");
+    });
+  }
+
+  async function moveSelectedDriveImages(targetFolderId, draggedImageIds = null) {
+    const imageIds = draggedImageIds?.length ? draggedImageIds : Array.from(selectedDriveImageIds);
+    if (!imageIds.length) return;
+    if ((!driveVirtualHome && targetFolderId === driveCurrentFolderId)
+      || (driveVirtualHome && targetFolderId == null)) {
+      driveDraggingImageIds = [];
+      clearDriveDropTargets();
+      showTransientFooterMessage("すでに同じ場所にあります。", 2500);
+      return;
+    }
+    driveDraggingImageIds = [];
+    clearDriveDropTargets();
+    setDriveStatus(`${imageIds.length}件を移動中...`);
+    try {
+      const res = await fetch("/api/drive/move-images", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageIds, targetFolderId }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.error || "drive image move failed");
+      }
+      const result = await res.json();
+      if (Number(result.moved) < 1) throw new Error("no images moved");
+      if (driveVirtualHome) await renderDriveHome();
+      else await loadDriveFolder(driveCurrentFolderId);
+      showTransientFooterMessage(`${imageIds.length}件の画像を移動しました。`, 3000);
+    } catch (err) {
+      console.error(err);
+      setDriveStatus("移動に失敗しました");
+      window.alert("画像をフォルダへ移動できませんでした。");
+    }
+  }
+
   function selectDriveImage(imageId, options = {}) {
     const displayImages = getDriveImagesInDisplayOrder();
     const anchorIndex = displayImages.findIndex((image) => image.id === driveSelectionAnchorId);
@@ -16178,6 +16272,7 @@
     driveGrid?.querySelectorAll("[data-drive-image-id]").forEach((item) => {
       const isSelected = selectedDriveImageIds.has(item.dataset.driveImageId);
       item.classList.toggle("is-selected", isSelected);
+      item.draggable = isSelected;
       const toggle = item.querySelector(".drive-select-toggle");
       toggle?.setAttribute("aria-pressed", String(isSelected));
       if (toggle) toggle.dataset.selectionNumber = String(selectionNumbers.get(item.dataset.driveImageId) || "");
@@ -16416,13 +16511,15 @@
     const value = window.prompt("画像名を入力してください", image.name);
     const name = String(value || "").trim();
     if (!name || name === image.name) return;
-    const res = await fetch(`${getDriveApiBase()}/images/${encodeURIComponent(image.id)}`, {
+    const imageApiBase = driveVirtualHome ? "/api/drive" : getDriveApiBase();
+    const res = await fetch(`${imageApiBase}/images/${encodeURIComponent(image.id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
     if (!res.ok) return window.alert("画像名を変更できませんでした。");
-    await loadDriveFolder(driveCurrentFolderId);
+    if (driveVirtualHome) await renderDriveHome();
+    else await loadDriveFolder(driveCurrentFolderId);
   }
 
   async function deleteSelectedDriveImages() {
@@ -16430,11 +16527,13 @@
     if (!selectedImages.length) return;
     hideDriveSelectionMenu();
     if (!window.confirm(`選択した画像 ${selectedImages.length}件を削除しますか？`)) return;
+    const imageApiBase = driveVirtualHome ? "/api/drive" : getDriveApiBase();
     const results = await Promise.all(selectedImages.map((image) =>
-      fetch(`${getDriveApiBase()}/images/${encodeURIComponent(image.id)}`, { method: "DELETE" })
+      fetch(`${imageApiBase}/images/${encodeURIComponent(image.id)}`, { method: "DELETE" })
     ));
     if (results.some((res) => !res.ok)) window.alert("一部の画像を削除できませんでした。");
-    await loadDriveFolder(driveCurrentFolderId);
+    if (driveVirtualHome) await renderDriveHome();
+    else await loadDriveFolder(driveCurrentFolderId);
   }
 
   function openDrive() {
