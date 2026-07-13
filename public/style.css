@@ -923,6 +923,32 @@ body.link-board-view .follow-view-label {
   font-size: 20px;
 }
 
+.floating-app-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.floating-app-window-popout,
+.floating-link-board-popout {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: currentColor;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.floating-app-window-popout:hover,
+.floating-link-board-popout:hover {
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
+}
+
 .floating-app-window-content {
   display: block;
   width: 100%;
@@ -937,7 +963,7 @@ body.link-board-view .follow-view-label {
   gap: 6px;
 }
 
-.floating-draft-board-actions button:not(.floating-app-window-close) {
+.floating-draft-board-actions button:not(.floating-app-window-close):not(.floating-app-window-popout) {
   padding: 4px 9px;
   border: 1px solid #93c5fd;
   border-radius: 6px;
@@ -946,6 +972,7 @@ body.link-board-view .follow-view-label {
   font-size: 12px;
 }
 
+.floating-list-window .text-list-panel,
 .floating-text-list .text-list-panel {
   position: static;
   width: 100%;
@@ -956,12 +983,14 @@ body.link-board-view .follow-view-label {
   box-shadow: none;
 }
 
+.floating-list-window .text-list-header,
 .floating-text-list .text-list-header {
   cursor: move;
   user-select: none;
   touch-action: none;
 }
 
+.floating-list-window .text-list-body,
 .floating-text-list .text-list-body {
   flex: 1;
   max-height: none !important;
@@ -1042,6 +1071,33 @@ body.link-board-view .follow-view-label {
   flex: 1 1 auto;
   border: 0;
   background: #1e293b;
+}
+
+.floating-popup-body {
+  min-width: 0;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.floating-popup-body .floating-app-window.is-browser-popout {
+  position: static !important;
+  width: 100% !important;
+  height: 100vh !important;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  resize: none;
+}
+
+.floating-popup-body .floating-app-window-popout,
+.floating-popup-body .floating-link-board-popout {
+  display: none;
 }
 
 .side-menu button {

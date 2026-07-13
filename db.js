@@ -420,6 +420,21 @@ function deleteDraftStroke(boardId, id, user) {
   stmt.run(boardId, id, user);
 }
 
+function deleteDraftBoardContents(boardId, draftBoardId, user) {
+  const remove = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM draft_strokes WHERE board_id = ? AND draft_board_id = ? AND user = ?`
+    ).run(boardId, draftBoardId, user);
+    db.prepare(
+      `DELETE FROM texts_v2 WHERE board_id = ? AND draft_board_id = ? AND user = ?`
+    ).run(boardId, draftBoardId, user);
+    db.prepare(
+      `DELETE FROM images_v2 WHERE board_id = ? AND draft_board_id = ? AND user = ?`
+    ).run(boardId, draftBoardId, user);
+  });
+  remove();
+}
+
 function getDraftStrokes(boardId, user) {
   const stmt = db.prepare(`
     SELECT id, user, color, size, points, "order", created_at, fill, group_id, fill_source_id, frame_id, frame_tab, glow_color, draft_board_id
@@ -683,6 +698,7 @@ module.exports = {
   getBoardState,
   saveDraftStroke,
   deleteDraftStroke,
+  deleteDraftBoardContents,
   getDraftStrokes,
   addUser,
   linkUserToBoard,

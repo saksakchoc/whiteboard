@@ -25,6 +25,7 @@ const {
   getBoardState,
   saveDraftStroke,
   deleteDraftStroke,
+  deleteDraftBoardContents,
   getDraftStrokes,
   addUser,
   linkUserToBoard,
@@ -742,11 +743,28 @@ io.on("connection", (socket) => {
     const state = ensureBoardState(boardId);
     const list = getItemsByType(state, type);
     if (!list) return;
-    if (list.some((item) => item?.id === id)) {
+    const removedItem = list.find((item) => item?.id === id);
+    if (removedItem) {
       try {
         if (type === "stroke") deleteStroke(boardId, id);
         else if (type === "text") deleteText(boardId, id);
-        else if (type === "image") deleteImage(boardId, id);
+        else if (type === "image") {
+          if (removedItem.draftBoardSource && currentUserName) {
+            deleteDraftBoardContents(boardId, id, currentUserName);
+            [
+              ["text", state.texts],
+              ["image", state.images],
+            ].forEach(([childType, childList]) => {
+              childList
+                .filter((child) => child?.draftBoardId === id && child.user === currentUserName)
+                .forEach((child) => {
+                  removeAllById(childList, child.id);
+                  io.to(boardId).emit("item:remove", { type: childType, id: child.id });
+                });
+            });
+          }
+          deleteImage(boardId, id);
+        }
         else if (type === "link") deleteLink(boardId, id);
         if (removeAllById(list, id)) {
           socket.to(boardId).emit("item:remove", { type, id });

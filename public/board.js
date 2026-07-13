@@ -281,8 +281,9 @@
   let textListOrderCounter = 0;
   let imageListOpen = false;
   let linkListOpen = false;
-  const listPopupWindows = new Map();
-  const listPanelHomes = new Map();
+  const listFloatingFrames = new Map();
+  const floatingPopupWindows = new Map();
+  let floatingPopupCounter = 0;
   let floatingLinkBoardZ = 2200;
   let textListFloatingFrame = null;
   const openFloatingDraftBoardIds = new Set();
@@ -728,7 +729,8 @@
     if (obj.draftBoardSource) return !!obj.draftBoardSource.floating;
     if (!obj.draftBoardId) return false;
     const board = images.find((img) => img?.id === obj.draftBoardId);
-    return !!board?.draftBoardSource?.floating;
+    // 枠だけ先に削除された旧データもメインボードへ露出させない。
+    return !board || !!board?.draftBoardSource?.floating;
   }
 
   function isStrokeVisible(stroke) {
@@ -798,7 +800,9 @@
 
   function isImageVisible(imgObj) {
     if (draftBoardViewId) {
-      return imgObj?.id === draftBoardViewId || imgObj?.draftBoardId === draftBoardViewId;
+      // フローティング窓そのものが下書きボードの枠なので、iframe 内では
+      // ボード画像を重ねて描かず、その中身だけを表示する。
+      return imgObj?.draftBoardId === draftBoardViewId;
     }
     if (isFloatingDraftBoardObject(imgObj)) return false;
     if (
@@ -3324,9 +3328,7 @@
 
   function openImageList() {
     imageListOpen = true;
-    openListPopup(imageListPanel, "画像一覧", () => {
-      imageListOpen = false;
-    });
+    openFloatingList(imageListPanel, "画像一覧", "floating-image-list", 150, 90);
     imageListPanel.classList.remove("hidden");
     positionImageListPanel();
     renderImageList();
@@ -3335,7 +3337,7 @@
   function closeImageList() {
     imageListOpen = false;
     imageListPanel.classList.add("hidden");
-    closeListPopup(imageListPanel);
+    closeFloatingList(imageListPanel);
     imageListPanel.style.maxHeight = "";
     if (imageListBody) imageListBody.style.maxHeight = "";
     imageListPanel.style.top = "";
@@ -3350,9 +3352,7 @@
 
   function openLinkList() {
     linkListOpen = true;
-    openListPopup(linkListPanel, "リンク集", () => {
-      linkListOpen = false;
-    });
+    openFloatingList(linkListPanel, "リンク一覧", "floating-link-list", 180, 110);
     linkListPanel.classList.remove("hidden");
     positionLinkListPanel();
     renderLinkList();
@@ -3361,7 +3361,7 @@
   function closeLinkList() {
     linkListOpen = false;
     linkListPanel.classList.add("hidden");
-    closeListPopup(linkListPanel);
+    closeFloatingList(linkListPanel);
     linkListPanel.style.maxHeight = "";
     if (linkListBody) linkListBody.style.maxHeight = "";
     linkListPanel.style.top = "";
@@ -3372,14 +3372,99 @@
     if (linkListOpen) renderLinkList();
   }
 
+  function closeDetachedFloatingWindow(frame) {
+    const record = floatingPopupWindows.get(frame);
+    if (!record) return;
+    floatingPopupWindows.delete(frame);
+    record.closing = true;
+    if (!record.popup.closed) record.popup.close();
+  }
+
+  function getAllFloatingWindows() {
+    const frames = new Set(document.querySelectorAll(".floating-app-window"));
+    floatingPopupWindows.forEach((_record, frame) => frames.add(frame));
+    return Array.from(frames);
+  }
+
+  function findFloatingWindow(selector) {
+    return getAllFloatingWindows().find((frame) => frame.matches(selector)) || null;
+  }
+
+  function getFloatingHostWindow() {
+    if (window.parent !== window) {
+      try {
+        if (window.parent.opener && !window.parent.opener.closed) return window.parent.opener;
+      } catch {}
+      return window.parent;
+    }
+    return window.opener && !window.opener.closed ? window.opener : window;
+  }
+
+  function removeFloatingWindow(frame) {
+    closeDetachedFloatingWindow(frame);
+    frame?.remove();
+  }
+
+  function popOutFloatingWindow(frame, title) {
+    if (!frame) return false;
+    const current = floatingPopupWindows.get(frame);
+    if (current && !current.popup.closed) {
+      current.popup.focus();
+      return true;
+    }
+    const rect = frame.getBoundingClientRect();
+    const popupName = `whiteboard-window-${boardId}-${frame.dataset.popoutId || ++floatingPopupCounter}`;
+    frame.dataset.popoutId = frame.dataset.popoutId || String(floatingPopupCounter);
+    const popup = window.open(
+      "",
+      popupName,
+      `popup=yes,width=${Math.max(320, Math.round(rect.width))},height=${Math.max(260, Math.round(rect.height))},resizable=yes,scrollbars=no`
+    );
+    if (!popup) {
+      showTransientFooterMessage("別窓を開けませんでした。ブラウザのポップアップを許可してください。", 5000);
+      return false;
+    }
+    popup.document.open();
+    popup.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title></title><link rel="stylesheet" href="/style.css"></head><body class="floating-popup-body"></body></html>');
+    popup.document.close();
+    popup.document.title = title;
+    frame.classList.add("is-browser-popout");
+    popup.document.body.appendChild(frame);
+    const record = { popup, closing: false };
+    floatingPopupWindows.set(frame, record);
+    popup.addEventListener("beforeunload", () => {
+      if (record.closing || floatingPopupWindows.get(frame) !== record) return;
+      floatingPopupWindows.delete(frame);
+      if (frame._onPopupClosed) frame._onPopupClosed();
+      else frame._closeFloating?.();
+    });
+    popup.focus();
+    return true;
+  }
+
+  function createFloatingPopoutButton(frame, title, className = "floating-app-window-popout") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = "↗";
+    button.title = "ブラウザの別窓で開く";
+    button.setAttribute("aria-label", `${title}をブラウザの別窓で開く`);
+    button.addEventListener("click", () => {
+      popOutFloatingWindow(button.closest(".floating-app-window") || frame, title);
+    });
+    return button;
+  }
+
   function activateFloatingAppWindow(frame) {
     if (!frame) return;
-    document.querySelectorAll(".floating-app-window.active").forEach((item) => {
+    const detached = floatingPopupWindows.get(frame);
+    getAllFloatingWindows().forEach((item) => {
       if (item !== frame) item.classList.remove("active");
     });
     frame.classList.add("active");
     frame.style.zIndex = String(++floatingLinkBoardZ);
     syncToolbarToActiveDraftBoard();
+    if (detached && !detached.popup.closed) detached.popup.focus();
   }
 
   function activateTopFloatingAppWindow() {
@@ -3401,9 +3486,8 @@
 
   function syncToolbarToActiveDraftBoard() {
     if (draftBoardViewId || linkBoardView) return;
-    const iframe = document.querySelector(
-      ".floating-draft-board.active iframe, .floating-link-board.active iframe"
-    );
+    const iframe = findFloatingWindow(".floating-draft-board.active, .floating-link-board.active")
+      ?.querySelector("iframe");
     iframe?.contentWindow?.postMessage(
       { type: "whiteboard:draft-toolbar", state: getSharedToolbarState() },
       window.location.origin
@@ -3455,6 +3539,11 @@
     document.body.appendChild(frame);
     textListFloatingFrame = frame;
     const handle = textListPanel.querySelector(".text-list-header");
+    const actions = textListPanel.querySelector(".text-list-actions");
+    if (actions && !actions.querySelector(".floating-app-window-popout")) {
+      actions.insertBefore(createFloatingPopoutButton(frame, "文字一覧"), actions.lastElementChild);
+    }
+    frame._closeFloating = closeTextList;
     if (handle) enableFloatingWindowDrag(frame, handle);
     activateFloatingAppWindow(frame);
   }
@@ -3464,14 +3553,56 @@
     if (!frame) return;
     const wasActive = frame.classList.contains("active");
     document.body.appendChild(textListPanel);
-    frame.remove();
+    removeFloatingWindow(frame);
     textListFloatingFrame = null;
+    if (wasActive) activateTopFloatingAppWindow();
+  }
+
+  function openFloatingList(panel, title, className, left, top) {
+    const existing = listFloatingFrames.get(panel);
+    if (existing?.isConnected) {
+      const detached = floatingPopupWindows.get(existing);
+      if (detached && !detached.popup.closed) {
+        detached.popup.focus();
+        return existing;
+      }
+      activateFloatingAppWindow(existing);
+      return existing;
+    }
+    const frame = document.createElement("section");
+    frame.className = `floating-app-window floating-list-window ${className}`;
+    frame.style.left = `${left}px`;
+    frame.style.top = `${top}px`;
+    frame.style.width = "480px";
+    frame.style.height = "min(720px, calc(100vh - 120px))";
+    frame.appendChild(panel);
+    document.body.appendChild(frame);
+    listFloatingFrames.set(panel, frame);
+    const handle = panel.querySelector(".text-list-header");
+    const actions = panel.querySelector(".text-list-actions");
+    if (actions && !actions.querySelector(".floating-app-window-popout")) {
+      actions.insertBefore(createFloatingPopoutButton(frame, title), actions.lastElementChild);
+    }
+    frame._closeFloating = panel === imageListPanel ? closeImageList : closeLinkList;
+    if (handle) enableFloatingWindowDrag(frame, handle);
+    activateFloatingAppWindow(frame);
+    return frame;
+  }
+
+  function closeFloatingList(panel) {
+    const frame = listFloatingFrames.get(panel);
+    if (!frame) return;
+    const wasActive = frame.classList.contains("active");
+    document.body.appendChild(panel);
+    removeFloatingWindow(frame);
+    listFloatingFrames.delete(panel);
     if (wasActive) activateTopFloatingAppWindow();
   }
 
   function openFloatingTrackingWindow(user) {
     const key = encodeURIComponent(user);
-    const existing = document.querySelector(`.floating-tracking-window[data-user="${CSS.escape(user)}"]`);
+    const existing = getAllFloatingWindows()
+      .find((item) => item.matches(`.floating-tracking-window[data-user="${CSS.escape(user)}"]`));
     if (existing) {
       activateFloatingAppWindow(existing);
       return;
@@ -3491,25 +3622,32 @@
     close.type = "button";
     close.className = "floating-app-window-close";
     close.textContent = "×";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    const popout = createFloatingPopoutButton(frame, `${user}を追跡`);
     const iframe = document.createElement("iframe");
     iframe.className = "floating-app-window-content";
     iframe.src = `${window.location.pathname}?follow=${key}`;
     iframe.title = `${user}を追跡`;
-    header.append(title, close);
+    actions.append(popout, close);
+    header.append(title, actions);
     frame.append(header, iframe);
     document.body.appendChild(frame);
     enableFloatingWindowDrag(frame, header);
-    close.addEventListener("click", () => {
+    const closeFrame = () => {
       const wasActive = frame.classList.contains("active");
-      frame.remove();
+      removeFloatingWindow(frame);
       if (wasActive) activateTopFloatingAppWindow();
-    });
+    };
+    frame._closeFloating = closeFrame;
+    close.addEventListener("click", closeFrame);
     activateFloatingAppWindow(frame);
   }
 
   function openFloatingDraftBoard(boardImg) {
     if (!boardImg?.id) return;
-    const existing = document.querySelector(`.floating-draft-board[data-board-id="${CSS.escape(boardImg.id)}"]`);
+    const existing = getAllFloatingWindows()
+      .find((item) => item.matches(`.floating-draft-board[data-board-id="${CSS.escape(boardImg.id)}"]`));
     if (existing) {
       activateFloatingAppWindow(existing);
       return;
@@ -3540,7 +3678,14 @@
     close.type = "button";
     close.className = "floating-app-window-close";
     close.textContent = "×";
-    actions.append(publish, publishSource, remove, close);
+    const popout = createFloatingPopoutButton(frame, "下書きボード");
+    const setCommandButtonsDisabled = (disabled) => {
+      [publish, publishSource, remove, close].forEach((button) => {
+        button.disabled = disabled;
+      });
+    };
+    setCommandButtonsDisabled(true);
+    actions.append(publish, publishSource, remove, popout, close);
     header.append(title, actions);
     const iframe = document.createElement("iframe");
     iframe.className = "floating-app-window-content";
@@ -3554,17 +3699,18 @@
     iframe.addEventListener("load", syncToolbarToActiveDraftBoard);
     const closeFrame = () => {
       const wasActive = frame.classList.contains("active");
-      frame.remove();
+      removeFloatingWindow(frame);
       openFloatingDraftBoardIds.delete(boardImg.id);
       redraw();
       if (wasActive) activateTopFloatingAppWindow();
     };
     frame._closeFloating = closeFrame;
-    close.addEventListener("click", closeFrame);
+    frame._onPopupClosed = () => {
+      deleteDraftBoard(boardImg);
+      closeFrame();
+    };
     publish.addEventListener("click", () => {
-      publish.disabled = true;
-      publishSource.disabled = true;
-      remove.disabled = true;
+      setCommandButtonsDisabled(true);
       const iframeRect = iframe.getBoundingClientRect();
       const canvasRect = canvas.getBoundingClientRect();
       const topLeft = screenToWorld(iframeRect.left - canvasRect.left, iframeRect.top - canvasRect.top);
@@ -3584,9 +3730,7 @@
       );
     });
     publishSource.addEventListener("click", () => {
-      publish.disabled = true;
-      publishSource.disabled = true;
-      remove.disabled = true;
+      setCommandButtonsDisabled(true);
       iframe.contentWindow?.postMessage(
         {
           type: "whiteboard:draft-command",
@@ -3599,15 +3743,15 @@
         window.location.origin
       );
     });
-    remove.addEventListener("click", () => {
-      publish.disabled = true;
-      publishSource.disabled = true;
-      remove.disabled = true;
+    const deleteDraft = () => {
+      setCommandButtonsDisabled(true);
       iframe.contentWindow?.postMessage(
         { type: "whiteboard:draft-command", command: "delete" },
         window.location.origin
       );
-    });
+    };
+    remove.addEventListener("click", deleteDraft);
+    close.addEventListener("click", deleteDraft);
     activateFloatingAppWindow(frame);
   }
 
@@ -3617,7 +3761,9 @@
       if (
         img?.user === currentUser &&
         img.draftBoardSource?.floating &&
-        !document.querySelector(`.floating-draft-board[data-board-id="${CSS.escape(img.id)}"]`)
+        !getAllFloatingWindows().some((item) =>
+          item.matches(`.floating-draft-board[data-board-id="${CSS.escape(img.id)}"]`)
+        )
       ) {
         openFloatingDraftBoard(img);
       }
@@ -3678,65 +3824,9 @@
     });
   }
 
-  function restoreListPanel(panel) {
-    const home = listPanelHomes.get(panel);
-    if (!home || panel.ownerDocument === document) return;
-    const nextSibling = home.nextSibling?.parentNode === home.parent ? home.nextSibling : null;
-    home.parent.insertBefore(panel, nextSibling);
-  }
-
-  function openListPopup(panel, title, onClosed) {
-    if (!panel) return false;
-    const current = listPopupWindows.get(panel);
-    if (current && !current.closed) {
-      current.focus();
-      return true;
-    }
-    if (!listPanelHomes.has(panel)) {
-      listPanelHomes.set(panel, {
-        parent: panel.parentNode,
-        nextSibling: panel.nextSibling,
-      });
-    }
-
-    const popup = window.open(
-      "",
-      `whiteboard-list-${boardId}-${panel.id}`,
-      "popup=yes,width=480,height=720,resizable=yes,scrollbars=no"
-    );
-    if (!popup) return false;
-
-    popup.document.open();
-    popup.document.write(`<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/style.css"><style>html,body{height:100%;margin:0;overflow:hidden;background:#fff}body{min-width:0}.text-list-panel{position:static!important;width:100%!important;height:100vh;max-height:none!important;box-sizing:border-box;border:0;border-radius:0}.text-list-body{flex:1;max-height:none!important}.text-list-controls>span,.text-list-controls>button{white-space:nowrap}.text-list-star-filter{width:auto!important}</style></head><body></body></html>`);
-    popup.document.close();
-    popup.document.body.appendChild(panel);
-    listPopupWindows.set(panel, popup);
-    popup.addEventListener("beforeunload", () => {
-      if (listPopupWindows.get(panel) !== popup) return;
-      listPopupWindows.delete(panel);
-      restoreListPanel(panel);
-      panel.classList.add("hidden");
-      onClosed();
-    });
-    popup.focus();
-    return true;
-  }
-
-  function closeListPopup(panel) {
-    const popup = listPopupWindows.get(panel);
-    if (!popup) return;
-    listPopupWindows.delete(panel);
-    restoreListPanel(panel);
-    if (!popup.closed) popup.close();
-  }
-
-  function isListPanelInPopup(panel) {
-    return !!panel && panel.ownerDocument !== document;
-  }
-
   function positionLinkListPanel() {
     if (!linkListPanel || linkListPanel.classList.contains("hidden")) return;
-    if (isListPanelInPopup(linkListPanel)) return;
+    if (listFloatingFrames.has(linkListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl ? toolbarEl.getBoundingClientRect().bottom + margin : 60;
@@ -4041,7 +4131,6 @@
   function positionTextListPanel() {
     if (!textListPanel || textListPanel.classList.contains("hidden")) return;
     if (textListFloatingFrame) return;
-    if (isListPanelInPopup(textListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl
@@ -4066,7 +4155,7 @@
 
   function positionImageListPanel() {
     if (!imageListPanel || imageListPanel.classList.contains("hidden")) return;
-    if (isListPanelInPopup(imageListPanel)) return;
+    if (listFloatingFrames.has(imageListPanel)) return;
     const margin = 12;
     const footerSpace = getFooterSpace() + margin;
     const toolbarBottom = toolbarEl
@@ -4987,7 +5076,8 @@
   function getDraftBoardAtWorldPoint(worldPoint) {
     let best = null;
     images.forEach((img, index) => {
-      if (!isDraftBoardImage(img) || !isImageVisible(img) || img.user !== currentUser) return;
+      if (!isDraftBoardImage(img) || img.user !== currentUser) return;
+      if (draftBoardViewId ? img.id !== draftBoardViewId : !isImageVisible(img)) return;
       if (!pointInRectWorld(getImageBoundsWorld(img), worldPoint)) return;
       const order = getObjectOrderValue("image", img, index);
       if (!best || order >= best.order) best = { img, index, order };
@@ -6583,13 +6673,27 @@
     if (!draftBoardViewId) return false;
     const board = images.find((img) => img?.id === draftBoardViewId && img.draftBoardSource);
     if (!board) return false;
-    const rect = { x: board.x, y: board.y, width: board.width, height: board.height };
+    const headerHeight = Math.max(0, board.draftBoardSource.headerHeight || 0);
+    const rect = {
+      x: board.x,
+      y: board.y + headerHeight,
+      width: board.width,
+      height: Math.max(1, board.height - headerHeight),
+    };
     fitDetachedCanvas(rect.width / rect.height);
     scale = Math.min(canvas.width / rect.width, canvas.height / rect.height);
     offsetX = canvas.width / 2 - (rect.x + rect.width / 2) * scale;
     offsetY = canvas.height / 2 - (rect.y + rect.height / 2) * scale;
     redraw();
     return true;
+  }
+
+  function notifyDraftBoardReady() {
+    if (!draftBoardViewId || !socketReady || !draftsLoaded || !applyDraftBoardView()) return;
+    getFloatingHostWindow().postMessage(
+      { type: "whiteboard:draft-ready", boardId: draftBoardViewId },
+      window.location.origin
+    );
   }
 
   function emitCurrentViewPresence() {
@@ -7249,7 +7353,7 @@
     refreshUserDatalist();
     updateFavButtons();
     refreshTextList();
-    if (draftBoardViewId) applyDraftBoardView();
+    if (draftBoardViewId) notifyDraftBoardReady();
     else {
       restoreFloatingDraftBoards();
     }
@@ -7277,6 +7381,7 @@
     (drafts || []).forEach((d) => addDraftFromNetwork(d, false));
     draftsLoaded = true;
     migrateLegacyDraftBoardOriginalIds();
+    notifyDraftBoardReady();
     restoreFloatingDraftBoards();
     redraw();
     updateFooterByState();
@@ -7292,7 +7397,7 @@
     renderWatchUsersMenu();
     if (followViewLabel && followTargetUser) {
       followViewLabel.textContent = onlineUsers.includes(followTargetUser)
-        ? `${followTargetUser}の位置にジャンブ`
+        ? "ジャンプ"
         : `👀 ${followTargetUser} は現在オフラインです`;
       followViewLabel.classList.toggle("is-jump-action", onlineUsers.includes(followTargetUser));
     }
@@ -7339,6 +7444,7 @@
       return;
     }
     if (data?.type === "whiteboard:draft-command" && draftBoardViewId) {
+      if (!draftsLoaded) return;
       migrateLegacyDraftBoardOriginalIds();
       const board = images.find((img) => img?.id === draftBoardViewId);
       const toolbarState = data.toolbarState || {};
@@ -7352,16 +7458,24 @@
       if (data.command === "delete") deleteDraftBoard(board);
       // 親画面は item:remove の受信後に閉じる。通信断時だけ完了通知をフォールバックにする。
       setTimeout(() => {
-        window.parent.postMessage(
+        getFloatingHostWindow().postMessage(
           { type: "whiteboard:draft-command-complete", boardId: draftBoardViewId },
           window.location.origin
         );
       }, 1000);
       return;
     }
+    if (data?.type === "whiteboard:draft-ready" && !draftBoardViewId) {
+      const frame = getAllFloatingWindows()
+        .find((item) => item.matches(".floating-draft-board") && item.dataset.boardId === data.boardId);
+      if (!frame || frame.querySelector("iframe")?.contentWindow !== event.source) return;
+      frame.querySelectorAll(".floating-draft-board-actions button")
+        .forEach((button) => { button.disabled = false; });
+      return;
+    }
     if (data?.type === "whiteboard:draft-command-complete" && !draftBoardViewId) {
-      const frame = Array.from(document.querySelectorAll(".floating-draft-board"))
-        .find((item) => item.dataset.boardId === data.boardId);
+      const frame = getAllFloatingWindows()
+        .find((item) => item.matches(".floating-draft-board") && item.dataset.boardId === data.boardId);
       frame?._closeFloating?.();
       setActiveLayer("user");
       return;
@@ -7476,8 +7590,8 @@
       removeAllById(images, id);
       invalidatePendingImageLoad(id);
       refreshImageList();
-      const draftFrame = Array.from(document.querySelectorAll(".floating-draft-board"))
-        .find((item) => item.dataset.boardId === id);
+      const draftFrame = getAllFloatingWindows()
+        .find((item) => item.matches(".floating-draft-board") && item.dataset.boardId === id);
       draftFrame?._closeFloating?.();
     } else if (type === "link") {
       removeAllById(links, id);
@@ -10170,7 +10284,7 @@
       return groupIds.get(groupId);
     };
     const copyStroke = (stroke) => {
-      if (!stroke || !isStrokeVisible(stroke)) return false;
+      if (!stroke || stroke.draftBoardId || stroke.layer === "draft" || !isStrokeVisible(stroke)) return false;
       const bounds = getStrokeBoundsWorld(stroke);
       if (!bounds || !rectContainsRect(source, bounds)) return false;
       const draft = {
@@ -10193,7 +10307,7 @@
     strokes.slice().forEach(copyStroke);
 
     texts.slice().forEach((text) => {
-      if (!text || !isTextVisible(text)) return;
+      if (!text || text.draftBoardId || text.layer === "draft" || !isTextVisible(text)) return;
       const bounds = getTextBoundsWorld(text);
       if (!bounds || !rectContainsRect(source, bounds)) return;
       const p = mapRectPointBetweenRects({ x: text.x, y: text.y }, source, contentDest);
@@ -10219,7 +10333,14 @@
     });
 
     images.slice().forEach((img) => {
-      if (!img || img.id === boardIdForDraft || isFrameContainer(img) || isBoardOverlayImage(img)) return;
+      if (
+        !img ||
+        img.id === boardIdForDraft ||
+        img.draftBoardId ||
+        img.layer === "draft" ||
+        isFrameContainer(img) ||
+        isBoardOverlayImage(img)
+      ) return;
       if (!isImageVisible(img)) return;
       const bounds = getImageBoundsWorld(img);
       if (!bounds || !rectsOverlap(source, bounds)) return;
@@ -10311,7 +10432,7 @@
     const draftTargets = onlyNew
       ? allDraftTargets.filter((stroke) => newObjectIds.has(stroke.id))
       : allDraftTargets;
-    allDraftTargets.forEach((draft) => {
+    draftTargets.forEach((draft) => {
       const stroke = {
         id: genId(),
         color: draft.color,
@@ -10327,7 +10448,10 @@
       strokes.push(stroke);
       emitStrokeAdd(stroke);
     });
-    draftTargets.forEach((draft) => {
+    // 公開対象は新規作成分だけに絞るが、下書きボードを閉じる際は
+    // コピー元由来を含む全ストロークを削除する。残すと board だけが消え、
+    // draftBoardId を持つ孤立ストロークがメイン画面に再表示されてしまう。
+    allDraftTargets.forEach((draft) => {
       const idx = findIndexById(draftStrokes, draft.id);
       if (idx >= 0) draftStrokes.splice(idx, 1);
       if (socketConnected) socket.emit("draft:stroke:remove", { boardId, id: draft.id });
@@ -15074,8 +15198,9 @@
     followViewLabel.textContent = `👀 ${followTargetUser} の位置を待っています`;
     if (followTargetUser) {
       followViewLabel.addEventListener("click", () => {
-        if (!latestFollowView || window.parent === window) return;
-        window.parent.postMessage(
+        const host = getFloatingHostWindow();
+        if (!latestFollowView || host === window) return;
+        host.postMessage(
           {
             type: "whiteboard:jump-to-follow-view",
             user: followTargetUser,
@@ -15250,8 +15375,12 @@
     closeButton.className = "floating-link-board-close";
     closeButton.textContent = "×";
     closeButton.setAttribute("aria-label", "リンクボードを閉じる");
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    const popoutButton = createFloatingPopoutButton(frame, "リンクボード", "floating-link-board-popout");
     header.appendChild(title);
-    header.appendChild(closeButton);
+    actions.append(popoutButton, closeButton);
+    header.appendChild(actions);
 
     const iframe = document.createElement("iframe");
     iframe.className = "floating-link-board-content";
@@ -15293,11 +15422,13 @@
     };
     header.addEventListener("pointerup", endDrag);
     header.addEventListener("pointercancel", endDrag);
-    closeButton.addEventListener("click", () => {
+    const closeFrame = () => {
       const wasActive = frame.classList.contains("active");
-      frame.remove();
+      removeFloatingWindow(frame);
       if (wasActive) activateTopFloatingAppWindow();
-    });
+    };
+    frame._closeFloating = closeFrame;
+    closeButton.addEventListener("click", closeFrame);
     multiSelection = null;
     selected = null;
     linkBoardMode = null;
