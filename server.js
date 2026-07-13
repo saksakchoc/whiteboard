@@ -4,6 +4,7 @@ const fs = require("fs");
 const express = require("express");
 const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 const { Server } = require("socket.io");
 const multer = require("multer");
 
@@ -30,6 +31,20 @@ const {
   addUser,
   linkUserToBoard,
   getBoardUsers,
+  getDriveFolder,
+  getBoardDriveRoot,
+  listBoardDriveRoots,
+  ensureBoardDrive,
+  isDriveFolderInBoard,
+  listDriveFolder,
+  getDriveBreadcrumb,
+  createDriveFolder,
+  renameDriveFolder,
+  createDriveImage,
+  getDriveImage,
+  renameDriveImage,
+  deleteDriveImage,
+  deleteDriveFolder,
 } = require("./db");
 
 // 設定
@@ -92,6 +107,27 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage });
+
+const driveUploadsDir = path.join(uploadsDir, "drive");
+fs.mkdirSync(driveUploadsDir, { recursive: true });
+const driveUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, driveUploadsDir),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").replace(/[^.a-zA-Z0-9]/g, "").slice(0, 10);
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  fileFilter: (_req, file, cb) => {
+    const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"]);
+    const imageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif"]);
+    const extensionMatches = imageExtensions.has(path.extname(file.originalname || "").toLowerCase());
+    const isImage = imageMimeTypes.has(String(file.mimetype || "").toLowerCase()) ||
+      (file.mimetype === "application/octet-stream" && extensionMatches);
+    cb(isImage ? null : new Error("images only"), isImage);
+  },
+  limits: { fileSize: 20 * 1024 * 1024, files: 30 },
+});
 
 function safeFilePart(value, fallback = "file") {
   return String(value || fallback).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || fallback;
@@ -220,6 +256,11 @@ app.delete("/api/boards/:boardId", (req, res) => {
   const boardId = req.params.boardId;
   if (!boardId) return res.status(400).json({ error: "boardId is required" });
   try {
+    const driveRoot = getBoardDriveRoot(boardId);
+    if (driveRoot) {
+      const driveData = deleteDriveFolder(driveRoot.id);
+      driveData?.images.forEach((image) => removeDriveUpload(image.src));
+    }
     const deleted = deleteBoard(boardId);
     if (!deleted) return res.status(404).json({ error: "board not found" });
     boardStates.delete(boardId);
@@ -257,6 +298,255 @@ app.get("/api/templates", (req, res) => {
   } catch (err) {
     console.error("Failed to read templates", err);
     res.status(500).json({ error: "failed to read templates" });
+  }
+});
+
+function driveImageResponse(row) {
+  return {
+    id: row.id,
+    folderId: row.folder_id || null,
+    name: row.name,
+    src: row.src,
+    mimeType: row.mime_type || "",
+    size: row.size || 0,
+    capturedAt: row.captured_at || null,
+    createdAt: row.created_at,
+  };
+}
+
+function readExifCapturedAt(filePath, mimeType) {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime !== "image/jpeg" && !/\.jpe?g$/i.test(filePath || "")) return null;
+  try {
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.length < 12 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+    let offset = 2;
+    while (offset + 4 <= buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (marker === 0xda || marker === 0xd9) break;
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2) break;
+      const dataStart = offset + 4;
+      const dataEnd = Math.min(buffer.length, offset + 2 + length);
+      if (marker === 0xe1 && dataEnd - dataStart >= 14 && buffer.toString("ascii", dataStart, dataStart + 6) === "Exif\0\0") {
+        const tiffStart = dataStart + 6;
+        const littleEndian = buffer.toString("ascii", tiffStart, tiffStart + 2) === "II";
+        const bigEndian = buffer.toString("ascii", tiffStart, tiffStart + 2) === "MM";
+        if (!littleEndian && !bigEndian) return null;
+        const readU16 = (position) => {
+          if (position < tiffStart || position + 2 > dataEnd) throw new Error("invalid exif offset");
+          return littleEndian ? buffer.readUInt16LE(position) : buffer.readUInt16BE(position);
+        };
+        const readU32 = (position) => {
+          if (position < tiffStart || position + 4 > dataEnd) throw new Error("invalid exif offset");
+          return littleEndian ? buffer.readUInt32LE(position) : buffer.readUInt32BE(position);
+        };
+        const readAscii = (entryOffset, count) => {
+          const valueOffset = count <= 4 ? entryOffset + 8 : tiffStart + readU32(entryOffset + 8);
+          if (count < 1 || valueOffset < tiffStart || valueOffset + count > dataEnd) return "";
+          return buffer.toString("ascii", valueOffset, valueOffset + count).replace(/\0+$/, "").trim();
+        };
+        const readIfd = (relativeOffset) => {
+          const result = new Map();
+          const ifdOffset = tiffStart + relativeOffset;
+          const count = readU16(ifdOffset);
+          for (let index = 0; index < count; index += 1) {
+            const entryOffset = ifdOffset + 2 + index * 12;
+            if (entryOffset + 12 > dataEnd) break;
+            const tag = readU16(entryOffset);
+            const type = readU16(entryOffset + 2);
+            const valueCount = readU32(entryOffset + 4);
+            result.set(tag, { entryOffset, type, valueCount, value: readU32(entryOffset + 8) });
+          }
+          return result;
+        };
+        const ifd0 = readIfd(readU32(tiffStart + 4));
+        const exifPointer = ifd0.get(0x8769)?.value;
+        const exifIfd = exifPointer ? readIfd(exifPointer) : new Map();
+        const dateEntry = exifIfd.get(0x9003) || exifIfd.get(0x9004) || ifd0.get(0x0132);
+        const raw = dateEntry?.type === 2 ? readAscii(dateEntry.entryOffset, dateEntry.valueCount) : "";
+        const match = raw.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+        return match ? `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}` : null;
+      }
+      offset = dataEnd;
+    }
+  } catch (err) {
+    console.warn("Failed to read image EXIF metadata", err.message);
+  }
+  return null;
+}
+
+function removeDriveUpload(src) {
+  if (typeof src !== "string" || !src.startsWith("/uploads/drive/")) return;
+  const filename = path.basename(src);
+  const target = path.resolve(driveUploadsDir, filename);
+  if (path.dirname(target) !== path.resolve(driveUploadsDir)) return;
+  fs.rmSync(target, { force: true });
+}
+
+app.get("/api/drive/home", (_req, res) => {
+  try {
+    const folders = listBoardDriveRoots().map((root) => ({
+      id: root.id,
+      boardId: root.board_id,
+      name: root.name,
+      createdAt: root.created_at,
+    }));
+    res.json({ folders });
+  } catch (err) {
+    console.error("Failed to list drive home", err);
+    res.status(500).json({ error: "failed to list drive home" });
+  }
+});
+
+app.get("/api/boards/:boardId/drive", (req, res) => {
+  try {
+    const board = getBoard(req.params.boardId);
+    if (!board) return res.status(404).json({ error: "board not found" });
+    const title = getBoardTitle(board.id) || board.id;
+    const root = ensureBoardDrive(board.id, title, crypto.randomUUID(), true);
+    const folderId = String(req.query.folderId || "").trim() || root.id;
+    if (!isDriveFolderInBoard(board.id, folderId)) return res.status(404).json({ error: "folder not found" });
+    const contents = listDriveFolder(folderId);
+    res.json({
+      folderId,
+      rootFolderId: root.id,
+      breadcrumb: getDriveBreadcrumb(folderId),
+      folders: contents.folders.map((row) => ({
+        id: row.id,
+        parentId: row.parent_id || null,
+        name: row.name,
+        createdAt: row.created_at,
+      })),
+      images: contents.images.map(driveImageResponse),
+    });
+  } catch (err) {
+    console.error("Failed to list drive", err);
+    res.status(500).json({ error: "failed to list drive" });
+  }
+});
+
+app.post("/api/boards/:boardId/drive/folders", (req, res) => {
+  try {
+    const board = getBoard(req.params.boardId);
+    if (!board) return res.status(404).json({ error: "board not found" });
+    const root = ensureBoardDrive(board.id, getBoardTitle(board.id) || board.id, crypto.randomUUID(), true);
+    const name = String(req.body?.name || "").trim().slice(0, 100);
+    const parentId = String(req.body?.parentId || "").trim() || root.id;
+    if (!name) return res.status(400).json({ error: "name is required" });
+    if (!isDriveFolderInBoard(board.id, parentId)) return res.status(404).json({ error: "parent folder not found" });
+    const folder = createDriveFolder({ id: crypto.randomUUID(), parentId, name, createdAt: Date.now() });
+    res.status(201).json({ id: folder.id, parentId: folder.parent_id || null, name: folder.name, createdAt: folder.created_at });
+  } catch (err) {
+    console.error("Failed to create drive folder", err);
+    res.status(500).json({ error: "failed to create folder" });
+  }
+});
+
+app.post("/api/boards/:boardId/drive/images", (req, res) => {
+  driveUpload.array("images", 30)(req, res, (uploadErr) => {
+    const uploadedFiles = Array.from(req.files || []);
+    const cleanup = () => uploadedFiles.forEach((file) => fs.rmSync(file.path, { force: true }));
+    if (uploadErr) {
+      cleanup();
+      return res.status(400).json({ error: uploadErr.message || "upload failed" });
+    }
+    try {
+      const board = getBoard(req.params.boardId);
+      if (!board) {
+        cleanup();
+        return res.status(404).json({ error: "board not found" });
+      }
+      const root = ensureBoardDrive(board.id, getBoardTitle(board.id) || board.id, crypto.randomUUID(), true);
+      const folderId = String(req.body?.folderId || "").trim() || root.id;
+      if (!isDriveFolderInBoard(board.id, folderId)) {
+        cleanup();
+        return res.status(404).json({ error: "folder not found" });
+      }
+      if (!uploadedFiles.length) return res.status(400).json({ error: "images are required" });
+      const images = uploadedFiles.map((file) => createDriveImage({
+        id: crypto.randomUUID(),
+        folderId,
+        name: String(file.originalname || "image").slice(0, 255),
+        src: `/uploads/drive/${file.filename}`,
+        mimeType: file.mimetype,
+        size: file.size,
+        capturedAt: readExifCapturedAt(file.path, file.mimetype),
+        createdAt: Date.now(),
+      }));
+      res.status(201).json(images.map(driveImageResponse));
+    } catch (err) {
+      cleanup();
+      console.error("Failed to save drive images", err);
+      res.status(500).json({ error: "failed to save images" });
+    }
+  });
+});
+
+app.patch("/api/boards/:boardId/drive/images/:imageId", (req, res) => {
+  try {
+    const image = getDriveImage(req.params.imageId);
+    if (!image || !isDriveFolderInBoard(req.params.boardId, image.folder_id)) {
+      return res.status(404).json({ error: "image not found" });
+    }
+    const name = String(req.body?.name || "").trim().slice(0, 255);
+    if (!name) return res.status(400).json({ error: "name is required" });
+    res.json(driveImageResponse(renameDriveImage(image.id, name)));
+  } catch (err) {
+    console.error("Failed to rename drive image", err);
+    res.status(500).json({ error: "failed to rename image" });
+  }
+});
+
+app.patch("/api/boards/:boardId/drive/folders/:folderId", (req, res) => {
+  try {
+    const root = getBoardDriveRoot(req.params.boardId);
+    if (!root || root.id === req.params.folderId || !isDriveFolderInBoard(req.params.boardId, req.params.folderId)) {
+      return res.status(404).json({ error: "folder not found" });
+    }
+    const name = String(req.body?.name || "").trim().slice(0, 100);
+    if (!name) return res.status(400).json({ error: "name is required" });
+    const folder = renameDriveFolder(req.params.folderId, name);
+    res.json({ id: folder.id, parentId: folder.parent_id || null, name: folder.name, createdAt: folder.created_at });
+  } catch (err) {
+    console.error("Failed to rename drive folder", err);
+    res.status(500).json({ error: "failed to rename folder" });
+  }
+});
+
+app.delete("/api/boards/:boardId/drive/images/:imageId", (req, res) => {
+  try {
+    const imageRow = getDriveImage(req.params.imageId);
+    if (!imageRow || !isDriveFolderInBoard(req.params.boardId, imageRow.folder_id)) {
+      return res.status(404).json({ error: "image not found" });
+    }
+    const image = deleteDriveImage(req.params.imageId);
+    if (!image) return res.status(404).json({ error: "image not found" });
+    removeDriveUpload(image.src);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to delete drive image", err);
+    res.status(500).json({ error: "failed to delete image" });
+  }
+});
+
+app.delete("/api/boards/:boardId/drive/folders/:folderId", (req, res) => {
+  try {
+    const root = getBoardDriveRoot(req.params.boardId);
+    if (!root || !isDriveFolderInBoard(req.params.boardId, req.params.folderId)) {
+      return res.status(404).json({ error: "folder not found" });
+    }
+    const deleted = deleteDriveFolder(req.params.folderId);
+    if (!deleted) return res.status(404).json({ error: "folder not found" });
+    deleted.images.forEach((image) => removeDriveUpload(image.src));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to delete drive folder", err);
+    res.status(500).json({ error: "failed to delete folder" });
   }
 });
 

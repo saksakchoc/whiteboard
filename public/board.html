@@ -38,17 +38,22 @@
             <button id="link-list-btn">リンク集</button>
           </div>
         </div>
-        <div class="side-watch-tool">
-          <button id="watch-users-btn" class="side-button" title="ユーザーを追跡">👀</button>
-          <div id="watch-users-menu" class="side-menu watch-users-menu hidden"></div>
+        <div class="side-insert-tool">
+          <button id="insert-menu-btn" class="side-button" title="挿入" aria-label="挿入">
+            <span class="insert-tool-icon" aria-hidden="true"></span>
+          </button>
+          <div id="insert-menu" class="insert-menu hidden"></div>
         </div>
         <button id="undo-btn" class="side-button" title="一手戻す">⟲</button>
         <div class="side-others">
           <button id="other-menu-btn" class="side-button" title="その他">⋯</button>
           <div id="other-menu" class="side-menu hidden">
             <button id="fill-tool-btn" title="塗りつぶし">🪣 塗りつぶし</button>
-            <button id="insert-menu-btn">挿入</button>
-            <div id="insert-menu" class="insert-menu hidden"></div>
+            <div class="side-watch-tool">
+              <button id="watch-users-btn" title="メンバー追跡">👀 メンバー追跡</button>
+              <div id="watch-users-menu" class="side-menu watch-users-menu hidden"></div>
+            </div>
+            <button id="drive-menu-btn">画像ドライブ</button>
             <button id="stroke-alpha-toggle-btn">半透明</button>
             <button id="change-user-btn">ユーザー名変更</button>
           </div>
@@ -115,6 +120,7 @@
       <button id="screen-share-toggle-btn" class="screen-share-toggle-btn hidden" type="button">ON</button>
     </div>
     <input id="image-file-input" type="file" accept="image/*" multiple hidden />
+    <input id="drive-file-input" type="file" accept="image/*" multiple hidden />
     <div id="footer-hint" class="footer-hint"></div>
 
     <div id="text-list-panel" class="modal text-list-panel hidden">
@@ -161,6 +167,64 @@
       <div id="link-list-body" class="text-list-body link-list-body"></div>
     </div>
 
+    <div id="drive-modal" class="modal-backdrop hidden">
+      <section class="modal drive-modal" role="dialog" aria-modal="true" aria-labelledby="drive-title">
+        <header class="drive-header">
+          <div>
+            <h3 id="drive-title">画像ドライブ</h3>
+            <nav id="drive-breadcrumb" class="drive-breadcrumb" aria-label="フォルダ階層"></nav>
+          </div>
+          <button id="drive-close-btn" type="button" aria-label="閉じる">×</button>
+        </header>
+        <div class="drive-toolbar">
+          <button id="drive-new-folder-btn" type="button">＋ 新しいフォルダ</button>
+          <button id="drive-upload-btn" type="button">↑ 画像を追加</button>
+          <button id="drive-select-all-btn" type="button">全件選択</button>
+          <label id="drive-sort-control" class="drive-order-control">
+            表示順
+            <select id="drive-sort-order">
+              <option value="upload">アップロード日時</option>
+              <option value="name">ファイル名</option>
+              <option value="captured">作成日時（撮影日）</option>
+            </select>
+          </label>
+          <label id="drive-order-control" class="drive-order-control hidden">
+            貼り付け順
+            <select id="drive-selection-order">
+              <option value="display">表示順</option>
+              <option value="selection">選択順</option>
+            </select>
+          </label>
+          <span id="drive-status" class="drive-status" aria-live="polite"></span>
+        </div>
+        <div id="drive-grid" class="drive-grid"></div>
+      </section>
+    </div>
+
+    <div id="drive-slideshow-modal" class="modal-backdrop drive-slideshow-backdrop hidden">
+      <section class="drive-slideshow" role="dialog" aria-modal="true" aria-label="画像スライドショー">
+        <button id="drive-slideshow-back-btn" class="drive-slideshow-back-btn" type="button">← ドライブに戻る</button>
+        <div class="drive-slide-stage">
+          <button id="drive-slide-prev-btn" class="drive-slide-nav" type="button" aria-label="前の画像">‹</button>
+          <img id="drive-slide-image" alt="" />
+          <button id="drive-slide-next-btn" class="drive-slide-nav" type="button" aria-label="次の画像">›</button>
+        </div>
+        <div id="drive-slide-thumbnails" class="drive-slide-thumbnails" aria-label="フォルダ内の画像"></div>
+      </section>
+    </div>
+
+    <div id="drive-selection-menu" class="context-menu drive-selection-menu hidden">
+      <button type="button" data-drive-action="insert">ボードに貼り付け</button>
+      <button type="button" data-drive-action="download">ダウンロード</button>
+      <button type="button" data-drive-action="rename">画像名を変更</button>
+      <button type="button" data-drive-action="delete">削除</button>
+    </div>
+
+    <div id="drive-folder-menu" class="context-menu drive-selection-menu hidden">
+      <button type="button" data-drive-folder-action="rename">フォルダ名を変更</button>
+      <button type="button" data-drive-folder-action="delete">フォルダを削除</button>
+    </div>
+
     <div id="user-modal" class="modal-backdrop hidden">
       <div class="modal">
         <h3>ユーザーを選択</h3>
@@ -188,6 +252,7 @@
     </div>
 
     <div id="context-menu" class="context-menu hidden">
+      <button data-action="open-drive">ドライブから画像挿入</button>
       <button data-action="apply-draft">下書きを通常レイヤーに反映</button>
       <button data-action="move-base">ベースレイヤー（共用）に移動</button>
       <button data-action="move-image">背景レイヤーに移動（Adminのみ）</button>

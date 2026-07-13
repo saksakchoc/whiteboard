@@ -156,7 +156,45 @@ CREATE TABLE IF NOT EXISTS board_users (
   PRIMARY KEY (board_id, user_name),
   FOREIGN KEY (user_name) REFERENCES users(name) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS drive_folders (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS drive_images (
+  id TEXT PRIMARY KEY,
+  folder_id TEXT,
+  name TEXT NOT NULL,
+  src TEXT NOT NULL,
+  mime_type TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  captured_at TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS drive_roots (
+  board_id TEXT PRIMARY KEY,
+  folder_id TEXT NOT NULL UNIQUE,
+  activated INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_drive_folders_parent ON drive_folders(parent_id);
+CREATE INDEX IF NOT EXISTS idx_drive_images_folder ON drive_images(folder_id);
 `);
+
+try {
+  db.exec("ALTER TABLE drive_roots ADD COLUMN activated INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  // ignore if column already exists
+}
+try {
+  db.exec("ALTER TABLE drive_images ADD COLUMN captured_at TEXT");
+} catch (e) {
+  // ignore if column already exists
+}
 
 // 既存テーブルへの列追加（存在しない場合だけ）
 try {
@@ -426,6 +464,163 @@ function getBoardUsers(boardId) {
   return stmt.all(boardId).map((row) => row.user_name);
 }
 
+// --- simple drive ---
+function normalizeDriveParentId(parentId) {
+  return parentId ? String(parentId) : null;
+}
+
+function getDriveFolder(id) {
+  if (!id) return null;
+  return db.prepare("SELECT * FROM drive_folders WHERE id = ?").get(id) || null;
+}
+
+function getBoardDriveRoot(boardId) {
+  const row = db.prepare(`
+    SELECT f.* FROM drive_roots r
+    JOIN drive_folders f ON f.id = r.folder_id
+    WHERE r.board_id = ?
+  `).get(boardId);
+  return row || null;
+}
+
+function listBoardDriveRoots() {
+  return db.prepare(`
+    SELECT r.board_id, f.id, f.parent_id, f.name, f.created_at
+    FROM drive_roots r
+    JOIN drive_folders f ON f.id = r.folder_id
+    WHERE r.activated = 1
+    ORDER BY f.created_at DESC
+  `).all();
+}
+
+function ensureBoardDrive(boardId, name, rootId, activate = false) {
+  const existing = getBoardDriveRoot(boardId);
+  if (existing) {
+    if (existing.name !== name) {
+      db.prepare("UPDATE drive_folders SET name = ? WHERE id = ?").run(name, existing.id);
+    }
+    if (activate) db.prepare("UPDATE drive_roots SET activated = 1 WHERE board_id = ?").run(boardId);
+    return getDriveFolder(existing.id);
+  }
+  db.transaction(() => {
+    db.prepare("INSERT INTO drive_folders (id, parent_id, name, created_at) VALUES (?, NULL, ?, ?)")
+      .run(rootId, name, Date.now());
+    db.prepare("INSERT INTO drive_roots (board_id, folder_id, activated) VALUES (?, ?, ?)")
+      .run(boardId, rootId, activate ? 1 : 0);
+  })();
+  return getDriveFolder(rootId);
+}
+
+function isDriveFolderInBoard(boardId, folderId) {
+  const root = getBoardDriveRoot(boardId);
+  if (!root || !folderId) return false;
+  const visited = new Set();
+  let current = getDriveFolder(folderId);
+  while (current && !visited.has(current.id)) {
+    if (current.id === root.id) return true;
+    visited.add(current.id);
+    current = current.parent_id ? getDriveFolder(current.parent_id) : null;
+  }
+  return false;
+}
+
+function listDriveFolder(parentId = null) {
+  const normalized = normalizeDriveParentId(parentId);
+  const where = normalized === null ? "IS NULL" : "= ?";
+  const args = normalized === null ? [] : [normalized];
+  return {
+    folders: db.prepare(`
+      SELECT id, parent_id, name, created_at
+      FROM drive_folders WHERE parent_id ${where}
+      ORDER BY name COLLATE NOCASE ASC, created_at ASC
+    `).all(...args),
+    images: db.prepare(`
+      SELECT id, folder_id, name, src, mime_type, size, captured_at, created_at
+      FROM drive_images WHERE folder_id ${where}
+      ORDER BY created_at ASC, rowid ASC
+    `).all(...args),
+  };
+}
+
+function getDriveBreadcrumb(folderId) {
+  const breadcrumb = [];
+  const visited = new Set();
+  let current = folderId ? getDriveFolder(folderId) : null;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    breadcrumb.unshift({ id: current.id, name: current.name });
+    current = current.parent_id ? getDriveFolder(current.parent_id) : null;
+  }
+  return breadcrumb;
+}
+
+function createDriveFolder(folder) {
+  db.prepare(`
+    INSERT INTO drive_folders (id, parent_id, name, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run(folder.id, normalizeDriveParentId(folder.parentId), folder.name, folder.createdAt || Date.now());
+  return getDriveFolder(folder.id);
+}
+
+function renameDriveFolder(id, name) {
+  const result = db.prepare("UPDATE drive_folders SET name = ? WHERE id = ?").run(name, id);
+  return result.changes ? getDriveFolder(id) : null;
+}
+
+function createDriveImage(image) {
+  db.prepare(`
+    INSERT INTO drive_images (id, folder_id, name, src, mime_type, size, captured_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    image.id,
+    normalizeDriveParentId(image.folderId),
+    image.name,
+    image.src,
+    image.mimeType || null,
+    image.size || 0,
+    image.capturedAt || null,
+    image.createdAt || Date.now()
+  );
+  return db.prepare("SELECT * FROM drive_images WHERE id = ?").get(image.id);
+}
+
+function getDriveImage(id) {
+  if (!id) return null;
+  return db.prepare("SELECT * FROM drive_images WHERE id = ?").get(id) || null;
+}
+
+function renameDriveImage(id, name) {
+  const result = db.prepare("UPDATE drive_images SET name = ? WHERE id = ?").run(name, id);
+  return result.changes ? getDriveImage(id) : null;
+}
+
+function deleteDriveImage(id) {
+  const image = getDriveImage(id);
+  if (!image) return null;
+  db.prepare("DELETE FROM drive_images WHERE id = ?").run(id);
+  return image;
+}
+
+function deleteDriveFolder(id) {
+  if (!id || !getDriveFolder(id)) return null;
+  const folderIds = [];
+  const collect = (folderId) => {
+    folderIds.push(folderId);
+    db.prepare("SELECT id FROM drive_folders WHERE parent_id = ?").all(folderId).forEach((row) => collect(row.id));
+  };
+  collect(id);
+  const placeholders = folderIds.map(() => "?").join(",");
+  const images = db.prepare(`SELECT * FROM drive_images WHERE folder_id IN (${placeholders})`).all(...folderIds);
+  db.transaction(() => {
+    db.prepare(`DELETE FROM drive_roots WHERE folder_id IN (${placeholders})`).run(...folderIds);
+    db.prepare(`DELETE FROM drive_images WHERE folder_id IN (${placeholders})`).run(...folderIds);
+    [...folderIds].reverse().forEach((folderId) => {
+      db.prepare("DELETE FROM drive_folders WHERE id = ?").run(folderId);
+    });
+  })();
+  return { folderIds, images };
+}
+
 function setBoardTitle(boardId, title) {
   const stmt = db.prepare(`
     INSERT INTO board_meta (board_id, title)
@@ -433,6 +628,10 @@ function setBoardTitle(boardId, title) {
     ON CONFLICT(board_id) DO UPDATE SET title=excluded.title
   `);
   stmt.run(boardId, title);
+  db.prepare(`
+    UPDATE drive_folders SET name = ?
+    WHERE id = (SELECT folder_id FROM drive_roots WHERE board_id = ?)
+  `).run(title, boardId);
 }
 
 // --- strokes_v2 ---
@@ -811,4 +1010,18 @@ module.exports = {
   addUser,
   linkUserToBoard,
   getBoardUsers,
+  getDriveFolder,
+  getBoardDriveRoot,
+  listBoardDriveRoots,
+  ensureBoardDrive,
+  isDriveFolderInBoard,
+  listDriveFolder,
+  getDriveBreadcrumb,
+  createDriveFolder,
+  renameDriveFolder,
+  createDriveImage,
+  getDriveImage,
+  renameDriveImage,
+  deleteDriveImage,
+  deleteDriveFolder,
 };

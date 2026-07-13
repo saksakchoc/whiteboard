@@ -1205,7 +1205,8 @@ button:hover {
   background: #eef5ff;
 }
 
-.context-menu button.disabled {
+.context-menu button.disabled,
+.context-menu button:disabled {
   opacity: 0.4;
   cursor: default;
   pointer-events: none;
@@ -1269,6 +1270,321 @@ button:hover {
   margin: 0;
   color: #445;
   line-height: 1.5;
+}
+
+.drive-modal {
+  width: min(920px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 32px));
+  max-width: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drive-header,
+.drive-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drive-header {
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e1e7ef;
+}
+
+.drive-header h3 {
+  margin: 0 0 6px;
+}
+
+.drive-header > button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 24px;
+  flex: 0 0 auto;
+}
+
+.drive-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 24px;
+}
+
+.drive-breadcrumb button {
+  border: 0;
+  padding: 2px 5px;
+  background: transparent;
+  color: #1769aa;
+}
+
+.drive-breadcrumb .separator {
+  color: #8a98a8;
+}
+
+.drive-toolbar {
+  padding: 10px 16px;
+  border-bottom: 1px solid #e7ebf0;
+  flex-wrap: wrap;
+}
+
+.drive-status {
+  margin-left: auto;
+  color: #5e6b78;
+  font-size: 13px;
+}
+
+.drive-order-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #445466;
+  font-size: 13px;
+}
+
+.drive-order-control.hidden {
+  display: none;
+}
+
+.drive-order-control select {
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: #fff;
+  font: inherit;
+}
+
+.drive-grid {
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 156px);
+  justify-content: start;
+  align-content: start;
+  gap: 12px;
+  background: #f7f9fc;
+}
+
+.drive-empty {
+  grid-column: 1 / -1;
+  padding: 60px 16px;
+  color: #64748b;
+  text-align: center;
+}
+
+.drive-item {
+  position: relative;
+  width: 156px;
+  height: 154px;
+  min-width: 0;
+  border: 1px solid #dce3eb;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+.drive-item.is-selected {
+  border-color: #1677d2;
+  box-shadow: 0 0 0 3px rgba(22, 119, 210, 0.22);
+}
+
+.drive-select-toggle {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 25px;
+  height: 25px;
+  min-width: 25px;
+  min-height: 25px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+  border: 2px solid rgba(47, 72, 96, 0.46);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.62);
+  color: transparent;
+}
+
+.drive-select-toggle:hover {
+  border-color: #1677d2;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.drive-item.is-selected .drive-select-toggle {
+  border-color: #1677d2;
+  background: #1677d2;
+  color: #fff;
+  font-weight: 700;
+}
+
+.drive-item.is-selected .drive-select-toggle::after {
+  content: "✓";
+}
+
+.drive-grid.show-selection-order .drive-item.is-selected .drive-select-toggle::after {
+  content: attr(data-selection-number);
+  font-size: 12px;
+}
+
+.drive-selection-marquee {
+  position: fixed;
+  z-index: 2850;
+  border: 2px solid #1677d2;
+  background: rgba(22, 119, 210, 0.14);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.drive-item-main {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+}
+
+.drive-folder-icon,
+.drive-image-thumb {
+  width: 100%;
+  height: 112px;
+  flex: 0 0 112px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef4fb;
+}
+
+.drive-folder-icon {
+  font-size: 54px;
+}
+
+.drive-image-thumb {
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+
+.drive-item-name {
+  display: block;
+  padding: 9px 10px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-slideshow-backdrop {
+  z-index: 2600;
+  background: rgba(10, 18, 28, 0.88);
+}
+
+.drive-slideshow {
+  position: relative;
+  width: calc(100vw - 16px);
+  height: calc(100vh - 16px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #101820;
+  color: #fff;
+}
+
+.drive-slideshow-back-btn {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 3;
+  min-height: 38px;
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(8, 16, 24, 0.72);
+  color: #fff;
+  backdrop-filter: blur(5px);
+}
+
+.drive-slide-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 58px;
+  align-items: center;
+}
+
+.drive-slide-stage img {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+
+.drive-slide-nav {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 52px;
+}
+
+.drive-slide-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.drive-slide-thumbnails {
+  flex: 0 0 92px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  overflow-x: auto;
+  background: rgba(4, 10, 16, 0.95);
+  scrollbar-width: thin;
+}
+
+.drive-slide-thumbnail {
+  flex: 0 0 92px;
+  width: 92px;
+  height: 70px;
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: #283440;
+  opacity: 0.66;
+}
+
+.drive-slide-thumbnail.active {
+  border-color: #57a8ff;
+  opacity: 1;
+}
+
+.drive-slide-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.drive-selection-menu {
+  position: fixed;
+  z-index: 2900;
+  min-width: 180px;
+}
+
+.drive-selection-menu button[data-drive-action="delete"] {
+  color: #b42318;
 }
 
 .frame-delete-modal {
@@ -1427,6 +1743,34 @@ button:hover {
   border-color: #0b4ea2;
 }
 
+.insert-tool-icon {
+  position: relative;
+  width: 25px;
+  height: 21px;
+  display: block;
+}
+
+.insert-tool-icon::before,
+.insert-tool-icon::after {
+  content: "";
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+}
+
+.insert-tool-icon::before {
+  left: 2px;
+  bottom: 1px;
+}
+
+.insert-tool-icon::after {
+  top: 1px;
+  right: 2px;
+  border-radius: 50%;
+}
+
 #insert-menu-btn.active {
   background: #0b4ea2;
   color: #fff;
@@ -1441,6 +1785,7 @@ button:hover {
 
 .side-others,
 .side-list-tool,
+.side-insert-tool,
 .side-watch-tool,
 .side-lasso-tool,
 .side-text-tool {
@@ -2133,5 +2478,33 @@ body.mobile-menu-open #toolbar {
     left: 8px;
     right: 8px;
     bottom: 8px;
+  }
+
+  .drive-modal {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+  }
+
+  .drive-toolbar button {
+    flex: 1 1 auto;
+  }
+
+  .drive-status {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .drive-grid {
+    grid-template-columns: repeat(auto-fill, 136px);
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .drive-item {
+    width: 136px;
+  }
+
+  .drive-slide-stage {
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
   }
 }

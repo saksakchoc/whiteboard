@@ -55,6 +55,28 @@
   const layerToggleBtn = document.getElementById("layer-toggle-btn");
   const footerHint = document.getElementById("footer-hint");
   const imageFileInput = document.getElementById("image-file-input");
+  const driveFileInput = document.getElementById("drive-file-input");
+  const driveMenuBtn = document.getElementById("drive-menu-btn");
+  const driveModal = document.getElementById("drive-modal");
+  const driveCloseBtn = document.getElementById("drive-close-btn");
+  const driveBreadcrumb = document.getElementById("drive-breadcrumb");
+  const driveNewFolderBtn = document.getElementById("drive-new-folder-btn");
+  const driveUploadBtn = document.getElementById("drive-upload-btn");
+  const driveSelectAllBtn = document.getElementById("drive-select-all-btn");
+  const driveSortControl = document.getElementById("drive-sort-control");
+  const driveSortOrderSelect = document.getElementById("drive-sort-order");
+  const driveOrderControl = document.getElementById("drive-order-control");
+  const driveSelectionOrderSelect = document.getElementById("drive-selection-order");
+  const driveStatus = document.getElementById("drive-status");
+  const driveGrid = document.getElementById("drive-grid");
+  const driveSlideshowModal = document.getElementById("drive-slideshow-modal");
+  const driveSlideshowBackBtn = document.getElementById("drive-slideshow-back-btn");
+  const driveSlideImage = document.getElementById("drive-slide-image");
+  const driveSlidePrevBtn = document.getElementById("drive-slide-prev-btn");
+  const driveSlideNextBtn = document.getElementById("drive-slide-next-btn");
+  const driveSlideThumbnails = document.getElementById("drive-slide-thumbnails");
+  const driveSelectionMenu = document.getElementById("drive-selection-menu");
+  const driveFolderMenu = document.getElementById("drive-folder-menu");
   const swatches = Array.from(document.querySelectorAll(".color-swatch"));
   const favButtons = Array.from(document.querySelectorAll(".color-fav"));
   const menuToggleBtn = document.getElementById("menu-toggle-btn");
@@ -172,10 +194,32 @@
   let shapeGridCols = 0;
   let shapeTargetLayer = null;
   let insertMenuHideTimer = null;
+  let lastInsertMenuAction = null;
+  let lastTextMode = "normal";
+  let lastListMenuAction = "text";
+  let lastTrackedUser = "";
+  let lastOtherMenuActionId = "fill-tool-btn";
   let ignoreNextDblClick = false;
   let activeAltSide = null; // "left" | "right" | null
   let altArrowShortcutUsed = false;
   let pendingImageInsertLayer = null;
+  let driveCurrentFolderId = null;
+  let driveScopeBoardId = boardId;
+  let driveRootFolderId = null;
+  let driveRootFolderName = "";
+  let driveVirtualHome = false;
+  let driveContents = { breadcrumb: [], folders: [], images: [] };
+  let driveSlideIndex = 0;
+  const selectedDriveImageIds = new Set();
+  let driveSelectionOrder = [];
+  let driveSelectionAnchorId = null;
+  let driveSelectionMode = false;
+  let driveLongPressTimer = null;
+  let driveLongPressStart = null;
+  let suppressDriveImageClick = false;
+  let driveContextFolder = null;
+  let driveMarquee = null;
+  let driveMarqueeElement = null;
   let hiddenCommandBuffer = "";
   let localScreenStream = null;
   let localScreenShareActive = false;
@@ -13518,9 +13562,7 @@
         if (!hasSel) {
           hasSel = selectAtPoint(rightButtonStart?.canvas || canvasPos);
         }
-        if (hasSel) {
-          showContextMenu(e.clientX, e.clientY);
-        }
+        showContextMenu(e.clientX, e.clientY);
       }
       rightButtonDown = false;
       rightButtonStart = null;
@@ -13863,7 +13905,10 @@
 
   function closeOtherMenu(delay = 0) {
     if (!otherMenu) return;
-    const doClose = () => otherMenu.classList.add("hidden");
+    const doClose = () => {
+      otherMenu.classList.add("hidden");
+      closeWatchUsersMenu();
+    };
     if (delay > 0) {
       if (otherMenu._closeTimer) clearTimeout(otherMenu._closeTimer);
       otherMenu._closeTimer = setTimeout(doClose, delay);
@@ -13900,8 +13945,10 @@
       button.textContent = user === currentUser ? `${user}（自分）` : user;
       button.addEventListener("click", (e) => {
         e.stopPropagation();
+        lastTrackedUser = user;
+        lastOtherMenuActionId = "watch-users-btn";
         openFloatingTrackingWindow(user);
-        watchUsersMenu.classList.add("hidden");
+        closeOtherMenu();
       });
       watchUsersMenu.appendChild(button);
     });
@@ -13909,7 +13956,7 @@
 
   function openWatchUsersMenu() {
     closeListMenu();
-    closeOtherMenu();
+    openOtherMenu();
     if (textToolMenu) textToolMenu.classList.add("hidden");
     renderWatchUsersMenu();
     watchUsersMenu?.classList.remove("hidden");
@@ -14034,6 +14081,7 @@
   });
 
   window.addEventListener("keydown", (e) => {
+    if (driveModal && !driveModal.classList.contains("hidden")) return;
     if (e.key === "Alt") {
       activeAltSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
     }
@@ -14609,7 +14657,7 @@
       insertMenuBtn.title = creationLocked ? "このレイヤーでは挿入は使えません" : "挿入";
     }
     if (otherMenuBtn) {
-      otherMenuBtn.classList.toggle("active", isInsertMode || isFill);
+      otherMenuBtn.classList.toggle("active", isFill);
     }
     if (currentTool === "pen" || currentTool === "eraser" || currentTool === "fill" || currentTool === "lasso-copy") {
       canvas.style.cursor = "crosshair";
@@ -14871,14 +14919,23 @@
     });
   }
 
-  textListBtn.addEventListener("click", toggleTextListPanelView);
+  textListBtn.addEventListener("click", () => {
+    lastListMenuAction = "text";
+    toggleTextListPanelView();
+  });
 
   if (imageListBtn) {
-    imageListBtn.addEventListener("click", toggleImageListPanelView);
+    imageListBtn.addEventListener("click", () => {
+      lastListMenuAction = "image";
+      toggleImageListPanelView();
+    });
   }
 
   if (linkListBtn) {
-    linkListBtn.addEventListener("click", toggleLinkListPanelView);
+    linkListBtn.addEventListener("click", () => {
+      lastListMenuAction = "link";
+      toggleLinkListPanelView();
+    });
   }
 
   textListCloseBtn.addEventListener("click", () => {
@@ -14945,6 +15002,71 @@
       addImageFilesAt(files, center.x, center.y, targetLayer);
     });
   }
+
+  driveCloseBtn?.addEventListener("click", closeDrive);
+  driveMenuBtn?.addEventListener("click", () => {
+    closeOtherMenu();
+    openDrive();
+  });
+  driveNewFolderBtn?.addEventListener("click", createDriveFolderFromPrompt);
+  driveUploadBtn?.addEventListener("click", () => {
+    if (!driveFileInput) return;
+    driveFileInput.value = "";
+    driveFileInput.click();
+  });
+  driveFileInput?.addEventListener("change", () => uploadDriveImages(driveFileInput.files));
+  driveSelectAllBtn?.addEventListener("click", toggleSelectAllDriveImages);
+  driveSortOrderSelect?.addEventListener("change", () => {
+    renderDriveContents();
+    syncDriveSelectionUi();
+  });
+  driveSelectionOrderSelect?.addEventListener("change", syncDriveSelectionUi);
+  driveGrid?.addEventListener("pointerdown", startDriveMarqueeSelection);
+  driveGrid?.addEventListener("pointermove", updateDriveMarqueeSelection);
+  driveGrid?.addEventListener("pointerup", finishDriveMarqueeSelection);
+  driveGrid?.addEventListener("pointercancel", finishDriveMarqueeSelection);
+  driveSlidePrevBtn?.addEventListener("click", () => moveDriveSlide(-1));
+  driveSlideNextBtn?.addEventListener("click", () => moveDriveSlide(1));
+  driveSlideshowBackBtn?.addEventListener("click", closeDriveSlideshow);
+  driveSelectionMenu?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-drive-action]");
+    if (!button) return;
+    const action = button.dataset.driveAction;
+    if (action === "insert") insertSelectedDriveImages();
+    else if (action === "download") downloadSelectedDriveImages();
+    else if (action === "rename") renameSelectedDriveImage();
+    else if (action === "delete") deleteSelectedDriveImages();
+  });
+  driveFolderMenu?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-drive-folder-action]");
+    if (!button) return;
+    if (button.dataset.driveFolderAction === "rename") renameDriveContextFolder();
+    else if (button.dataset.driveFolderAction === "delete") deleteDriveContextFolder();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (driveSelectionMenu && !driveSelectionMenu.contains(event.target)) hideDriveSelectionMenu();
+    if (driveFolderMenu && !driveFolderMenu.contains(event.target)) hideDriveFolderMenu();
+  });
+  driveModal?.addEventListener("click", (event) => {
+    if (event.target === driveModal) closeDrive();
+  });
+  driveSlideshowModal?.addEventListener("click", (event) => {
+    if (event.target === driveSlideshowModal) closeDriveSlideshow();
+  });
+  document.addEventListener("keydown", (event) => {
+    const slideshowOpen = driveSlideshowModal && !driveSlideshowModal.classList.contains("hidden");
+    const driveOpen = driveModal && !driveModal.classList.contains("hidden");
+    if (slideshowOpen && event.key === "ArrowLeft") moveDriveSlide(-1);
+    else if (slideshowOpen && event.key === "ArrowRight") moveDriveSlide(1);
+    else if (slideshowOpen && event.key === "Escape") closeDriveSlideshow();
+    else if (driveOpen && event.key === "Escape") {
+      if (driveSelectionMode) clearDriveSelection();
+      else closeDrive();
+    }
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 
   if (menuToggleBtn) {
     menuToggleBtn.addEventListener("click", (e) => {
@@ -15031,6 +15153,7 @@
       spreadsheetOnlySelection && canInteractLink(links[selectionItems[0].index]);
 
     const isActionVisible = (action) => {
+      if (action === "open-drive") return true;
       if (!hasAny) return false;
       if (spreadsheetOnlySelection && !spreadsheetSelectionEditable) {
         return action === "open-spreadsheet-window" || action === "open-spreadsheet-source";
@@ -15073,10 +15196,15 @@
       if (publishBtn) publishBtn.classList.remove("hidden");
       const deleteBtn = contextMenu.querySelector('button[data-action="delete"]');
       if (deleteBtn) deleteBtn.classList.remove("hidden");
+      const driveBtn = contextMenu.querySelector('button[data-action="open-drive"]');
+      if (driveBtn) driveBtn.classList.remove("hidden");
       positionContextMenu(x, y);
       return;
     }
-    if (!hasAny) return;
+    if (!hasAny) {
+      positionContextMenu(x, y);
+      return;
+    }
 
     positionContextMenu(x, y);
   }
@@ -15086,7 +15214,9 @@
       const btn = e.target.closest("button");
       if (!btn || btn.classList.contains("disabled")) return;
       const action = btn.getAttribute("data-action");
-      if (action === "apply-draft") {
+      if (action === "open-drive") {
+        openDrive();
+      } else if (action === "apply-draft") {
         applyDraftSelectionToPublic();
       } else if (action === "delete") {
         const draftBoard = getSelectionItems()
@@ -15321,13 +15451,8 @@
       e.stopPropagation();
       e.preventDefault();
       if (!canCreateOnCurrentLayer()) return;
-      if (!templates) templates = [];
-      renderInsertMenu();
-      if (insertMenu && !insertMenu.classList.contains("hidden")) {
-        closeInsertMenu();
-      } else {
-        openInsertMenu();
-      }
+      closeInsertMenu();
+      (lastInsertMenuAction || (() => startShapeMode("line")))();
     });
     insertMenuBtn.addEventListener("mouseenter", () => {
       if (isCreationLockedLayer()) {
@@ -15364,6 +15489,7 @@
     if (activeLayer === "image") return;
     pendingTextListGridCopies = null;
     pendingTextMode = mode === "grid" ? "grid" : "normal";
+    lastTextMode = pendingTextMode;
     resetShapeMode();
     currentTool = "select";
     selected = null;
@@ -15391,7 +15517,7 @@
         showCreationLockedMessage();
         return;
       }
-      setPendingTextMode("normal");
+      setPendingTextMode(lastTextMode);
     });
   }
   if (textToolMenu) {
@@ -15414,9 +15540,10 @@
     });
     listMenuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!listMenu) return;
-      if (listMenu.classList.contains("hidden")) openListMenu();
-      else closeListMenu();
+      closeListMenu();
+      if (lastListMenuAction === "image") toggleImageListPanelView();
+      else if (lastListMenuAction === "link") toggleLinkListPanelView();
+      else toggleTextListPanelView();
     });
   }
   if (listMenu) {
@@ -15436,8 +15563,13 @@
     }, 150));
     watchUsersBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (watchUsersMenu.classList.contains("hidden")) openWatchUsersMenu();
-      else closeWatchUsersMenu();
+      lastOtherMenuActionId = "watch-users-btn";
+      if (lastTrackedUser) {
+        openFloatingTrackingWindow(lastTrackedUser);
+        closeOtherMenu();
+      } else {
+        openWatchUsersMenu();
+      }
     });
   }
 
@@ -15446,7 +15578,7 @@
     otherMenuBtn.addEventListener("mouseleave", () => closeOtherMenu(800));
     otherMenuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      toggleOtherMenu();
+      document.getElementById(lastOtherMenuActionId)?.click();
     });
   }
   if (otherMenu) {
@@ -15454,6 +15586,12 @@
     otherMenu.addEventListener("mouseleave", () => {
       closeInsertMenu();
       closeOtherMenu(800);
+    });
+    otherMenu.addEventListener("click", (e) => {
+      const button = e.target.closest("button[id]");
+      if (button && button !== otherMenuBtn && otherMenu.contains(button)) {
+        lastOtherMenuActionId = button.id;
+      }
     });
   }
 
@@ -15625,6 +15763,727 @@
     pendingImageInsertLayer = getImageTargetLayer();
     imageFileInput.value = "";
     imageFileInput.click();
+  }
+
+  function setDriveStatus(message) {
+    if (driveStatus) driveStatus.textContent = message || "";
+  }
+
+  function getDriveApiBase(scopeBoardId = driveScopeBoardId) {
+    return `/api/boards/${encodeURIComponent(scopeBoardId || boardId)}/drive`;
+  }
+
+  async function loadDriveFolder(folderId = null) {
+    if (!driveGrid) return;
+    clearDriveSelection(false);
+    driveCurrentFolderId = folderId || null;
+    setDriveStatus("読み込み中...");
+    try {
+      const query = driveCurrentFolderId ? `?folderId=${encodeURIComponent(driveCurrentFolderId)}` : "";
+      const res = await fetch(`${getDriveApiBase()}${query}`);
+      if (!res.ok) throw new Error("ドライブを読み込めませんでした");
+      driveContents = await res.json();
+      driveCurrentFolderId = driveContents.folderId || null;
+      driveRootFolderId = driveContents.rootFolderId || driveRootFolderId;
+      driveRootFolderName = driveContents.breadcrumb?.[0]?.name || boardTitle || boardId;
+      driveVirtualHome = false;
+      renderDriveContents();
+      const total = driveContents.folders.length + driveContents.images.length;
+      setDriveStatus(`${total}件（画像 ${driveContents.images.length}件）・画像を長押しで複数選択`);
+    } catch (err) {
+      console.error(err);
+      driveGrid.innerHTML = '<div class="drive-empty">読み込みに失敗しました。</div>';
+      setDriveStatus("エラー");
+    }
+  }
+
+  function appendDriveBreadcrumbButton(label, folderId, onClick = null) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (onClick) onClick();
+      else loadDriveFolder(folderId);
+    });
+    driveBreadcrumb.appendChild(button);
+  }
+
+  async function renderDriveHome() {
+    if (!driveGrid || !driveBreadcrumb) return;
+    clearDriveSelection(false);
+    driveVirtualHome = true;
+    driveCurrentFolderId = null;
+    driveBreadcrumb.innerHTML = "";
+    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome);
+    driveGrid.innerHTML = '<div class="drive-empty">読み込み中...</div>';
+    if (driveNewFolderBtn) driveNewFolderBtn.disabled = true;
+    if (driveUploadBtn) driveUploadBtn.disabled = true;
+    if (driveSelectAllBtn) driveSelectAllBtn.disabled = true;
+    if (driveSortOrderSelect) driveSortOrderSelect.disabled = true;
+    driveSortControl?.classList.add("hidden");
+    driveOrderControl?.classList.add("hidden");
+    setDriveStatus("読み込み中...");
+    try {
+      const res = await fetch("/api/drive/home");
+      if (!res.ok) throw new Error("drive home fetch failed");
+      const data = await res.json();
+      if (!driveVirtualHome) return;
+      const folders = data.folders || [];
+      driveGrid.innerHTML = "";
+      folders.forEach((folder) => {
+        const item = document.createElement("article");
+        item.className = "drive-item";
+        const main = document.createElement("button");
+        main.type = "button";
+        main.className = "drive-item-main";
+        main.title = folder.name;
+        const icon = document.createElement("span");
+        icon.className = "drive-folder-icon";
+        icon.textContent = "📁";
+        const name = document.createElement("span");
+        name.className = "drive-item-name";
+        name.textContent = folder.name;
+        main.append(icon, name);
+        main.addEventListener("click", () => {
+          driveScopeBoardId = folder.boardId;
+          loadDriveFolder(folder.id);
+        });
+        item.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          driveContextFolder = { ...folder, isRoot: true };
+          showDriveFolderMenu(event.clientX, event.clientY);
+        });
+        item.appendChild(main);
+        driveGrid.appendChild(item);
+      });
+      if (!folders.length) driveGrid.innerHTML = '<div class="drive-empty">ボードフォルダがありません。</div>';
+      setDriveStatus(`${folders.length}件（ボード専用フォルダ）`);
+    } catch (err) {
+      console.error(err);
+      if (!driveVirtualHome) return;
+      driveGrid.innerHTML = '<div class="drive-empty">読み込みに失敗しました。</div>';
+      setDriveStatus("エラー");
+    }
+  }
+
+  function getDriveImagesInDisplayOrder() {
+    const images = Array.from(driveContents.images || []);
+    const mode = driveSortOrderSelect?.value || "upload";
+    return images
+      .map((image, index) => ({ image, index }))
+      .sort((a, b) => {
+        if (mode === "name") {
+          const compared = String(a.image.name || "").localeCompare(String(b.image.name || ""), "ja", {
+            numeric: true,
+            sensitivity: "base",
+          });
+          if (compared) return compared;
+        } else if (mode === "captured") {
+          const aTime = Date.parse(a.image.capturedAt || "") || Number(a.image.createdAt || 0);
+          const bTime = Date.parse(b.image.capturedAt || "") || Number(b.image.createdAt || 0);
+          if (aTime !== bTime) return aTime - bTime;
+        } else {
+          const aTime = Number(a.image.createdAt || 0);
+          const bTime = Number(b.image.createdAt || 0);
+          if (aTime !== bTime) return aTime - bTime;
+        }
+        return a.index - b.index;
+      })
+      .map(({ image }) => image);
+  }
+
+  function renderDriveContents() {
+    if (!driveGrid || !driveBreadcrumb) return;
+    driveVirtualHome = false;
+    if (driveNewFolderBtn) driveNewFolderBtn.disabled = false;
+    if (driveUploadBtn) driveUploadBtn.disabled = false;
+    if (driveSortOrderSelect) driveSortOrderSelect.disabled = false;
+    driveSortControl?.classList.remove("hidden");
+    driveBreadcrumb.innerHTML = "";
+    appendDriveBreadcrumbButton("ホーム", null, renderDriveHome);
+    (driveContents.breadcrumb || []).forEach((folder) => {
+      const separator = document.createElement("span");
+      separator.className = "separator";
+      separator.textContent = ">";
+      driveBreadcrumb.appendChild(separator);
+      appendDriveBreadcrumbButton(folder.name, folder.id);
+    });
+
+    driveGrid.innerHTML = "";
+    const folders = driveContents.folders || [];
+    const driveImages = getDriveImagesInDisplayOrder();
+    if (driveSelectAllBtn) {
+      driveSelectAllBtn.disabled = driveImages.length === 0;
+      driveSelectAllBtn.textContent = "全件選択";
+    }
+    if (!folders.length && !driveImages.length) {
+      driveGrid.innerHTML = '<div class="drive-empty">このフォルダは空です。<br>「画像を追加」から画像を保存できます。</div>';
+      return;
+    }
+
+    folders.forEach((folder) => {
+      const item = document.createElement("article");
+      item.className = "drive-item";
+      const main = document.createElement("button");
+      main.type = "button";
+      main.className = "drive-item-main";
+      main.title = folder.name;
+      const icon = document.createElement("span");
+      icon.className = "drive-folder-icon";
+      icon.textContent = "📁";
+      const name = document.createElement("span");
+      name.className = "drive-item-name";
+      name.textContent = folder.name;
+      main.append(icon, name);
+      main.addEventListener("click", () => loadDriveFolder(folder.id));
+      item.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        driveContextFolder = { ...folder, boardId: driveScopeBoardId, isRoot: false };
+        showDriveFolderMenu(event.clientX, event.clientY);
+      });
+      item.appendChild(main);
+      driveGrid.appendChild(item);
+    });
+
+    driveImages.forEach((image, index) => {
+      const item = document.createElement("article");
+      item.className = "drive-item";
+      item.dataset.driveImageId = image.id;
+      const main = document.createElement("button");
+      main.type = "button";
+      main.className = "drive-item-main";
+      main.title = `${image.name}を表示`;
+      const thumb = document.createElement("img");
+      thumb.className = "drive-image-thumb";
+      thumb.src = image.src;
+      thumb.alt = "";
+      thumb.loading = "lazy";
+      thumb.draggable = false;
+      const name = document.createElement("span");
+      name.className = "drive-item-name";
+      name.textContent = image.name;
+      main.append(thumb, name);
+      main.addEventListener("click", (event) => {
+        if (suppressDriveImageClick) {
+          suppressDriveImageClick = false;
+          return;
+        }
+        if (driveSelectionMode || event.shiftKey) {
+          selectDriveImage(image.id, { range: event.shiftKey });
+        }
+        else openDriveSlideshow(index);
+      });
+      installDriveLongPress(main, image.id);
+      const selectToggle = document.createElement("button");
+      selectToggle.type = "button";
+      selectToggle.className = "drive-select-toggle";
+      selectToggle.title = "複数選択";
+      selectToggle.setAttribute("aria-label", `${image.name}を選択`);
+      selectToggle.setAttribute("aria-pressed", "false");
+      selectToggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectDriveImage(image.id, { range: event.shiftKey });
+      });
+      item.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        if (!selectedDriveImageIds.has(image.id)) {
+          selectedDriveImageIds.clear();
+          driveSelectionOrder = [image.id];
+          driveSelectionAnchorId = image.id;
+          driveSelectionMode = true;
+          selectedDriveImageIds.add(image.id);
+          syncDriveSelectionUi();
+        }
+        showDriveSelectionMenu(event.clientX, event.clientY);
+      });
+      item.append(main, selectToggle);
+      driveGrid.appendChild(item);
+    });
+  }
+
+  function clearDriveLongPress() {
+    if (driveLongPressTimer) clearTimeout(driveLongPressTimer);
+    driveLongPressTimer = null;
+    driveLongPressStart = null;
+  }
+
+  function installDriveLongPress(element, imageId) {
+    element.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      suppressDriveImageClick = false;
+      clearDriveLongPress();
+      driveLongPressStart = { x: event.clientX, y: event.clientY };
+      driveLongPressTimer = setTimeout(() => {
+        driveLongPressTimer = null;
+        suppressDriveImageClick = true;
+        driveSelectionMode = true;
+        if (!selectedDriveImageIds.has(imageId)) {
+          selectedDriveImageIds.add(imageId);
+          driveSelectionOrder.push(imageId);
+        }
+        driveSelectionAnchorId = imageId;
+        syncDriveSelectionUi();
+        if (navigator.vibrate) navigator.vibrate(35);
+      }, 550);
+    });
+    element.addEventListener("pointermove", (event) => {
+      if (!driveLongPressStart) return;
+      if (Math.hypot(event.clientX - driveLongPressStart.x, event.clientY - driveLongPressStart.y) > 8) {
+        clearDriveLongPress();
+      }
+    });
+    element.addEventListener("pointerup", clearDriveLongPress);
+    element.addEventListener("pointercancel", clearDriveLongPress);
+    element.addEventListener("pointerleave", clearDriveLongPress);
+  }
+
+  function startDriveMarqueeSelection(event) {
+    if (event.button !== 0 || driveVirtualHome) return;
+    if (event.target.closest(".drive-select-toggle")) return;
+    const targetItem = event.target.closest(".drive-item");
+    if (targetItem && !targetItem.dataset.driveImageId) return;
+    driveMarquee = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      pointerType: event.pointerType,
+      active: false,
+      baseIds: new Set(selectedDriveImageIds),
+      baseOrder: driveSelectionOrder.filter((id) => selectedDriveImageIds.has(id)),
+    };
+  }
+
+  function updateDriveMarqueeSelection(event) {
+    if (!driveMarquee || driveMarquee.pointerId !== event.pointerId) return;
+    if (driveMarquee.pointerType === "touch" && !driveSelectionMode) return;
+    const dx = event.clientX - driveMarquee.startX;
+    const dy = event.clientY - driveMarquee.startY;
+    if (!driveMarquee.active && Math.hypot(dx, dy) < 7) return;
+    if (!driveMarquee.active) {
+      driveMarquee.active = true;
+      suppressDriveImageClick = true;
+      clearDriveLongPress();
+      driveMarqueeElement = document.createElement("div");
+      driveMarqueeElement.className = "drive-selection-marquee";
+      document.body.appendChild(driveMarqueeElement);
+      driveGrid?.setPointerCapture?.(event.pointerId);
+    }
+    event.preventDefault();
+    const left = Math.min(driveMarquee.startX, event.clientX);
+    const top = Math.min(driveMarquee.startY, event.clientY);
+    const right = Math.max(driveMarquee.startX, event.clientX);
+    const bottom = Math.max(driveMarquee.startY, event.clientY);
+    Object.assign(driveMarqueeElement.style, {
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${right - left}px`,
+      height: `${bottom - top}px`,
+    });
+
+    const hitIds = [];
+    driveGrid.querySelectorAll("[data-drive-image-id]").forEach((item) => {
+      const rect = item.getBoundingClientRect();
+      if (rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom) {
+        hitIds.push(item.dataset.driveImageId);
+      }
+    });
+    selectedDriveImageIds.clear();
+    driveMarquee.baseIds.forEach((id) => selectedDriveImageIds.add(id));
+    driveSelectionOrder = [...driveMarquee.baseOrder];
+    hitIds.forEach((id) => {
+      selectedDriveImageIds.add(id);
+      if (!driveSelectionOrder.includes(id)) driveSelectionOrder.push(id);
+    });
+    driveSelectionAnchorId = hitIds[hitIds.length - 1] || driveSelectionAnchorId;
+    driveSelectionMode = selectedDriveImageIds.size > 0;
+    syncDriveSelectionUi();
+  }
+
+  function finishDriveMarqueeSelection(event) {
+    if (!driveMarquee || driveMarquee.pointerId !== event.pointerId) return;
+    const wasActive = driveMarquee.active;
+    driveMarquee = null;
+    driveMarqueeElement?.remove();
+    driveMarqueeElement = null;
+    if (driveGrid?.hasPointerCapture?.(event.pointerId)) driveGrid.releasePointerCapture(event.pointerId);
+    if (wasActive) event.preventDefault();
+  }
+
+  function clearDriveMarqueeSelection() {
+    const pointerId = driveMarquee?.pointerId;
+    if (pointerId != null && driveGrid?.hasPointerCapture?.(pointerId)) {
+      driveGrid.releasePointerCapture(pointerId);
+    }
+    driveMarquee = null;
+    driveMarqueeElement?.remove();
+    driveMarqueeElement = null;
+  }
+
+  function selectDriveImage(imageId, options = {}) {
+    const displayImages = getDriveImagesInDisplayOrder();
+    const anchorIndex = displayImages.findIndex((image) => image.id === driveSelectionAnchorId);
+    const targetIndex = displayImages.findIndex((image) => image.id === imageId);
+    if (options.range && anchorIndex >= 0 && targetIndex >= 0) {
+      const step = targetIndex >= anchorIndex ? 1 : -1;
+      for (let index = anchorIndex; ; index += step) {
+        const image = displayImages[index];
+        if (!selectedDriveImageIds.has(image.id)) {
+          selectedDriveImageIds.add(image.id);
+          driveSelectionOrder.push(image.id);
+        }
+        if (index === targetIndex) break;
+      }
+    } else if (selectedDriveImageIds.has(imageId)) {
+      selectedDriveImageIds.delete(imageId);
+      driveSelectionOrder = driveSelectionOrder.filter((id) => id !== imageId);
+    } else {
+      selectedDriveImageIds.add(imageId);
+      driveSelectionOrder.push(imageId);
+    }
+    driveSelectionAnchorId = imageId;
+    driveSelectionMode = selectedDriveImageIds.size > 0;
+    syncDriveSelectionUi();
+  }
+
+  function toggleSelectAllDriveImages() {
+    const displayImages = getDriveImagesInDisplayOrder();
+    if (!displayImages.length) return;
+    const allSelected = displayImages.every((image) => selectedDriveImageIds.has(image.id));
+    if (allSelected) {
+      clearDriveSelection();
+      return;
+    }
+    selectedDriveImageIds.clear();
+    driveSelectionOrder = displayImages.map((image) => image.id);
+    driveSelectionOrder.forEach((id) => selectedDriveImageIds.add(id));
+    driveSelectionAnchorId = driveSelectionOrder[driveSelectionOrder.length - 1] || null;
+    driveSelectionMode = true;
+    syncDriveSelectionUi();
+  }
+
+  function syncDriveSelectionUi() {
+    const showSelectionOrder = driveSelectionMode && driveSelectionOrderSelect?.value === "selection";
+    const selectionNumbers = new Map(
+      driveSelectionOrder
+        .filter((id) => selectedDriveImageIds.has(id))
+        .map((id, index) => [id, index + 1])
+    );
+    driveGrid?.classList.toggle("show-selection-order", showSelectionOrder);
+    driveGrid?.querySelectorAll("[data-drive-image-id]").forEach((item) => {
+      const isSelected = selectedDriveImageIds.has(item.dataset.driveImageId);
+      item.classList.toggle("is-selected", isSelected);
+      const toggle = item.querySelector(".drive-select-toggle");
+      toggle?.setAttribute("aria-pressed", String(isSelected));
+      if (toggle) toggle.dataset.selectionNumber = String(selectionNumbers.get(item.dataset.driveImageId) || "");
+    });
+    if (selectedDriveImageIds.size) setDriveStatus(`${selectedDriveImageIds.size}件選択中`);
+    else {
+      hideDriveSelectionMenu();
+      const total = (driveContents.folders || []).length + (driveContents.images || []).length;
+      setDriveStatus(`${total}件（画像 ${(driveContents.images || []).length}件）・画像を長押しで複数選択`);
+    }
+    const displayImages = getDriveImagesInDisplayOrder();
+    const allSelected = displayImages.length > 0 && displayImages.every((image) => selectedDriveImageIds.has(image.id));
+    if (driveSelectAllBtn) driveSelectAllBtn.textContent = allSelected ? "選択解除" : "全件選択";
+    driveOrderControl?.classList.toggle("hidden", !driveSelectionMode);
+  }
+
+  function clearDriveSelection(syncUi = true) {
+    selectedDriveImageIds.clear();
+    driveSelectionOrder = [];
+    driveSelectionAnchorId = null;
+    driveSelectionMode = false;
+    clearDriveLongPress();
+    clearDriveMarqueeSelection();
+    hideDriveSelectionMenu();
+    driveOrderControl?.classList.add("hidden");
+    driveGrid?.classList.remove("show-selection-order");
+    if (driveSelectAllBtn) driveSelectAllBtn.textContent = "全件選択";
+    if (syncUi) syncDriveSelectionUi();
+  }
+
+  function showDriveSelectionMenu(clientX, clientY) {
+    if (!driveSelectionMenu || !selectedDriveImageIds.size) return;
+    hideDriveFolderMenu();
+    const renameButton = driveSelectionMenu.querySelector('[data-drive-action="rename"]');
+    if (renameButton) renameButton.disabled = selectedDriveImageIds.size !== 1;
+    driveSelectionMenu.classList.remove("hidden");
+    driveSelectionMenu.style.visibility = "hidden";
+    const rect = driveSelectionMenu.getBoundingClientRect();
+    const margin = 8;
+    driveSelectionMenu.style.left = `${Math.max(margin, Math.min(clientX, window.innerWidth - rect.width - margin))}px`;
+    driveSelectionMenu.style.top = `${Math.max(margin, Math.min(clientY, window.innerHeight - rect.height - margin))}px`;
+    driveSelectionMenu.style.visibility = "";
+  }
+
+  function hideDriveSelectionMenu() {
+    driveSelectionMenu?.classList.add("hidden");
+  }
+
+  function showDriveFolderMenu(clientX, clientY) {
+    if (!driveFolderMenu || !driveContextFolder) return;
+    hideDriveSelectionMenu();
+    const renameButton = driveFolderMenu.querySelector('[data-drive-folder-action="rename"]');
+    if (renameButton) renameButton.disabled = !!driveContextFolder.isRoot;
+    driveFolderMenu.classList.remove("hidden");
+    driveFolderMenu.style.visibility = "hidden";
+    const rect = driveFolderMenu.getBoundingClientRect();
+    const margin = 8;
+    driveFolderMenu.style.left = `${Math.max(margin, Math.min(clientX, window.innerWidth - rect.width - margin))}px`;
+    driveFolderMenu.style.top = `${Math.max(margin, Math.min(clientY, window.innerHeight - rect.height - margin))}px`;
+    driveFolderMenu.style.visibility = "";
+  }
+
+  function hideDriveFolderMenu() {
+    driveFolderMenu?.classList.add("hidden");
+    driveContextFolder = null;
+  }
+
+  async function deleteDriveContextFolder() {
+    const folder = driveContextFolder;
+    hideDriveFolderMenu();
+    if (!folder || !window.confirm(`フォルダ「${folder.name}」と中の画像を削除しますか？`)) return;
+    const res = await fetch(`${getDriveApiBase(folder.boardId)}/folders/${encodeURIComponent(folder.id)}`, { method: "DELETE" });
+    if (!res.ok) return window.alert("フォルダを削除できませんでした。");
+    if (folder.isRoot) {
+      driveScopeBoardId = folder.boardId;
+      await loadDriveFolder(null);
+      await renderDriveHome();
+    } else {
+      await loadDriveFolder(driveCurrentFolderId);
+    }
+  }
+
+  async function renameDriveContextFolder() {
+    const folder = driveContextFolder;
+    hideDriveFolderMenu();
+    if (!folder) return;
+    const value = window.prompt("フォルダ名を入力してください", folder.name);
+    const name = String(value || "").trim();
+    if (!name || name === folder.name) return;
+    const res = await fetch(`${getDriveApiBase(folder.boardId)}/folders/${encodeURIComponent(folder.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return window.alert("フォルダ名を変更できませんでした。");
+    await loadDriveFolder(driveCurrentFolderId);
+  }
+
+  function getSelectedDriveImages() {
+    const displayImages = getDriveImagesInDisplayOrder();
+    if (driveSelectionOrderSelect?.value === "selection") {
+      const byId = new Map(displayImages.map((image) => [image.id, image]));
+      return driveSelectionOrder.map((id) => byId.get(id)).filter((image) => image && selectedDriveImageIds.has(image.id));
+    }
+    return displayImages.filter((image) => selectedDriveImageIds.has(image.id));
+  }
+
+  async function downloadSelectedDriveImages() {
+    const selectedImages = getSelectedDriveImages();
+    if (!selectedImages.length) return;
+    hideDriveSelectionMenu();
+
+    if (selectedImages.length === 1) {
+      const image = selectedImages[0];
+      const link = document.createElement("a");
+      link.href = image.src;
+      link.download = image.name || "image";
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showTransientFooterMessage("ダウンロードを開始しました。", 3000);
+      return;
+    }
+
+    if (typeof window.showDirectoryPicker !== "function") {
+      window.alert("複数画像のフォルダ保存には、最新版のChromeまたはEdgeをHTTPS環境で使用してください。");
+      return;
+    }
+
+    try {
+      const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+      const usedNames = new Set();
+      for (let index = 0; index < selectedImages.length; index += 1) {
+        const image = selectedImages[index];
+        const response = await fetch(image.src);
+        if (!response.ok) throw new Error(`failed to download ${image.name}`);
+        const blob = await response.blob();
+        const baseName = String(image.name || `image-${index + 1}`)
+          .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+          .replace(/[. ]+$/g, "") || `image-${index + 1}`;
+        const dotIndex = baseName.lastIndexOf(".");
+        const stem = dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName;
+        const extension = dotIndex > 0 ? baseName.slice(dotIndex) : "";
+        let filename = baseName;
+        let suffix = 2;
+        while (usedNames.has(filename.toLocaleLowerCase())) {
+          filename = `${stem} (${suffix})${extension}`;
+          suffix += 1;
+        }
+        usedNames.add(filename.toLocaleLowerCase());
+        const fileHandle = await directory.getFileHandle(filename, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        setDriveStatus(`${index + 1} / ${selectedImages.length}件を保存中...`);
+      }
+      setDriveStatus(`${selectedImages.length}件選択中`);
+      showTransientFooterMessage(`${selectedImages.length}件を選択したフォルダへ保存しました。`, 4000);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      console.error(err);
+      window.alert("選択したフォルダへ画像を保存できませんでした。");
+    }
+  }
+
+  async function renameSelectedDriveImage() {
+    const selectedImages = getSelectedDriveImages();
+    if (selectedImages.length !== 1) return;
+    const image = selectedImages[0];
+    hideDriveSelectionMenu();
+    const value = window.prompt("画像名を入力してください", image.name);
+    const name = String(value || "").trim();
+    if (!name || name === image.name) return;
+    const res = await fetch(`${getDriveApiBase()}/images/${encodeURIComponent(image.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return window.alert("画像名を変更できませんでした。");
+    await loadDriveFolder(driveCurrentFolderId);
+  }
+
+  async function deleteSelectedDriveImages() {
+    const selectedImages = getSelectedDriveImages();
+    if (!selectedImages.length) return;
+    hideDriveSelectionMenu();
+    if (!window.confirm(`選択した画像 ${selectedImages.length}件を削除しますか？`)) return;
+    const results = await Promise.all(selectedImages.map((image) =>
+      fetch(`${getDriveApiBase()}/images/${encodeURIComponent(image.id)}`, { method: "DELETE" })
+    ));
+    if (results.some((res) => !res.ok)) window.alert("一部の画像を削除できませんでした。");
+    await loadDriveFolder(driveCurrentFolderId);
+  }
+
+  function openDrive() {
+    if (!driveModal) return;
+    driveScopeBoardId = boardId;
+    driveModal.classList.remove("hidden");
+    loadDriveFolder(null);
+  }
+
+  function closeDrive() {
+    driveModal?.classList.add("hidden");
+    closeDriveSlideshow();
+    clearDriveSelection(false);
+    hideDriveFolderMenu();
+  }
+
+  async function createDriveFolderFromPrompt() {
+    const rawName = window.prompt("新しいフォルダ名を入力してください", "新しいフォルダ");
+    const name = String(rawName || "").trim();
+    if (!name) return;
+    const res = await fetch(`${getDriveApiBase()}/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, parentId: driveCurrentFolderId }),
+    });
+    if (!res.ok) return window.alert("フォルダを作成できませんでした。");
+    await loadDriveFolder(driveCurrentFolderId);
+  }
+
+  async function uploadDriveImages(files) {
+    const imageFiles = Array.from(files || []).filter((file) => file.type?.startsWith("image/"));
+    if (!imageFiles.length) return;
+    const data = new FormData();
+    data.append("folderId", driveCurrentFolderId || "");
+    imageFiles.forEach((file) => data.append("images", file));
+    setDriveStatus("アップロード中...");
+    try {
+      const res = await fetch(`${getDriveApiBase()}/images`, { method: "POST", body: data });
+      if (!res.ok) throw new Error("upload failed");
+      await loadDriveFolder(driveCurrentFolderId);
+    } catch (err) {
+      console.error(err);
+      setDriveStatus("アップロードに失敗しました");
+      window.alert("画像をアップロードできませんでした（1枚20MBまで）。");
+    }
+  }
+
+  function openDriveSlideshow(index = 0) {
+    const driveImages = getDriveImagesInDisplayOrder();
+    if (!driveImages.length || !driveSlideshowModal) return;
+    driveSlideIndex = Math.max(0, Math.min(index, driveImages.length - 1));
+    driveSlideshowModal.classList.remove("hidden");
+    renderDriveSlide();
+  }
+
+  function closeDriveSlideshow() {
+    driveSlideshowModal?.classList.add("hidden");
+  }
+
+  function renderDriveSlide() {
+    const driveImages = getDriveImagesInDisplayOrder();
+    const image = driveImages[driveSlideIndex];
+    if (!image) return closeDriveSlideshow();
+    driveSlideImage.src = image.src;
+    driveSlideImage.alt = image.name;
+    driveSlidePrevBtn.disabled = driveImages.length <= 1;
+    driveSlideNextBtn.disabled = driveImages.length <= 1;
+    if (driveSlideThumbnails) {
+      driveSlideThumbnails.innerHTML = "";
+      driveImages.forEach((driveImage, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "drive-slide-thumbnail";
+        button.classList.toggle("active", index === driveSlideIndex);
+        button.title = driveImage.name;
+        button.setAttribute("aria-label", `${driveImage.name}を表示`);
+        const thumb = document.createElement("img");
+        thumb.src = driveImage.src;
+        thumb.alt = "";
+        thumb.loading = "lazy";
+        button.appendChild(thumb);
+        button.addEventListener("click", () => {
+          driveSlideIndex = index;
+          renderDriveSlide();
+        });
+        driveSlideThumbnails.appendChild(button);
+      });
+      driveSlideThumbnails.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  }
+
+  function moveDriveSlide(offset) {
+    const count = getDriveImagesInDisplayOrder().length;
+    if (count <= 1) return;
+    driveSlideIndex = (driveSlideIndex + offset + count) % count;
+    renderDriveSlide();
+  }
+
+  async function insertSelectedDriveImages() {
+    const selectedImages = getSelectedDriveImages();
+    if (!selectedImages.length || !requireUser() || !canCreateOnCurrentLayer()) return;
+    hideDriveSelectionMenu();
+    try {
+      const files = await Promise.all(selectedImages.map(async (image) => {
+        const res = await fetch(image.src);
+        if (!res.ok) throw new Error("image fetch failed");
+        const blob = await res.blob();
+        return new File([blob], image.name || "drive-image", { type: blob.type || image.mimeType || "image/png" });
+      }));
+      const center = getCanvasCenterWorld();
+      await addImageFilesAt(files, center.x, center.y, getImageTargetLayer());
+      closeDrive();
+      showTransientFooterMessage(`ドライブの画像 ${files.length}件をボードに貼り付けました。`, 3000);
+    } catch (err) {
+      console.error(err);
+      window.alert("画像をボードに貼り付けられませんでした。");
+    }
   }
 
   function startFramePlacement(type) {
@@ -17576,6 +18435,7 @@
         btn.className = "item";
         btn.textContent = it.label;
         btn.addEventListener("click", () => {
+          lastInsertMenuAction = it.onClick;
           it.onClick();
           closeInsertMenu();
         });
@@ -17631,6 +18491,9 @@
       closeInsertMenu();
       return;
     }
+    closeOtherMenu();
+    closeListMenu();
+    if (textToolMenu) textToolMenu.classList.add("hidden");
     insertMenu.style.visibility = "hidden";
     insertMenu.classList.remove("hidden");
     positionInsertMenu();
@@ -17645,6 +18508,7 @@
     if (insertMenu) {
       insertMenu.classList.add("hidden");
       insertMenu.style.left = "";
+      insertMenu.style.right = "";
       insertMenu.style.top = "";
       insertMenu.style.bottom = "";
       insertMenu.style.maxHeight = "";
@@ -17663,44 +18527,26 @@
     }
     viewportBottom = Math.max(margin + 80, viewportBottom);
     const viewportMaxHeight = Math.max(80, viewportBottom - margin);
-    const minMenuHeight = Math.min(120, viewportMaxHeight);
 
     const btnRect = insertMenuBtn.getBoundingClientRect();
 
     insertMenu.style.left = "0px";
+    insertMenu.style.right = "auto";
     insertMenu.style.top = "0px";
     insertMenu.style.bottom = "auto";
     insertMenu.style.maxHeight = `${viewportMaxHeight}px`;
 
     const naturalRect = insertMenu.getBoundingClientRect();
-
-    const availableBelow = Math.max(0, viewportBottom - btnRect.bottom - margin);
-    const availableAbove = Math.max(0, btnRect.top - margin);
-    const openUpwards = naturalRect.height > availableBelow && availableAbove > availableBelow;
-    const availableHeight = openUpwards ? availableAbove : availableBelow;
-    const maxHeight = Math.min(
-      viewportMaxHeight,
-      Math.max(minMenuHeight, availableHeight)
-    );
-    insertMenu.style.maxHeight = `${maxHeight}px`;
-
-    let top;
-    if (openUpwards) {
-      top = btnRect.top - Math.min(naturalRect.height, maxHeight) - margin;
-    } else {
-      top = btnRect.bottom + margin;
-    }
-
-    const menuRect = insertMenu.getBoundingClientRect();
-    const menuHeight = Math.min(menuRect.height, maxHeight);
-    top = Math.min(
-      Math.max(margin, top),
+    const menuHeight = Math.min(naturalRect.height, viewportMaxHeight);
+    const top = Math.min(
+      Math.max(margin, btnRect.top - 4),
       Math.max(margin, viewportBottom - menuHeight)
     );
 
-    let left = btnRect.left;
-    const maxLeft = Math.max(margin, window.innerWidth - menuRect.width - margin);
-    left = Math.min(Math.max(margin, left), maxLeft);
+    const preferredLeft = btnRect.right + margin;
+    const left = preferredLeft + naturalRect.width <= window.innerWidth - margin
+      ? preferredLeft
+      : Math.max(margin, btnRect.left - naturalRect.width - margin);
 
     insertMenu.style.left = `${left}px`;
     insertMenu.style.top = `${top}px`;
