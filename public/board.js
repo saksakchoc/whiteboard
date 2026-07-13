@@ -9379,6 +9379,8 @@
 
     if (multiSelection && multiSelection.items) {
       drawMultiSelectionItemBounds(multiSelection.items);
+    } else if (selected?.type === "stroke") {
+      drawShapeSupportPoints(strokes[selected.index]);
     }
     if (isSelectingArea && selectionDragStart && selectionDragCurrent) {
       drawLassoRectScreen(
@@ -9571,6 +9573,61 @@
       });
     }
     ctx.restore();
+  }
+
+  function getEditableShapeType(stroke) {
+    if (!stroke || stroke.fill || !Array.isArray(stroke.points)) return null;
+    if (stroke.shapeType === "line" || stroke.shapeType === "rect") return stroke.shapeType;
+    // Older inserted shapes did not store their type. Grid lines must remain grouped.
+    if (!stroke.groupId && stroke.points.length === 2) return "line";
+    if (!stroke.groupId && stroke.points.length === 5) {
+      const first = stroke.points[0];
+      const last = stroke.points[4];
+      if (first && last && Math.hypot(first.x - last.x, first.y - last.y) < 0.001) return "rect";
+    }
+    return null;
+  }
+
+  function getShapeSupportPoints(stroke) {
+    const type = getEditableShapeType(stroke);
+    if (type === "line") return [0, 1];
+    if (type === "rect") return [0, 1, 2, 3];
+    return [];
+  }
+
+  function drawShapeSupportPoints(stroke) {
+    const pointIndices = getShapeSupportPoints(stroke);
+    if (!pointIndices.length) return;
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#0078d7";
+    ctx.lineWidth = 2;
+    pointIndices.forEach((pointIndex) => {
+      const point = stroke.points[pointIndex];
+      if (!point) return;
+      const screen = worldToScreen(point.x, point.y);
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function hitTestSelectedShapeSupportPoint(screenX, screenY, radius = 12) {
+    if (!selected || selected.type !== "stroke") return null;
+    const stroke = strokes[selected.index];
+    const pointIndices = getShapeSupportPoints(stroke);
+    for (let i = pointIndices.length - 1; i >= 0; i--) {
+      const pointIndex = pointIndices[i];
+      const point = stroke.points[pointIndex];
+      if (!point) continue;
+      const screen = worldToScreen(point.x, point.y);
+      if (Math.hypot(screenX - screen.x, screenY - screen.y) <= radius) {
+        return { index: selected.index, pointIndex };
+      }
+    }
+    return null;
   }
 
   function getLassoOutlineWorldPoints(imgObj) {
@@ -12237,6 +12294,25 @@
       return;
     }
 
+    const shapeSupportPoint =
+      currentTool === "select" && e.button === 0
+        ? hitTestSelectedShapeSupportPoint(canvasPos.x, canvasPos.y)
+        : null;
+    if (shapeSupportPoint) {
+      ensureSnapshotForAction();
+      const stroke = strokes[shapeSupportPoint.index];
+      resizeInfo = {
+        type: "shape",
+        index: shapeSupportPoint.index,
+        pointIndex: shapeSupportPoint.pointIndex,
+        shapeType: getEditableShapeType(stroke),
+        startPoints: stroke?.points?.map((point) => ({ x: point.x, y: point.y })) || [],
+      };
+      isResizingObject = true;
+      redraw();
+      return;
+    }
+
     const multiResizeHandle =
       currentTool === "select" && e.button === 0
         ? hitTestMultiSelectionResizeHandle(canvasPos.x, canvasPos.y)
@@ -12839,9 +12915,50 @@
 
     if (isResizingObject && resizeInfo) {
       const worldPos = screenToWorld(canvasPos.x, canvasPos.y);
-      const dx = worldPos.x - resizeInfo.originX;
-      const dy = worldPos.y - resizeInfo.originY;
-      if (resizeInfo.type === "multi") {
+      if (resizeInfo.type === "shape") {
+        const stroke = strokes[resizeInfo.index];
+        if (stroke?.points?.[resizeInfo.pointIndex] && resizeInfo.shapeType === "rect") {
+          const points = resizeInfo.startPoints;
+          const draggedIndex = resizeInfo.pointIndex;
+          const anchorIndex = (draggedIndex + 2) % 4;
+          const previousIndex = (draggedIndex + 3) % 4;
+          const nextIndex = (draggedIndex + 1) % 4;
+          const anchor = points[anchorIndex];
+          const sideU = {
+            x: points[nextIndex].x - anchor.x,
+            y: points[nextIndex].y - anchor.y,
+          };
+          const sideV = {
+            x: points[previousIndex].x - anchor.x,
+            y: points[previousIndex].y - anchor.y,
+          };
+          const target = { x: worldPos.x - anchor.x, y: worldPos.y - anchor.y };
+          const determinant = sideU.x * sideV.y - sideU.y * sideV.x;
+          if (Math.abs(determinant) > 1e-9) {
+            const rawScaleU = (target.x * sideV.y - target.y * sideV.x) / determinant;
+            const rawScaleV = (sideU.x * target.y - sideU.y * target.x) / determinant;
+            const minWorldSize = 8 / Math.max(scale, 0.001);
+            const minScaleU = minWorldSize / Math.max(Math.hypot(sideU.x, sideU.y), 0.001);
+            const minScaleV = minWorldSize / Math.max(Math.hypot(sideV.x, sideV.y), 0.001);
+            const scaleU = Math.sign(rawScaleU || 1) * Math.max(Math.abs(rawScaleU), minScaleU);
+            const scaleV = Math.sign(rawScaleV || 1) * Math.max(Math.abs(rawScaleV), minScaleV);
+            const resized = points.slice(0, 4).map((point) => {
+              const relative = { x: point.x - anchor.x, y: point.y - anchor.y };
+              const coefficientU =
+                (relative.x * sideV.y - relative.y * sideV.x) / determinant;
+              const coefficientV =
+                (sideU.x * relative.y - sideU.y * relative.x) / determinant;
+              return {
+                x: anchor.x + sideU.x * coefficientU * scaleU + sideV.x * coefficientV * scaleV,
+                y: anchor.y + sideU.y * coefficientU * scaleU + sideV.y * coefficientV * scaleV,
+              };
+            });
+            stroke.points = [...resized, { ...resized[0] }];
+          }
+        } else if (stroke?.points?.[resizeInfo.pointIndex]) {
+          stroke.points[resizeInfo.pointIndex] = { x: worldPos.x, y: worldPos.y };
+        }
+      } else if (resizeInfo.type === "multi") {
         applyMultiResize(resizeInfo, worldPos);
       } else if (resizeInfo.type === "image" && selected) {
         const imgObj = images[resizeInfo.index];
@@ -13174,6 +13291,14 @@
             id: t.id,
             patch: { fontSize: t.fontSize },
           });
+        } else if (selected.type === "stroke" && resizeInfo.type === "shape") {
+          const stroke = strokes[selected.index];
+          socket.emit("item:update", {
+            boardId,
+            type: "stroke",
+            id: stroke.id,
+            patch: { points: stroke.points.map((point) => ({ x: point.x, y: point.y })) },
+          });
         }
       }
     }
@@ -13384,7 +13509,7 @@
             { x: shapeStart.x, y: shapeStart.y },
             { x: worldPos.x, y: worldPos.y },
           ],
-          layer
+          { shapeType: "line" }
         );
       } else if (shapeMode === "rect") {
         const x0 = Math.min(shapeStart.x, worldPos.x);
@@ -13399,7 +13524,7 @@
             { x: x0, y: y1 },
             { x: x0, y: y0 },
           ],
-          layer
+          { shapeType: "rect" }
         );
       } else if (shapeMode === "grid") {
         const { x0, y0, x1, y1, side } = getSquareBoundsFromDrag(shapeStart, worldPos);
@@ -13440,10 +13565,7 @@
           rectWorld: getSelectionWorldBounds([{ type: "stroke-group", indices: createdStrokeIndices }]),
         };
       }
-      isDrawingShape = false;
-      shapeStart = null;
-      shapePreview = null;
-      shapeTargetLayer = null;
+      resetShapeMode();
       switchToSelectTool();
       updateFooterByState();
       redraw();
@@ -14158,7 +14280,18 @@
     strokes.forEach((stroke, index) => {
       if (!stroke || !stroke.points || !isStrokeVisible(stroke) || !canInteractStroke(stroke)) return;
       const bounds = getStrokeBoundsWorld(stroke);
-      if (!bounds || !pointInRectWorld(bounds, worldPoint)) return;
+      if (
+        !bounds ||
+        !pointInRectWorld(
+          {
+            x: bounds.x - tolWorld,
+            y: bounds.y - tolWorld,
+            width: bounds.width + tolWorld * 2,
+            height: bounds.height + tolWorld * 2,
+          },
+          worldPoint
+        )
+      ) return;
       if (stroke.fill && pointInPolygon(worldPoint, stroke.points)) {
         addCandidate({ type: "stroke", index });
         return;
@@ -15368,6 +15501,7 @@
       layer,
       order: orderCounter++,
       groupId: opts.groupId || null,
+      shapeType: opts.shapeType || null,
     };
     applyCurrentGlowColor(stroke);
     applyFrameMembershipByPoint(stroke, points[0]);

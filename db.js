@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS strokes_v2 (
   fill_source_id TEXT,
   frame_id TEXT,
   frame_tab TEXT,
-  glow_color TEXT
+  glow_color TEXT,
+  shape_type TEXT
 );
 
 CREATE TABLE IF NOT EXISTS texts_v2 (
@@ -317,6 +318,7 @@ try {
   ["draft_strokes", "frame_id TEXT"],
   ["draft_strokes", "frame_tab TEXT"],
   ["strokes_v2", "glow_color TEXT"],
+  ["strokes_v2", "shape_type TEXT"],
   ["draft_strokes", "glow_color TEXT"],
   ["draft_strokes", "draft_board_id TEXT"],
   ["links_v1", "favicon TEXT"],
@@ -428,8 +430,8 @@ function setBoardTitle(boardId, title) {
 // --- strokes_v2 ---
 function saveStroke(stroke) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id, frame_id, frame_tab, glow_color)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO strokes_v2 (id, board_id, user, color, size, points, layer, "order", created_at, fill, group_id, frame_id, frame_tab, glow_color, shape_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     stroke.id,
@@ -445,7 +447,8 @@ function saveStroke(stroke) {
     stroke.groupId || null,
     stroke.frameId || null,
     stroke.frameTab || null,
-    stroke.glowColor || null
+    stroke.glowColor || null,
+    stroke.shapeType || null
   );
 }
 
@@ -647,7 +650,7 @@ function deleteLink(boardId, id) {
 function getBoardState(boardId) {
   const strokesStmt = db.prepare(`
     SELECT s.id, s.user, s.color, s.size, s.points, s.layer, s."order", s.fill, s.group_id, s.frame_id, s.frame_tab,
-           COALESCE(s.glow_color, u.favorite_color) AS glow_color
+           COALESCE(s.glow_color, u.favorite_color) AS glow_color, s.shape_type
     FROM strokes_v2 s
     LEFT JOIN users u ON u.name = s.user
     WHERE s.board_id = ?
@@ -686,6 +689,7 @@ function getBoardState(boardId) {
     frameId: row.frame_id || null,
     frameTab: row.frame_tab || null,
     glowColor: row.glow_color || null,
+    shapeType: row.shape_type || null,
   }));
 
   const texts = textsStmt.all(boardId).map((row) => ({
