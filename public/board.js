@@ -2,6 +2,7 @@
 (() => {
   const canvas = document.getElementById("board-canvas");
   const container = document.getElementById("canvas-container");
+  const textMemoLayer = document.getElementById("text-memo-layer");
   const boardIdLabel = document.getElementById("board-id-label");
   const boardTitleLabel = document.getElementById("board-title");
   const currentUserLabel = document.getElementById("current-user-label");
@@ -29,6 +30,7 @@
   const textListCopyTaggedBtn = document.getElementById("text-list-copy-tagged-btn");
   const textListCopyPlainBtn = document.getElementById("text-list-copy-plain-btn");
   const textListDuplicateGridBtn = document.getElementById("text-list-duplicate-grid-btn");
+  const textListAddToMemoBtn = document.getElementById("text-list-add-to-memo-btn");
   const textListStarOnly = document.getElementById("text-list-star-only");
   const textListSortKanaBtn = document.getElementById("text-list-sort-kana-btn");
   const textListSortTagBtn = document.getElementById("text-list-sort-tag-btn");
@@ -144,6 +146,7 @@
   const imageElementCache = new Map();
   const pendingStrokeAdds = new Map();
   const pendingTextAdds = new Map();
+  const pendingMemoUpdates = new Map();
   const pendingImageAdds = new Map();
   const pendingLinkAdds = new Map();
   let imageLoadTokenCounter = 0;
@@ -2842,6 +2845,7 @@
   function updateTextListDuplicateButton() {
     const disabled = textListSelectedIds.size === 0;
     if (textListDuplicateGridBtn) textListDuplicateGridBtn.disabled = disabled;
+    if (textListAddToMemoBtn) textListAddToMemoBtn.disabled = disabled;
     if (textListCopyPlainBtn) textListCopyPlainBtn.disabled = disabled;
     if (textListCopyTaggedBtn) textListCopyTaggedBtn.disabled = disabled;
   }
@@ -2856,6 +2860,47 @@
   function getSelectedTextListItems() {
     const selectedIds = new Set(textListSelectedIds);
     return getVisibleTextsForList({ ignoreStarFilter: true }).filter((t) => selectedIds.has(t.id));
+  }
+
+  function chooseTextMemoForAppend() {
+    const memos = texts.filter((text) => text.textMemo && isTextVisible(text) && canInteractText(text));
+    if (memos.length === 0) return createTextMemo({ focus: false });
+    if (memos.length === 1) return memos[0];
+    const choices = memos.map((memo, index) => `${index + 1}: ${memo.memoTitle || "テキストメモ"}`).join("\n");
+    const answer = window.prompt(`追加先のテキストメモを番号で選択してください。\n\n${choices}`, "1");
+    if (answer === null) return null;
+    const index = Number.parseInt(answer, 10) - 1;
+    if (!Number.isInteger(index) || !memos[index]) {
+      showTransientFooterMessage("追加先の番号が正しくありません。", 3000);
+      return null;
+    }
+    return memos[index];
+  }
+
+  function addSelectedTextListItemsToMemo() {
+    const targets = getSelectedTextListItems();
+    if (!targets.length) {
+      showTransientFooterMessage("メモに追加するテキストを選択してください。", 3000);
+      return;
+    }
+    if (!requireUser()) return;
+    const additions = targets.flatMap((text) =>
+      (text.lines || []).map((line) => String(line)).filter((line) => line.length > 0)
+    );
+    if (!additions.length) {
+      showTransientFooterMessage("追加できる文字がありません。", 3000);
+      return;
+    }
+    const memo = chooseTextMemoForAppend();
+    if (!memo) return;
+    const current = getMemoItems(memo);
+    if (current.length === 1 && !current[0].text && !current[0].checked) current.length = 0;
+    additions.forEach((line) => current.push({ text: line, checked: false }));
+    memo.lines = current.map((item) => item.text);
+    emitMemoUpdate(memo, true);
+    clearTextListSelection();
+    redraw();
+    showTransientFooterMessage(`${additions.length}件を「${memo.memoTitle || "テキストメモ"}」へ追加しました。`, 3000);
   }
 
   function duplicateSelectedTextListAsGrid() {
@@ -3058,7 +3103,7 @@
   }
 
   function isTextListVisibleText(text) {
-    return !!text && text.layer !== "draft" && !text.gridText;
+    return !!text && text.layer !== "draft" && !text.gridText && !text.textMemo && !text.calculator;
   }
 
   function getVisibleTextsForList({ ignoreStarFilter = false } = {}) {
@@ -4577,6 +4622,28 @@
       .filter((item) => item.type === "text")
       .map((item) => ({ item, text: texts[item.index] }))
       .filter(({ text }) => !!text);
+  }
+
+  function selectionCanConvertText(gridText) {
+    const items = getSelectionItems();
+    if (!items.length || items.some((item) => item.type !== "text")) return false;
+    return items.every((item) => {
+      const text = texts[item.index];
+      return text && !text.textMemo && !text.calculator && canInteractText(text) && !!text.gridText !== gridText;
+    });
+  }
+
+  function convertSelectedTexts(gridText) {
+    if (!selectionCanConvertText(gridText)) return false;
+    ensureSnapshotForAction();
+    getSelectedTextItems().forEach(({ text }) => {
+      text.gridText = gridText;
+      emitItemPatch("text", text, { gridText });
+    });
+    refreshTextList();
+    redraw();
+    updateFooterByState();
+    return true;
   }
 
   function toggleTextWritingModeSelection() {
@@ -6971,6 +7038,22 @@
 
   // --- テキストのバウンディングボックス ---
   function getTextBoundsWorld(t) {
+    if (t.calculator) {
+      return {
+        x: t.x,
+        y: t.y,
+        width: t.calculatorWidth || 280,
+        height: t.calculatorHeight || 390,
+      };
+    }
+    if (t.textMemo) {
+      return {
+        x: t.x,
+        y: t.y,
+        width: t.memoWidth || 320,
+        height: t.memoHeight || 260,
+      };
+    }
     const fontSize = t.fontSize || 16;
     const lineHeight = fontSize * 1.2;
     const paddingX = Math.max(4, fontSize * 0.35); // 横は少し広め
@@ -7277,6 +7360,19 @@
       rotation: text.rotation || 0,
       vertical: !!text.vertical,
       gridText: !!text.gridText,
+      textMemo: !!text.textMemo,
+      memoItems: Array.isArray(text.memoItems)
+        ? text.memoItems.map((item) => ({ text: String(item?.text || ""), checked: !!item?.checked }))
+        : [],
+      memoWidth: text.memoWidth || 320,
+      memoHeight: text.memoHeight || 260,
+      memoTitle: text.memoTitle || "テキストメモ",
+      memoScale: text.memoScale || 1,
+      memoResizeMode: text.memoResizeMode === "scale" ? "scale" : "fixed",
+      calculator: !!text.calculator,
+      calculatorState: normalizeCalculatorState(text.calculatorState),
+      calculatorWidth: text.calculatorWidth || 280,
+      calculatorHeight: text.calculatorHeight || 390,
       textListOrder,
     };
     texts.push(withCreated);
@@ -7586,6 +7682,8 @@
       removeAllById(strokes, id);
     } else if (type === "text") {
       removeAllById(texts, id);
+      getFloatingTextMemoWindow(id)?._closeFloating?.();
+      getFloatingCalculatorWindow(id)?._closeFloating?.();
     } else if (type === "image") {
       removeAllById(images, id);
       invalidatePendingImageLoad(id);
@@ -9099,6 +9197,7 @@
       } else if (item.type === "text") {
         const t = texts[item.index];
         if (!t) continue;
+        if (t.textMemo || t.calculator) continue;
         if (!isTextVisible(t)) {
           if (activeLayer !== "draft") continue;
         }
@@ -9319,6 +9418,7 @@
     // 3. 最前面オーバーレイ：レーザーポインタ／記入中ラベル
     drawAttentionPointers();
     drawWritingLabels();
+    syncTextMemoElements();
     frameRenderCache = null;
     emitCurrentViewPresence();
   }
@@ -10140,6 +10240,7 @@
       mode === "rect" ? null : buildRelativeLassoOutlinePath(lassoCopySelection.worldPath, lassoCopySelection.worldBounds);
     clearLassoCopySelection();
     createImageFromLassoPath(path, mode, { lassoOutlinePath });
+    switchToSelectTool();
   }
 
   function createLinkedBoardFromLassoCopySelection() {
@@ -10155,7 +10256,9 @@
       height: source.height,
     };
     clearLassoCopySelection();
-    createLinkedBoardAt(source, dest, { lassoToolObject: true });
+    if (createLinkedBoardAt(source, dest, { lassoToolObject: true })) {
+      switchToSelectTool();
+    }
   }
 
   function mapRectPointBetweenRects(point, source, dest) {
@@ -10388,7 +10491,7 @@
     selected = boardIndex >= 0 ? { type: "image", index: boardIndex } : null;
     multiSelection = null;
     showTransientFooterMessage("下書きボードを開きました。メインのツールバーで書き込めます。", 4000);
-    updateToolButtons();
+    switchToSelectTool();
     redraw();
     openFloatingDraftBoard(boardImg);
   }
@@ -11309,6 +11412,7 @@
 
       selected = { type: "image", index: images.length - 1 };
       multiSelection = null;
+      switchToSelectTool();
       updateFooterByState();
       redraw();
     };
@@ -11350,6 +11454,7 @@
       emitImageAdd(imgObj);
       selected = { type: "image", index: images.length - 1 };
       multiSelection = null;
+      switchToSelectTool();
       updateFooterByState();
       redraw();
     };
@@ -11851,6 +11956,7 @@
     refreshLinkList();
     selected = { type: "link", index: links.length - 1 };
     multiSelection = null;
+    switchToSelectTool();
     updateFooterByState();
     redraw();
   }
@@ -11895,6 +12001,7 @@
 
     selected = { type: "text", index: texts.length - 1 };
     multiSelection = null;
+    switchToSelectTool();
     updateFooterByState();
     redraw();
   }
@@ -13337,6 +13444,7 @@
       shapeStart = null;
       shapePreview = null;
       shapeTargetLayer = null;
+      switchToSelectTool();
       updateFooterByState();
       redraw();
     }
@@ -13437,8 +13545,7 @@
       framePlaceType = null;
       framePlaceStart = null;
       framePlacePreview = null;
-      currentTool = "select";
-      updateToolButtons();
+      switchToSelectTool();
     }
   }
 
@@ -13556,6 +13663,7 @@
   // --- イベント登録 ---
   function suppressBoardContextMenu(e) {
     const target = e.target;
+    if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object")) return;
     const isBoardContext =
       target === canvas ||
       (container && container.contains(target)) ||
@@ -14629,6 +14737,9 @@
   if (textListDuplicateGridBtn) {
     textListDuplicateGridBtn.addEventListener("click", duplicateSelectedTextListAsGrid);
   }
+  if (textListAddToMemoBtn) {
+    textListAddToMemoBtn.addEventListener("click", addSelectedTextListItemsToMemo);
+  }
 
   if (textListSortTagBtn) {
     textListSortTagBtn.addEventListener("click", sortTextListByTag);
@@ -14696,12 +14807,13 @@
     if (!contextMenu) return;
     contextFrameTabTarget = options.frameTabTarget || null;
     if (options.lassoCopySelection) {
+      const isFreehandLasso = lassoCopySelection?.mode === "freehand";
       contextMenu.querySelectorAll("button").forEach((btn) => {
         const action = btn.getAttribute("data-action");
         const isLassoAction =
           action === "lasso-copy" ||
-          action === "lasso-link-board" ||
-          action === "lasso-draft-board";
+          (!isFreehandLasso &&
+            (action === "lasso-link-board" || action === "lasso-draft-board"));
         btn.classList.toggle("hidden", !isLassoAction);
         btn.classList.remove("disabled");
       });
@@ -14753,6 +14865,8 @@
       if (action === "rotate-right") return hasRotatable;
       if (action === "rotate-left") return hasRotatable;
       if (action === "copy-draft") return hasDraftCopyTarget;
+      if (action === "convert-to-grid-text") return selectionCanConvertText(true);
+      if (action === "convert-to-normal-text") return selectionCanConvertText(false);
       if (action === "lasso-copy") return false;
       if (action === "lasso-link-board") return false;
       if (action === "lasso-draft-board") return false;
@@ -14824,6 +14938,10 @@
         rotateSelection("ccw");
       } else if (action === "copy-draft") {
         copySelectionToDraft();
+      } else if (action === "convert-to-grid-text") {
+        convertSelectedTexts(true);
+      } else if (action === "convert-to-normal-text") {
+        convertSelectedTexts(false);
       } else if (action === "lasso-copy") {
         copyLassoCopySelection();
       } else if (action === "lasso-link-board") {
@@ -15441,6 +15559,1401 @@
     return true;
   }
 
+  function normalizeCalculatorState(value) {
+    const state = value && typeof value === "object" ? value : {};
+    const display = typeof state.display === "string" && state.display ? state.display : "0";
+    const accumulator = Number.isFinite(state.accumulator) ? state.accumulator : null;
+    const operator = ["+", "-", "*", "/"].includes(state.operator) ? state.operator : null;
+    return {
+      display,
+      expression: typeof state.expression === "string" ? state.expression : "",
+      accumulator,
+      operator,
+      waitingForOperand: !!state.waitingForOperand,
+    };
+  }
+
+  function formatCalculatorNumber(value) {
+    if (!Number.isFinite(value)) return "Error";
+    const rounded = Number.parseFloat(Number(value).toPrecision(12));
+    const text = String(rounded);
+    return text.length <= 15 ? text : rounded.toExponential(8);
+  }
+
+  function calculateBinary(left, right, operator) {
+    if (operator === "+") return left + right;
+    if (operator === "-") return left - right;
+    if (operator === "*") return left * right;
+    if (operator === "/") return right === 0 ? Number.NaN : left / right;
+    return right;
+  }
+
+  function applyCalculatorInput(text, key) {
+    const state = normalizeCalculatorState(text.calculatorState);
+    if (/^\d$/.test(key)) {
+      if (state.display === "Error" || state.waitingForOperand) {
+        if (!state.operator) {
+          state.accumulator = null;
+          state.expression = key;
+        } else {
+          state.expression += key;
+        }
+        state.display = key;
+        state.waitingForOperand = false;
+      } else if (state.display === "0") {
+        state.display = key;
+        if (!state.expression) state.expression = key;
+        else if (/[+\-*/]$/.test(state.expression)) state.expression += key;
+        else state.expression = `${state.expression.slice(0, -1)}${key}`;
+      } else if (state.display.replace(/[-.]/g, "").length < 12) {
+        state.display += key;
+        state.expression += key;
+      }
+    } else if (key === ".") {
+      if (state.display === "Error" || state.waitingForOperand) {
+        if (!state.operator) {
+          state.accumulator = null;
+          state.expression = "0.";
+        } else {
+          state.expression += "0.";
+        }
+        state.display = "0.";
+        state.waitingForOperand = false;
+      } else if (!state.display.includes(".")) {
+        state.display += ".";
+        state.expression = state.expression ? `${state.expression}.` : "0.";
+      }
+    } else if (["+", "-", "*", "/"].includes(key)) {
+      if (state.display === "Error") return applyCalculatorInput(text, "clear");
+      if (state.waitingForOperand && /[+\-*/]$/.test(state.expression)) {
+        state.expression = `${state.expression.slice(0, -1)}${key}`;
+      } else {
+        state.expression = `${state.expression || state.display}${key}`;
+      }
+      const input = Number(state.display);
+      if (state.operator && state.accumulator !== null && !state.waitingForOperand) {
+        const result = calculateBinary(state.accumulator, input, state.operator);
+        state.display = formatCalculatorNumber(result);
+        state.accumulator = Number.isFinite(result) ? result : null;
+      } else if (state.accumulator === null || !state.waitingForOperand) {
+        state.accumulator = input;
+      }
+      if (state.display !== "Error") {
+        state.operator = key;
+        state.waitingForOperand = true;
+      } else {
+        state.operator = null;
+        state.waitingForOperand = true;
+      }
+    } else if (key === "equals") {
+      if (state.operator && state.accumulator !== null && !state.waitingForOperand) {
+        const result = calculateBinary(state.accumulator, Number(state.display), state.operator);
+        state.display = formatCalculatorNumber(result);
+        state.accumulator = Number.isFinite(result) ? result : null;
+        state.operator = null;
+        state.waitingForOperand = true;
+      }
+    } else if (key === "backspace") {
+      if (!state.waitingForOperand && state.display !== "Error") {
+        state.display = state.display.length > 1 ? state.display.slice(0, -1) : "0";
+        if (state.display === "-") state.display = "0";
+        state.expression = state.expression.slice(0, -1);
+      }
+    } else if (key === "clear") {
+      state.display = "0";
+      state.expression = "";
+      state.accumulator = null;
+      state.operator = null;
+      state.waitingForOperand = false;
+    }
+    text.calculatorState = state;
+    return state;
+  }
+
+  function emitCalculatorUpdate(text, immediate = false) {
+    if (!text?.id) return;
+    const send = () => {
+      pendingMemoUpdates.delete(text.id);
+      if (pendingTextAdds.has(text.id)) pendingTextAdds.set(text.id, stableSnapshotValue(text));
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: text.id,
+          patch: {
+            calculatorState: text.calculatorState,
+            calculatorWidth: text.calculatorWidth,
+            calculatorHeight: text.calculatorHeight,
+            x: text.x,
+            y: text.y,
+            frameId: text.frameId || null,
+            frameTab: text.frameTab || null,
+          },
+        });
+      }
+    };
+    clearTimeout(pendingMemoUpdates.get(text.id));
+    if (immediate) send();
+    else pendingMemoUpdates.set(text.id, setTimeout(send, 180));
+    redraw();
+  }
+
+  function getCalculatorKeysMarkup() {
+    return `
+      <button class="calculator-key function" type="button" data-key="clear">C</button>
+      <button class="calculator-key function" type="button" data-key="backspace" aria-label="一文字消す">⌫</button>
+      <button class="calculator-key operator" type="button" data-key="/">÷</button>
+      <button class="calculator-key operator" type="button" data-key="*">×</button>
+      <button class="calculator-key" type="button" data-key="7">7</button>
+      <button class="calculator-key" type="button" data-key="8">8</button>
+      <button class="calculator-key" type="button" data-key="9">9</button>
+      <button class="calculator-key operator" type="button" data-key="-">−</button>
+      <button class="calculator-key" type="button" data-key="4">4</button>
+      <button class="calculator-key" type="button" data-key="5">5</button>
+      <button class="calculator-key" type="button" data-key="6">6</button>
+      <button class="calculator-key operator" type="button" data-key="+">＋</button>
+      <button class="calculator-key" type="button" data-key="1">1</button>
+      <button class="calculator-key" type="button" data-key="2">2</button>
+      <button class="calculator-key" type="button" data-key="3">3</button>
+      <button class="calculator-key equals" type="button" data-key="equals">＝</button>
+      <button class="calculator-key zero" type="button" data-key="0">0</button>
+      <button class="calculator-key" type="button" data-key=".">.</button>`;
+  }
+
+  function createCalculatorElement(text) {
+    const element = document.createElement("section");
+    element.className = "calculator-object";
+    element.dataset.calculatorId = text.id;
+    element._calculatorText = text;
+    element.tabIndex = 0;
+    element.setAttribute("aria-label", "計算機");
+    element.innerHTML = `
+      <header class="calculator-header">
+        <span>計算機</span>
+        <button class="calculator-delete" type="button" title="計算機を削除" aria-label="計算機を削除">×</button>
+      </header>
+      <div class="calculator-body">
+        <div class="calculator-expression" aria-label="演算履歴"></div>
+        <output class="calculator-display" aria-live="polite">0</output>
+        <div class="calculator-keys">${getCalculatorKeysMarkup()}</div>
+      </div>
+      <div class="calculator-resize" title="サイズ変更" aria-label="計算機のサイズを変更"></div>`;
+    textMemoLayer.appendChild(element);
+
+    const updateDisplay = () => {
+      const display = element.querySelector(".calculator-display");
+      const expression = element.querySelector(".calculator-expression");
+      const state = normalizeCalculatorState(text.calculatorState);
+      if (display) {
+        display.textContent = state.display;
+        display.title = display.textContent;
+      }
+      if (expression) {
+        expression.textContent = state.expression;
+        expression.title = state.expression;
+      }
+    };
+    const input = (key) => {
+      if (!canInteractText(text)) return;
+      applyCalculatorInput(text, key);
+      updateDisplay();
+      emitCalculatorUpdate(text);
+    };
+    element.querySelectorAll(".calculator-key").forEach((button) => {
+      button.addEventListener("click", () => {
+        input(button.dataset.key);
+        element.focus();
+      });
+    });
+    element.addEventListener("keydown", (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.target.closest?.(".calculator-key") && (event.key === "Enter" || event.key === " ")) return;
+      const key = event.key;
+      let calculatorKey = /^\d$/.test(key) || ["+", "-", "*", "/", "."].includes(key) ? key : null;
+      if (key === "Enter" || key === "=") calculatorKey = "equals";
+      if (key === "Backspace" || key === "Delete") calculatorKey = "backspace";
+      if (key === "Escape" || key.toLowerCase() === "c") calculatorKey = "clear";
+      if (!calculatorKey) return;
+      event.preventDefault();
+      input(calculatorKey);
+    });
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    element.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showCalculatorContextMenu(event, text);
+    });
+    element.querySelector(".calculator-delete").addEventListener("click", () => {
+      if (!canDeleteText(text)) return;
+      const index = texts.findIndex((item) => item.id === text.id);
+      if (index >= 0) texts.splice(index, 1);
+      element.remove();
+      getFloatingCalculatorWindow(text.id)?._closeFloating?.();
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "text", id: text.id });
+      redraw();
+    });
+
+    const header = element.querySelector(".calculator-header");
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest("button") || !canInteractText(text)) return;
+      drag = { id: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: text.x, y: text.y };
+      header.setPointerCapture?.(event.pointerId);
+      element.classList.add("dragging");
+      event.preventDefault();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      text.x = drag.x + (event.clientX - drag.clientX) / scale;
+      text.y = drag.y + (event.clientY - drag.clientY) / scale;
+      syncCalculatorElementPosition(element, text);
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      element.classList.remove("dragging");
+      const index = texts.findIndex((item) => item.id === text.id);
+      if (index >= 0) updateFrameMembershipForItem({ type: "text", index });
+      emitCalculatorUpdate(text, true);
+      redraw();
+    };
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    const resizeHandle = element.querySelector(".calculator-resize");
+    let resizing = null;
+    resizeHandle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (!canInteractText(text)) return;
+      const width = text.calculatorWidth || 280;
+      const height = text.calculatorHeight || 390;
+      resizing = {
+        id: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        objectScale: Math.min(width / 280, height / 390),
+      };
+      resizeHandle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    resizeHandle.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.id !== event.pointerId) return;
+      const widthScaleDelta = (event.clientX - resizing.clientX) / scale / 280;
+      const heightScaleDelta = (event.clientY - resizing.clientY) / scale / 390;
+      const scaleDelta = Math.abs(widthScaleDelta) >= Math.abs(heightScaleDelta)
+        ? widthScaleDelta
+        : heightScaleDelta;
+      const objectScale = Math.max(320 / 390, resizing.objectScale + scaleDelta);
+      text.calculatorWidth = 280 * objectScale;
+      text.calculatorHeight = 390 * objectScale;
+      syncCalculatorElementPosition(element, text);
+    });
+    const finishResize = (event) => {
+      if (!resizing || resizing.id !== event.pointerId) return;
+      resizeHandle.releasePointerCapture?.(event.pointerId);
+      resizing = null;
+      emitCalculatorUpdate(text, true);
+      redraw();
+    };
+    resizeHandle.addEventListener("pointerup", finishResize);
+    resizeHandle.addEventListener("pointercancel", finishResize);
+    updateDisplay();
+    return element;
+  }
+
+  function syncCalculatorElementPosition(element, text) {
+    const point = worldToScreen(text.x, text.y);
+    element.style.left = `${point.x}px`;
+    element.style.top = `${point.y}px`;
+    const storedWidth = text.calculatorWidth || 280;
+    const storedHeight = text.calculatorHeight || 390;
+    const objectScale = Math.max(
+      320 / 390,
+      Math.sqrt((storedWidth / 280) * (storedHeight / 390))
+    );
+    const width = 280 * objectScale;
+    const height = 390 * objectScale;
+    text.calculatorWidth = width;
+    text.calculatorHeight = height;
+    element.style.width = `${width * scale}px`;
+    element.style.height = `${height * scale}px`;
+    element.style.setProperty("--calculator-scale", String(scale * objectScale));
+    const editable = canInteractText(text);
+    element.classList.toggle("read-only", !editable);
+    element.querySelectorAll(".calculator-key").forEach((control) => { control.disabled = !editable; });
+    const resizeHandle = element.querySelector(".calculator-resize");
+    if (resizeHandle) resizeHandle.classList.toggle("disabled", !editable);
+    const deleteButton = element.querySelector(".calculator-delete");
+    if (deleteButton) deleteButton.disabled = !canDeleteText(text);
+    const display = element.querySelector(".calculator-display");
+    const expression = element.querySelector(".calculator-expression");
+    const state = normalizeCalculatorState(text.calculatorState);
+    if (display && display.textContent !== state.display) display.textContent = state.display;
+    if (expression && expression.textContent !== state.expression) expression.textContent = state.expression;
+  }
+
+  function syncCalculatorElements() {
+    if (!textMemoLayer) return;
+    const activeIds = new Set();
+    texts.forEach((text) => {
+      if (!text.calculator || !isTextVisible(text)) return;
+      activeIds.add(text.id);
+      let element = Array.from(textMemoLayer.children).find((item) => item.dataset.calculatorId === text.id) || null;
+      if (element && element._calculatorText !== text) {
+        element.remove();
+        element = null;
+      }
+      if (!element) element = createCalculatorElement(text);
+      syncCalculatorElementPosition(element, text);
+    });
+    textMemoLayer.querySelectorAll(".calculator-object").forEach((element) => {
+      if (!activeIds.has(element.dataset.calculatorId)) element.remove();
+    });
+    syncFloatingCalculatorWindows();
+  }
+
+  let calculatorContextMenu = null;
+
+  function hideCalculatorContextMenu() {
+    if (!calculatorContextMenu) return;
+    calculatorContextMenu.classList.add("hidden");
+    calculatorContextMenu.style.display = "none";
+    calculatorContextMenu._calculator = null;
+  }
+
+  function showCalculatorContextMenu(event, calculator) {
+    hideTextMemoContextMenu();
+    if (!calculatorContextMenu) {
+      calculatorContextMenu = document.createElement("div");
+      calculatorContextMenu.className = "text-memo-context-menu hidden";
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.textContent = "別窓で開く";
+      openButton.addEventListener("click", () => {
+        const target = calculatorContextMenu._calculator;
+        hideCalculatorContextMenu();
+        if (target) openFloatingCalculator(target);
+      });
+      calculatorContextMenu.appendChild(openButton);
+      document.body.appendChild(calculatorContextMenu);
+      window.addEventListener("pointerdown", (pointerEvent) => {
+        if (!calculatorContextMenu?.contains(pointerEvent.target)) hideCalculatorContextMenu();
+      });
+    }
+    calculatorContextMenu._calculator = calculator;
+    calculatorContextMenu.style.display = "block";
+    calculatorContextMenu.classList.remove("hidden");
+    calculatorContextMenu.style.left = `${event.clientX}px`;
+    calculatorContextMenu.style.top = `${event.clientY}px`;
+    const rect = calculatorContextMenu.getBoundingClientRect();
+    calculatorContextMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`;
+    calculatorContextMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`;
+  }
+
+  function getFloatingCalculatorWindow(id) {
+    return getAllFloatingWindows().find(
+      (frame) => frame.classList.contains("floating-calculator") && frame.dataset.calculatorId === id
+    ) || null;
+  }
+
+  function syncFloatingCalculatorWindow(frame, calculator) {
+    if (!frame || !calculator) return;
+    frame._calculatorText = calculator;
+    const state = normalizeCalculatorState(calculator.calculatorState);
+    const display = frame.querySelector(".calculator-display");
+    const expression = frame.querySelector(".calculator-expression");
+    if (display) {
+      display.textContent = state.display;
+      display.title = state.display;
+    }
+    if (expression) {
+      expression.textContent = state.expression;
+      expression.title = state.expression;
+    }
+    const editable = canInteractText(calculator);
+    frame.classList.toggle("read-only", !editable);
+    frame.querySelectorAll(".calculator-key").forEach((button) => { button.disabled = !editable; });
+
+    const content = frame.querySelector(".floating-calculator-content");
+    const body = content?.querySelector(".calculator-body");
+    if (!content || !body) return;
+    const availableWidth = Math.max(1, frame.clientWidth);
+    const availableHeight = Math.max(1, frame.clientHeight - 38);
+    const contentScale = Math.max(0.55, Math.min(availableWidth / 280, availableHeight / 352));
+    body.style.width = `${280 * contentScale}px`;
+    body.style.height = `${352 * contentScale}px`;
+    body.style.setProperty("--calculator-scale", String(contentScale));
+  }
+
+  function syncFloatingCalculatorWindows() {
+    getAllFloatingWindows()
+      .filter((frame) => frame.classList.contains("floating-calculator"))
+      .forEach((frame) => {
+        const calculator = texts.find((text) => text.id === frame.dataset.calculatorId && text.calculator);
+        if (!calculator) {
+          frame._closeFloating?.();
+          return;
+        }
+        syncFloatingCalculatorWindow(frame, calculator);
+      });
+  }
+
+  function openFloatingCalculator(calculator) {
+    if (!calculator?.calculator) return null;
+    const existing = getFloatingCalculatorWindow(calculator.id);
+    if (existing) {
+      activateFloatingAppWindow(existing);
+      return existing;
+    }
+
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-calculator";
+    frame.dataset.calculatorId = calculator.id;
+    frame._calculatorText = calculator;
+    frame.style.width = "320px";
+    frame.style.height = "440px";
+    const count = getAllFloatingWindows().filter((item) => item.classList.contains("floating-calculator")).length;
+    frame.style.left = `${Math.min(120 + count * 28, Math.max(8, window.innerWidth - 330))}px`;
+    frame.style.top = `${Math.min(90 + count * 28, Math.max(8, window.innerHeight - 450))}px`;
+
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.textContent = "計算機";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    const popout = createFloatingPopoutButton(frame, "計算機");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "floating-app-window-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "別窓を閉じる");
+    actions.append(popout, close);
+    header.append(title, actions);
+
+    const content = document.createElement("div");
+    content.className = "floating-calculator-content";
+    content.innerHTML = `
+      <div class="calculator-body">
+        <div class="calculator-expression" aria-label="演算履歴"></div>
+        <output class="calculator-display" aria-live="polite">0</output>
+        <div class="calculator-keys">${getCalculatorKeysMarkup()}</div>
+      </div>`;
+    frame.append(header, content);
+    document.body.appendChild(frame);
+
+    const input = (key) => {
+      const current = texts.find((text) => text.id === calculator.id && text.calculator) || frame._calculatorText;
+      if (!current || !canInteractText(current)) return;
+      applyCalculatorInput(current, key);
+      syncFloatingCalculatorWindow(frame, current);
+      emitCalculatorUpdate(current);
+    };
+    content.querySelectorAll(".calculator-key").forEach((button) => {
+      button.addEventListener("click", () => {
+        input(button.dataset.key);
+        frame.focus();
+      });
+    });
+    frame.tabIndex = 0;
+    frame.addEventListener("keydown", (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.target.closest?.(".calculator-key") && (event.key === "Enter" || event.key === " ")) return;
+      const key = event.key;
+      let calculatorKey = /^\d$/.test(key) || ["+", "-", "*", "/", "."].includes(key) ? key : null;
+      if (key === "Enter" || key === "=") calculatorKey = "equals";
+      if (key === "Backspace" || key === "Delete") calculatorKey = "backspace";
+      if (key === "Escape" || key.toLowerCase() === "c") calculatorKey = "clear";
+      if (!calculatorKey) return;
+      event.preventDefault();
+      input(calculatorKey);
+    });
+
+    enableFloatingWindowDrag(frame, header);
+    const resizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver(() => syncFloatingCalculatorWindow(frame, frame._calculatorText))
+      : null;
+    resizeObserver?.observe(frame);
+    const closeFrame = () => {
+      resizeObserver?.disconnect();
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    close.addEventListener("click", closeFrame);
+    activateFloatingAppWindow(frame);
+    syncFloatingCalculatorWindow(frame, calculator);
+    requestAnimationFrame(() => frame.focus());
+    return frame;
+  }
+
+  function createCalculator() {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image") return null;
+    const center = screenToWorld(canvas.width / 2, canvas.height / 2);
+    const text = {
+      id: genId(),
+      user: currentUser,
+      lines: [""],
+      x: center.x - 140,
+      y: center.y - 195,
+      fontSize: 16,
+      color: currentColor,
+      layer: getTextLayerForCurrentLayer(),
+      order: orderCounter++,
+      createdAt: Date.now(),
+      label: "",
+      rotation: 0,
+      vertical: false,
+      gridText: false,
+      textMemo: false,
+      calculator: true,
+      calculatorState: normalizeCalculatorState(null),
+      calculatorWidth: 280,
+      calculatorHeight: 390,
+      textListOrder: bumpTextListOrderCounter(),
+    };
+    applyFrameMembershipByPoint(text, center);
+    addTextObject(text);
+    switchToSelectTool();
+    redraw();
+    closeInsertMenu();
+    requestAnimationFrame(() => {
+      const element = Array.from(textMemoLayer?.children || []).find((item) => item.dataset.calculatorId === text.id);
+      element?.focus();
+    });
+    return text;
+  }
+
+  function getMemoItems(text) {
+    if (!Array.isArray(text.memoItems) || text.memoItems.length === 0) {
+      text.memoItems = [{ text: "", checked: false }];
+    }
+    return text.memoItems;
+  }
+
+  const textMemoDefaultsStorageKey = "whiteboard-text-memo-defaults-v1";
+
+  function loadTextMemoDefaults() {
+    const fallback = { memoWidth: 320, memoHeight: 260, memoScale: 1 };
+    try {
+      const stored = JSON.parse(localStorage.getItem(textMemoDefaultsStorageKey) || "{}");
+      const value = stored[currentUser || "default"] || stored.default;
+      if (!value || typeof value !== "object") return fallback;
+      const memoWidth = Number(value.memoWidth);
+      const memoHeight = Number(value.memoHeight);
+      const memoScale = Number(value.memoScale);
+      return {
+        memoWidth: Number.isFinite(memoWidth) && memoWidth >= 220 ? memoWidth : fallback.memoWidth,
+        memoHeight: Number.isFinite(memoHeight) && memoHeight >= 150 ? memoHeight : fallback.memoHeight,
+        memoScale: Number.isFinite(memoScale) && memoScale >= 0.45 && memoScale <= 3 ? memoScale : fallback.memoScale,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  function saveTextMemoScaleDefaults(text) {
+    if (!text?.textMemo) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem(textMemoDefaultsStorageKey) || "{}");
+      stored[currentUser || "default"] = {
+        memoWidth: text.memoWidth || 320,
+        memoHeight: text.memoHeight || 260,
+        memoScale: text.memoScale || 1,
+      };
+      localStorage.setItem(textMemoDefaultsStorageKey, JSON.stringify(stored));
+    } catch {
+      // ストレージを利用できない環境では、現在のメモだけに反映する。
+    }
+  }
+
+  function getMemoSignature(text) {
+    return JSON.stringify(getMemoItems(text));
+  }
+
+  function emitMemoUpdate(text, immediate = false) {
+    if (!text?.id) return;
+    const send = () => {
+      pendingMemoUpdates.delete(text.id);
+      text.lines = getMemoItems(text).map((item) => item.text);
+      if (pendingTextAdds.has(text.id)) {
+        pendingTextAdds.set(text.id, stableSnapshotValue(text));
+      }
+      if (socketConnected) {
+        socket.emit("item:update", {
+          boardId,
+          type: "text",
+          id: text.id,
+          patch: {
+            lines: text.lines,
+            memoItems: text.memoItems,
+            memoWidth: text.memoWidth,
+            memoHeight: text.memoHeight,
+            memoTitle: text.memoTitle || "テキストメモ",
+            memoScale: text.memoScale || 1,
+            memoResizeMode: text.memoResizeMode === "scale" ? "scale" : "fixed",
+            x: text.x,
+            y: text.y,
+            frameId: text.frameId || null,
+            frameTab: text.frameTab || null,
+          },
+        });
+      }
+    };
+    clearTimeout(pendingMemoUpdates.get(text.id));
+    if (immediate) send();
+    else pendingMemoUpdates.set(text.id, setTimeout(send, 350));
+    redraw();
+  }
+
+  function rebuildTextMemoRows(element, text) {
+    const body = element.querySelector(".text-memo-body");
+    if (!body) return;
+    body.innerHTML = "";
+    getMemoItems(text).forEach((item, index) => {
+      const row = document.createElement("div");
+      row.className = "text-memo-row";
+      row.dataset.memoItemIndex = String(index);
+      row.classList.toggle("checked", item.checked);
+      const dragHandle = document.createElement("button");
+      dragHandle.type = "button";
+      dragHandle.className = "text-memo-drag-handle";
+      dragHandle.textContent = "☰";
+      dragHandle.title = "ドラッグして並び替え";
+      dragHandle.setAttribute("aria-label", `${index + 1}行目を並び替え`);
+      dragHandle.draggable = true;
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = item.checked;
+      checkbox.setAttribute("aria-label", `${index + 1}行目を完了にする`);
+      const input = document.createElement("textarea");
+      input.rows = 1;
+      input.value = item.text;
+      input.placeholder = index === 0 ? "メモを入力" : "";
+      input.setAttribute("aria-label", `${index + 1}行目`);
+      const autosize = () => {
+        input.style.height = "0";
+        input.style.height = `${Math.max(26, input.scrollHeight)}px`;
+      };
+      checkbox.addEventListener("change", () => {
+        if (!canInteractText(text)) return;
+        const current = getMemoItems(text)[index];
+        if (!current) return;
+        current.checked = checkbox.checked;
+        row.classList.toggle("checked", current.checked);
+        element.dataset.memoSignature = getMemoSignature(text);
+        emitMemoUpdate(text);
+      });
+      input.addEventListener("input", () => {
+        if (!canInteractText(text)) return;
+        const current = getMemoItems(text)[index];
+        if (!current) return;
+        current.text = input.value;
+        autosize();
+        element.dataset.memoSignature = getMemoSignature(text);
+        emitMemoUpdate(text);
+      });
+      input.addEventListener("keydown", (event) => {
+        if (!canInteractText(text)) return;
+        if (event.isComposing) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const start = input.selectionStart ?? input.value.length;
+          const end = input.selectionEnd ?? start;
+          const before = input.value.slice(0, start);
+          const after = input.value.slice(end);
+          text.memoItems[index].text = before;
+          text.memoItems.splice(index + 1, 0, { text: after, checked: false });
+          element.dataset.memoSignature = "";
+          rebuildTextMemoRows(element, text);
+          emitMemoUpdate(text, true);
+          body.querySelectorAll("textarea")[index + 1]?.focus();
+        } else if (event.key === "Backspace" && index > 0 && input.selectionStart === 0 && input.selectionEnd === 0) {
+          event.preventDefault();
+          const previous = text.memoItems[index - 1];
+          const caret = previous.text.length;
+          previous.text += text.memoItems[index].text;
+          text.memoItems.splice(index, 1);
+          element.dataset.memoSignature = "";
+          rebuildTextMemoRows(element, text);
+          emitMemoUpdate(text, true);
+          const previousInput = body.querySelectorAll("textarea")[index - 1];
+          previousInput?.focus();
+          previousInput?.setSelectionRange(caret, caret);
+        }
+      });
+      input.addEventListener("paste", (event) => {
+        if (!canInteractText(text)) return;
+        const pasted = event.clipboardData?.getData("text/plain") || "";
+        if (!/[\r\n]/.test(pasted)) return;
+        event.preventDefault();
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? start;
+        const parts = pasted.replace(/\r\n?/g, "\n").split("\n");
+        const inserted = parts.map((part) => ({ text: part, checked: false }));
+        inserted[0].text = input.value.slice(0, start) + inserted[0].text;
+        inserted[inserted.length - 1].text += input.value.slice(end);
+        text.memoItems.splice(index, 1, ...inserted);
+        rebuildTextMemoRows(element, text);
+        emitMemoUpdate(text, true);
+        body.querySelectorAll("textarea")[index + inserted.length - 1]?.focus();
+      });
+      dragHandle.addEventListener("dragstart", (event) => {
+        if (!canInteractText(text)) {
+          event.preventDefault();
+          return;
+        }
+        element._memoDragIndex = index;
+        row.classList.add("dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("application/x-whiteboard-memo-item", String(index));
+        event.dataTransfer.setData("text/plain", item.text);
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!Number.isInteger(element._memoDragIndex)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        body.querySelectorAll(".text-memo-row").forEach((candidate) => {
+          candidate.classList.remove("insert-before", "insert-after");
+        });
+        const rect = row.getBoundingClientRect();
+        row.classList.add(event.clientY < rect.top + rect.height / 2 ? "insert-before" : "insert-after");
+      });
+      row.addEventListener("drop", (event) => {
+        const sourceIndex = element._memoDragIndex;
+        if (!Number.isInteger(sourceIndex)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const targetIndex = index;
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY >= rect.top + rect.height / 2;
+        const items = getMemoItems(text);
+        const [moved] = items.splice(sourceIndex, 1);
+        let insertIndex = targetIndex + (after ? 1 : 0);
+        if (sourceIndex < insertIndex) insertIndex -= 1;
+        items.splice(Math.max(0, Math.min(insertIndex, items.length)), 0, moved);
+        element._memoDragIndex = null;
+        rebuildTextMemoRows(element, text);
+        emitMemoUpdate(text, true);
+      });
+      dragHandle.addEventListener("dragend", () => {
+        element._memoDragIndex = null;
+        body.querySelectorAll(".text-memo-row").forEach((candidate) => {
+          candidate.classList.remove("dragging", "insert-before", "insert-after");
+        });
+      });
+      row.append(dragHandle, checkbox, input);
+      body.appendChild(row);
+      requestAnimationFrame(autosize);
+    });
+    element.dataset.memoSignature = getMemoSignature(text);
+  }
+
+  function addUncheckedMemoItemsAsTexts(memo) {
+    if (!memo || !canInteractText(memo) || !requireUser()) return;
+    const items = getMemoItems(memo).filter((item) => !item.checked && item.text.trim());
+    if (!items.length) {
+      showTransientFooterMessage("未チェックの項目がありません。", 3000);
+      return;
+    }
+    ensureSnapshotForAction();
+    const fontSize = memo.fontSize || textDefaultFontSizeWorld || 16;
+    const startX = memo.x + (memo.memoWidth || 320) + 24;
+    const startY = memo.y + 8;
+    const createdIndices = [];
+    items.forEach((item, index) => {
+      const text = {
+        id: genId(),
+        lines: [item.text],
+        x: startX,
+        y: startY + index * fontSize * 1.55,
+        fontSize,
+        color: memo.color || textDefaultColor,
+        user: currentUser,
+        layer: memo.layer || getTextLayerForCurrentLayer(),
+        order: orderCounter++,
+        createdAt: Date.now(),
+        label: "",
+        rotation: 0,
+        vertical: false,
+        gridText: false,
+        textListOrder: bumpTextListOrderCounter(),
+        draftBoardId: memo.draftBoardId || null,
+      };
+      if (!text.draftBoardId) applyFrameMembershipByPoint(text, { x: text.x, y: text.y });
+      addTextObject(text);
+      createdIndices.push(texts.length - 1);
+    });
+    refreshTextList();
+    if (createdIndices.length === 1) {
+      selected = { type: "text", index: createdIndices[0] };
+      multiSelection = null;
+    } else {
+      setSelectionFromItems(createdIndices.map((index) => ({ type: "text", index })));
+    }
+    switchToSelectTool();
+    redraw();
+    showTransientFooterMessage(`${createdIndices.length}件のテキストをメモの近くへ追加しました。`, 3000);
+  }
+
+  let textMemoContextMenu = null;
+
+  function hideTextMemoContextMenu() {
+    textMemoContextMenu?.classList.add("hidden");
+    if (textMemoContextMenu) {
+      textMemoContextMenu.style.display = "none";
+      textMemoContextMenu._memo = null;
+    }
+  }
+
+  function showTextMemoContextMenu(event, memo) {
+    hideMemoResizeModeMenu();
+    if (!textMemoContextMenu) {
+      textMemoContextMenu = document.createElement("div");
+      textMemoContextMenu.className = "text-memo-context-menu hidden";
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.textContent = "別窓で開く";
+      openButton.addEventListener("click", () => {
+        const target = textMemoContextMenu._memo;
+        hideTextMemoContextMenu();
+        if (target) openFloatingTextMemo(target);
+      });
+      const duplicateButton = document.createElement("button");
+      duplicateButton.type = "button";
+      duplicateButton.textContent = "複製";
+      duplicateButton.addEventListener("click", () => {
+        const target = textMemoContextMenu._memo;
+        hideTextMemoContextMenu();
+        if (target) duplicateTextMemo(target);
+      });
+      textMemoContextMenu.append(openButton, duplicateButton);
+      document.body.appendChild(textMemoContextMenu);
+      window.addEventListener("pointerdown", (pointerEvent) => {
+        if (!textMemoContextMenu?.contains(pointerEvent.target)) hideTextMemoContextMenu();
+      });
+    }
+    textMemoContextMenu._memo = memo;
+    textMemoContextMenu.style.left = `${event.clientX}px`;
+    textMemoContextMenu.style.top = `${event.clientY}px`;
+    textMemoContextMenu.style.display = "block";
+    textMemoContextMenu.classList.remove("hidden");
+    const rect = textMemoContextMenu.getBoundingClientRect();
+    textMemoContextMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`;
+    textMemoContextMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`;
+  }
+
+  function duplicateTextMemo(source) {
+    if (!source?.textMemo || !requireUser() || !canInteractText(source)) return null;
+    ensureSnapshotForAction();
+    const copy = {
+      id: genId(),
+      user: currentUser,
+      lines: getMemoItems(source).map((item) => item.text),
+      x: source.x + 24,
+      y: source.y + 24,
+      fontSize: source.fontSize || 16,
+      color: source.color || currentColor,
+      layer: source.layer || getTextLayerForCurrentLayer(),
+      order: orderCounter++,
+      createdAt: Date.now(),
+      label: "",
+      rotation: 0,
+      vertical: false,
+      gridText: false,
+      textMemo: true,
+      memoItems: getMemoItems(source).map((item) => ({ text: item.text, checked: !!item.checked })),
+      memoWidth: source.memoWidth || 320,
+      memoHeight: source.memoHeight || 260,
+      memoTitle: `${source.memoTitle || "テキストメモ"} のコピー`,
+      memoScale: source.memoScale || 1,
+      memoResizeMode: source.memoResizeMode === "scale" ? "scale" : "fixed",
+      textListOrder: bumpTextListOrderCounter(),
+      draftBoardId: source.draftBoardId || null,
+    };
+    if (!copy.draftBoardId) {
+      applyFrameMembershipByPoint(copy, {
+        x: copy.x + copy.memoWidth / 2,
+        y: copy.y + copy.memoHeight / 2,
+      });
+    }
+    addTextObject(copy);
+    switchToSelectTool();
+    redraw();
+    showTransientFooterMessage(`「${copy.memoTitle}」を作成しました。`, 2500);
+    return copy;
+  }
+
+  let memoResizeModeMenu = null;
+
+  function hideMemoResizeModeMenu() {
+    if (!memoResizeModeMenu) return;
+    memoResizeModeMenu.style.display = "none";
+    memoResizeModeMenu._memo = null;
+  }
+
+  function showMemoResizeModeMenu(event, memo) {
+    hideTextMemoContextMenu();
+    if (!memoResizeModeMenu) {
+      memoResizeModeMenu = document.createElement("div");
+      memoResizeModeMenu.className = "text-memo-context-menu memo-resize-mode-menu";
+      [
+        { mode: "fixed", label: "文字サイズ固定（枠のみ）" },
+        { mode: "scale", label: "縮尺を変更" },
+      ].forEach(({ mode, label }) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.mode = mode;
+        button.textContent = label;
+        button.addEventListener("click", () => {
+          const target = memoResizeModeMenu._memo;
+          hideMemoResizeModeMenu();
+          if (!target || !canInteractText(target)) return;
+          target.memoResizeMode = mode;
+          emitMemoUpdate(target, true);
+          redraw();
+        });
+        memoResizeModeMenu.appendChild(button);
+      });
+      document.body.appendChild(memoResizeModeMenu);
+      window.addEventListener("pointerdown", (pointerEvent) => {
+        if (!memoResizeModeMenu?.contains(pointerEvent.target)) hideMemoResizeModeMenu();
+      });
+    }
+    memoResizeModeMenu._memo = memo;
+    memoResizeModeMenu.querySelectorAll("button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.mode === (memo.memoResizeMode || "fixed"));
+    });
+    memoResizeModeMenu.style.display = "block";
+    memoResizeModeMenu.style.left = `${event.clientX}px`;
+    memoResizeModeMenu.style.top = `${event.clientY}px`;
+    const rect = memoResizeModeMenu.getBoundingClientRect();
+    memoResizeModeMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`;
+    memoResizeModeMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`;
+  }
+
+  function getFloatingTextMemoWindow(memoId) {
+    return getAllFloatingWindows().find(
+      (frame) => frame.classList.contains("floating-text-memo") && frame.dataset.memoId === memoId
+    ) || null;
+  }
+
+  function syncFloatingTextMemoWindow(frame, memo) {
+    if (!frame || !memo) return;
+    const windowTitle = frame.querySelector(".floating-text-memo-window-title");
+    if (windowTitle) windowTitle.textContent = memo.memoTitle || "テキストメモ";
+    const titleInput = frame.querySelector(".floating-text-memo-title-input");
+    if (titleInput && titleInput !== frame.ownerDocument.activeElement) {
+      titleInput.value = memo.memoTitle || "テキストメモ";
+    }
+    if (frame.dataset.memoSignature !== getMemoSignature(memo) && !frame.contains(frame.ownerDocument.activeElement)) {
+      rebuildTextMemoRows(frame, memo);
+    }
+    const editable = canInteractText(memo);
+    frame.querySelectorAll(".floating-text-memo-editor textarea, .floating-text-memo-editor input, .floating-text-memo-editor button")
+      .forEach((control) => { control.disabled = !editable; });
+  }
+
+  function syncFloatingTextMemoWindows() {
+    getAllFloatingWindows()
+      .filter((frame) => frame.classList.contains("floating-text-memo"))
+      .forEach((frame) => {
+        const memo = texts.find((text) => text.id === frame.dataset.memoId && text.textMemo);
+        if (!memo) {
+          frame._closeFloating?.();
+          return;
+        }
+        if (frame._memoText !== memo && !frame.contains(frame.ownerDocument.activeElement)) {
+          frame._memoText = memo;
+        }
+        syncFloatingTextMemoWindow(frame, frame._memoText || memo);
+      });
+  }
+
+  function openFloatingTextMemo(memo) {
+    if (!memo?.textMemo) return null;
+    const existing = getFloatingTextMemoWindow(memo.id);
+    if (existing) {
+      activateFloatingAppWindow(existing);
+      return existing;
+    }
+    const frame = document.createElement("section");
+    const getCurrentMemo = () => texts.find((text) => text.id === memo.id && text.textMemo) || memo;
+    frame.className = "floating-app-window floating-text-memo";
+    frame.dataset.memoId = memo.id;
+    frame._memoText = memo;
+    frame.style.width = "420px";
+    frame.style.height = "440px";
+    const count = getAllFloatingWindows().filter((item) => item.classList.contains("floating-text-memo")).length;
+    frame.style.left = `${Math.min(120 + count * 28, Math.max(8, window.innerWidth - 430))}px`;
+    frame.style.top = `${Math.min(90 + count * 28, Math.max(8, window.innerHeight - 450))}px`;
+
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const windowTitle = document.createElement("span");
+    windowTitle.className = "floating-text-memo-window-title";
+    windowTitle.textContent = memo.memoTitle || "テキストメモ";
+    const windowActions = document.createElement("div");
+    windowActions.className = "floating-app-window-actions";
+    const popout = createFloatingPopoutButton(frame, memo.memoTitle || "テキストメモ");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "floating-app-window-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "別窓を閉じる");
+    windowActions.append(popout, close);
+    header.append(windowTitle, windowActions);
+
+    const editor = document.createElement("div");
+    editor.className = "floating-text-memo-editor";
+    const toolbar = document.createElement("div");
+    toolbar.className = "floating-text-memo-toolbar";
+    toolbar.innerHTML = `
+      <input class="floating-text-memo-title-input" type="text" maxlength="80" aria-label="メモのタイトル">
+      <div class="text-memo-sort-menu">
+        <button class="text-memo-sort-trigger" type="button" aria-haspopup="true">並び替え</button>
+        <div class="text-memo-sort-options">
+          <button type="button" data-sort="length">文字数</button>
+          <button type="button" data-sort="kana">50音順</button>
+        </div>
+      </div>
+      <button type="button" data-action="to-text">テキスト化</button>
+      <button type="button" data-action="add">＋</button>`;
+    const body = document.createElement("div");
+    body.className = "text-memo-body";
+    editor.append(toolbar, body);
+    frame.append(header, editor);
+    document.body.appendChild(frame);
+
+    const titleInput = toolbar.querySelector(".floating-text-memo-title-input");
+    titleInput.value = memo.memoTitle || "テキストメモ";
+    titleInput.addEventListener("input", () => {
+      const current = getCurrentMemo();
+      if (!canInteractText(current)) return;
+      current.memoTitle = titleInput.value;
+      emitMemoUpdate(current);
+    });
+    titleInput.addEventListener("change", () => {
+      const current = getCurrentMemo();
+      current.memoTitle = titleInput.value.trim() || "テキストメモ";
+      titleInput.value = current.memoTitle;
+      emitMemoUpdate(current, true);
+    });
+    toolbar.querySelector('[data-sort="length"]').addEventListener("click", () => {
+      const current = getCurrentMemo();
+      current.memoItems = getMemoItems(current)
+        .map((item, index) => ({ ...item, index }))
+        .sort((a, b) => Array.from(a.text).length - Array.from(b.text).length || a.index - b.index)
+        .map(({ index: _index, ...item }) => item);
+      rebuildTextMemoRows(frame, current);
+      emitMemoUpdate(current, true);
+    });
+    toolbar.querySelector('[data-sort="kana"]').addEventListener("click", () => {
+      const current = getCurrentMemo();
+      current.memoItems = getMemoItems(current)
+        .map((item, index) => ({ ...item, index }))
+        .sort((a, b) => a.text.localeCompare(b.text, "ja", { sensitivity: "base", numeric: true }) || a.index - b.index)
+        .map(({ index: _index, ...item }) => item);
+      rebuildTextMemoRows(frame, current);
+      emitMemoUpdate(current, true);
+    });
+    toolbar.querySelector('[data-action="to-text"]').addEventListener("click", () => addUncheckedMemoItemsAsTexts(getCurrentMemo()));
+    toolbar.querySelector('[data-action="add"]').addEventListener("click", () => {
+      const current = getCurrentMemo();
+      getMemoItems(current).push({ text: "", checked: false });
+      rebuildTextMemoRows(frame, current);
+      emitMemoUpdate(current, true);
+      frame.querySelector(".text-memo-row:last-child textarea")?.focus();
+    });
+    rebuildTextMemoRows(frame, memo);
+    enableFloatingWindowDrag(frame, header);
+    const closeFrame = () => {
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    close.addEventListener("click", closeFrame);
+    activateFloatingAppWindow(frame);
+    syncFloatingTextMemoWindow(frame, memo);
+    return frame;
+  }
+
+  function createTextMemoElement(text) {
+    const element = document.createElement("section");
+    element.className = "text-memo-object";
+    element.dataset.memoId = text.id;
+    element._memoText = text;
+    element.innerHTML = `
+      <header class="text-memo-header">
+        <input class="text-memo-title" type="text" value="" aria-label="メモのタイトル" maxlength="80">
+        <div class="text-memo-actions">
+          <div class="text-memo-sort-menu">
+            <button class="text-memo-sort-trigger" type="button" aria-haspopup="true">並び替え</button>
+            <div class="text-memo-sort-options">
+              <button type="button" data-sort="length" title="文字数の短い順">文字数</button>
+              <button type="button" data-sort="kana" title="50音順">50音順</button>
+            </div>
+          </div>
+          <button type="button" data-action="to-text" title="未チェック項目を通常テキストとして追加">テキスト化</button>
+          <button type="button" data-action="add" title="項目を追加">＋</button>
+          <button type="button" data-action="delete" title="メモを削除">×</button>
+        </div>
+      </header>
+      <div class="text-memo-body"></div>
+      <div class="text-memo-resize" title="サイズ変更"></div>`;
+    textMemoLayer.appendChild(element);
+    const titleInput = element.querySelector(".text-memo-title");
+    titleInput.value = text.memoTitle || "テキストメモ";
+    titleInput.addEventListener("input", () => {
+      if (!canInteractText(text)) return;
+      text.memoTitle = titleInput.value;
+      emitMemoUpdate(text);
+    });
+    titleInput.addEventListener("change", () => {
+      if (!canInteractText(text)) return;
+      text.memoTitle = titleInput.value.trim() || "テキストメモ";
+      titleInput.value = text.memoTitle;
+      emitMemoUpdate(text, true);
+    });
+    rebuildTextMemoRows(element, text);
+
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    element.addEventListener("contextmenu", (event) => event.stopPropagation());
+    element.querySelector('[data-sort="length"]').addEventListener("click", () => {
+      if (!canInteractText(text)) return;
+      text.memoItems = getMemoItems(text)
+        .map((item, index) => ({ ...item, index }))
+        .sort((a, b) => Array.from(a.text).length - Array.from(b.text).length || a.index - b.index)
+        .map(({ index: _index, ...item }) => item);
+      rebuildTextMemoRows(element, text);
+      emitMemoUpdate(text, true);
+    });
+    element.querySelector('[data-sort="kana"]').addEventListener("click", () => {
+      if (!canInteractText(text)) return;
+      text.memoItems = getMemoItems(text)
+        .map((item, index) => ({ ...item, index }))
+        .sort((a, b) => a.text.localeCompare(b.text, "ja", { sensitivity: "base", numeric: true }) || a.index - b.index)
+        .map(({ index: _index, ...item }) => item);
+      rebuildTextMemoRows(element, text);
+      emitMemoUpdate(text, true);
+    });
+    element.querySelector('[data-action="to-text"]').addEventListener("click", () => {
+      addUncheckedMemoItemsAsTexts(text);
+    });
+    element.querySelector('[data-action="add"]').addEventListener("click", () => {
+      if (!canInteractText(text)) return;
+      getMemoItems(text).push({ text: "", checked: false });
+      rebuildTextMemoRows(element, text);
+      emitMemoUpdate(text, true);
+      element.querySelector(".text-memo-row:last-child textarea")?.focus();
+    });
+    element.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      if (!canDeleteText(text)) return;
+      const index = texts.findIndex((item) => item.id === text.id);
+      if (index >= 0) texts.splice(index, 1);
+      element.remove();
+      getFloatingTextMemoWindow(text.id)?._closeFloating?.();
+      if (socketConnected) socket.emit("item:remove", { boardId, type: "text", id: text.id });
+      redraw();
+    });
+
+    const header = element.querySelector(".text-memo-header");
+    header.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showTextMemoContextMenu(event, text);
+    });
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button, input")) return;
+      if (!canInteractText(text)) return;
+      drag = { id: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: text.x, y: text.y };
+      header.setPointerCapture?.(event.pointerId);
+      element.classList.add("dragging");
+      event.preventDefault();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      text.x = drag.x + (event.clientX - drag.clientX) / scale;
+      text.y = drag.y + (event.clientY - drag.clientY) / scale;
+      syncTextMemoElementPosition(element, text);
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      element.classList.remove("dragging");
+      const index = texts.findIndex((item) => item.id === text.id);
+      if (index >= 0) updateFrameMembershipForItem({ type: "text", index });
+      emitMemoUpdate(text, true);
+      redraw();
+    };
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    const handle = element.querySelector(".text-memo-resize");
+    let resizing = null;
+    handle.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showMemoResizeModeMenu(event, text);
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (!canInteractText(text)) return;
+      resizing = {
+        id: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        width: text.memoWidth,
+        height: text.memoHeight,
+        memoScale: text.memoScale || 1,
+        mode: text.memoResizeMode === "scale" ? "scale" : "fixed",
+      };
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.id !== event.pointerId) return;
+      const dx = (event.clientX - resizing.clientX) / scale;
+      const dy = (event.clientY - resizing.clientY) / scale;
+      if (resizing.mode === "scale") {
+        const projection = (dx * resizing.width + dy * resizing.height) /
+          (resizing.width * resizing.width + resizing.height * resizing.height);
+        const minFactor = Math.max(220 / resizing.width, 150 / resizing.height, 0.45 / resizing.memoScale);
+        const maxFactor = 3 / resizing.memoScale;
+        const factor = Math.max(minFactor, Math.min(maxFactor, 1 + projection));
+        text.memoWidth = resizing.width * factor;
+        text.memoHeight = resizing.height * factor;
+        text.memoScale = resizing.memoScale * factor;
+      } else {
+        text.memoWidth = Math.max(220, resizing.width + dx);
+        text.memoHeight = Math.max(150, resizing.height + dy);
+      }
+      syncTextMemoElementPosition(element, text);
+    });
+    const finishResize = (event) => {
+      if (!resizing || resizing.id !== event.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      const completedMode = resizing.mode;
+      resizing = null;
+      if (completedMode === "scale") saveTextMemoScaleDefaults(text);
+      emitMemoUpdate(text, true);
+    };
+    handle.addEventListener("pointerup", finishResize);
+    handle.addEventListener("pointercancel", finishResize);
+    return element;
+  }
+
+  function syncTextMemoElementPosition(element, text) {
+    const point = worldToScreen(text.x, text.y);
+    element.style.left = `${point.x}px`;
+    element.style.top = `${point.y}px`;
+    element.style.width = `${(text.memoWidth || 320) * scale}px`;
+    element.style.height = `${(text.memoHeight || 260) * scale}px`;
+    const renderedMemoScale = scale * (text.memoScale || 1);
+    element.style.setProperty("--memo-scale", String(renderedMemoScale));
+    if (element.dataset.renderedMemoScale !== String(renderedMemoScale)) {
+      element.dataset.renderedMemoScale = String(renderedMemoScale);
+      requestAnimationFrame(() => {
+        element.querySelectorAll(".text-memo-row textarea").forEach((textarea) => {
+          textarea.style.height = "0";
+          textarea.style.height = `${Math.max(26, textarea.scrollHeight)}px`;
+        });
+      });
+    }
+    const editable = canInteractText(text);
+    element.classList.toggle("read-only", !editable);
+    element.querySelectorAll("textarea, input, button").forEach((control) => {
+      control.disabled = !editable;
+    });
+    const deleteButton = element.querySelector('[data-action="delete"]');
+    if (deleteButton) deleteButton.disabled = !canDeleteText(text);
+    const titleInput = element.querySelector(".text-memo-title");
+    if (titleInput && titleInput !== document.activeElement) {
+      titleInput.value = text.memoTitle || "テキストメモ";
+    }
+    const resizeHandle = element.querySelector(".text-memo-resize");
+    if (resizeHandle) {
+      const scaleMode = text.memoResizeMode === "scale";
+      resizeHandle.classList.toggle("scale-mode", scaleMode);
+      resizeHandle.title = scaleMode
+        ? "縮尺を変更（右クリックでモード変更）"
+        : "枠の広さを変更（右クリックでモード変更）";
+    }
+  }
+
+  function syncTextMemoElements() {
+    if (!textMemoLayer) return;
+    const activeIds = new Set();
+    texts.forEach((text) => {
+      if (!text.textMemo || !isTextVisible(text)) return;
+      activeIds.add(text.id);
+      let element = Array.from(textMemoLayer.children).find((item) => item.dataset.memoId === text.id) || null;
+      if (element && element._memoText !== text && !element.contains(document.activeElement)) {
+        element.remove();
+        element = null;
+      }
+      if (!element) element = createTextMemoElement(text);
+      syncTextMemoElementPosition(element, text);
+      if (element.dataset.memoSignature !== getMemoSignature(text) && !element.contains(document.activeElement)) {
+        rebuildTextMemoRows(element, text);
+      }
+    });
+    textMemoLayer.querySelectorAll(".text-memo-object").forEach((element) => {
+      if (!activeIds.has(element.dataset.memoId)) element.remove();
+    });
+    syncCalculatorElements();
+    syncFloatingTextMemoWindows();
+  }
+
+  function createTextMemo(options = {}) {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image") return null;
+    const center = screenToWorld(canvas.width / 2, canvas.height / 2);
+    const memoDefaults = loadTextMemoDefaults();
+    const text = {
+      id: genId(),
+      user: currentUser,
+      lines: [""],
+      x: center.x - memoDefaults.memoWidth / 2,
+      y: center.y - memoDefaults.memoHeight / 2,
+      fontSize: 16,
+      color: currentColor,
+      layer: getTextLayerForCurrentLayer(),
+      order: orderCounter++,
+      createdAt: Date.now(),
+      label: "",
+      rotation: 0,
+      vertical: false,
+      gridText: false,
+      textMemo: true,
+      memoItems: [{ text: "", checked: false }],
+      memoWidth: memoDefaults.memoWidth,
+      memoHeight: memoDefaults.memoHeight,
+      memoTitle: "テキストメモ",
+      memoScale: memoDefaults.memoScale,
+      memoResizeMode: "fixed",
+      textListOrder: bumpTextListOrderCounter(),
+    };
+    applyFrameMembershipByPoint(text, center);
+    addTextObject(text);
+    switchToSelectTool();
+    redraw();
+    closeInsertMenu();
+    if (options.focus !== false) {
+      requestAnimationFrame(() => {
+        const element = Array.from(textMemoLayer?.children || []).find((item) => item.dataset.memoId === text.id);
+        element?.querySelector("textarea")?.focus();
+      });
+    }
+    return text;
+  }
+
   function renderInsertMenu() {
     if (!insertMenu) return;
     insertMenu.innerHTML = "";
@@ -15474,6 +16987,14 @@
 
     addSection("画像", [
       { label: "画像ファイル", onClick: () => chooseImageFiles() },
+    ]);
+
+    addSection("メモ", [
+      { label: "テキストメモ", onClick: () => createTextMemo() },
+    ]);
+
+    addSection("ツール", [
+      { label: "計算機", onClick: () => createCalculator() },
     ]);
 
     addSection("フレーム", [
