@@ -16285,6 +16285,21 @@
     return displayImages.filter((image) => selectedDriveImageIds.has(image.id));
   }
 
+  function getDriveImageDownloadName(image, mimeType = "") {
+    const name = String(image?.name || "image").trim() || "image";
+    if (/\.(?:jpe?g|png|gif|webp|bmp|avif)$/i.test(name)) return name;
+    const sourceExtension = String(image?.src || "").split(/[?#]/, 1)[0].match(/\.(jpe?g|png|gif|webp|bmp|avif)$/i)?.[0];
+    const extension = sourceExtension || {
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/gif": ".gif",
+      "image/webp": ".webp",
+      "image/bmp": ".bmp",
+      "image/avif": ".avif",
+    }[mimeType || image?.mimeType] || "";
+    return `${name}${extension}`;
+  }
+
   async function downloadSelectedDriveImages() {
     const selectedImages = getSelectedDriveImages();
     if (!selectedImages.length) return;
@@ -16294,7 +16309,7 @@
       const image = selectedImages[0];
       const link = document.createElement("a");
       link.href = image.src;
-      link.download = image.name || "image";
+      link.download = getDriveImageDownloadName(image);
       link.style.display = "none";
       document.body.appendChild(link);
       link.click();
@@ -16339,7 +16354,7 @@
         const response = await fetch(image.src);
         if (!response.ok) throw new Error(`failed to download ${image.name}`);
         const blob = await response.blob();
-        const baseName = String(image.name || `image-${index + 1}`)
+        const baseName = getDriveImageDownloadName(image, blob.type)
           .replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f]/g, "_")
           .replace(/[. ]+$/g, "")
           .slice(0, 180) || `image-${index + 1}`;
