@@ -4189,6 +4189,19 @@
       });
       menu.appendChild(openInBrowser);
     }
+    const textMemo = frame.dataset.memoId
+      ? texts.find((item) => item.id === frame.dataset.memoId && item.textMemo)
+      : null;
+    if (textMemo && !textMemo.memoOnBoard && canInteractText(textMemo)) {
+      const placeOnBoard = frame.ownerDocument.createElement("button");
+      placeOnBoard.type = "button";
+      placeOnBoard.textContent = "ボード上に配置";
+      placeOnBoard.addEventListener("click", () => {
+        closeSharedFloatingContextMenu(menu);
+        placeTextMemoOnBoard(textMemo, frame);
+      });
+      menu.appendChild(placeOnBoard);
+    }
     const attention = frame.ownerDocument.createElement("button");
     attention.type = "button";
     attention.className = "shared-floating-attention-action";
@@ -8363,6 +8376,7 @@
       vertical: !!text.vertical,
       gridText: !!text.gridText,
       textMemo: !!text.textMemo,
+      memoOnBoard: !!text.memoOnBoard,
       memoItems: Array.isArray(text.memoItems)
         ? text.memoItems.map((item) => ({ text: String(item?.text || ""), checked: !!item?.checked }))
         : [],
@@ -8470,7 +8484,9 @@
 
   socket.on("text:add", (text) => {
     addTextFromNetwork(text);
-    if (text?.textMemo || text?.calculator) openSharedFloatingItem("text", text.id, { minimized: true });
+    if ((text?.textMemo && !text.memoOnBoard) || text?.calculator) {
+      openSharedFloatingItem("text", text.id, { minimized: true });
+    }
   });
 
   socket.on("image:add", (img) => {
@@ -8769,6 +8785,12 @@
         list[idx] = { ...list[idx], ...patch };
       }
       if (type === "text") {
+        const text = list[idx];
+        if (text?.textMemo && text.memoOnBoard) {
+          getFloatingTextMemoWindow(id)?._closeFloating?.();
+        } else if (text?.textMemo && Object.prototype.hasOwnProperty.call(patch, "memoOnBoard")) {
+          openSharedFloatingItem("text", id, { minimized: true });
+        }
         refreshTextList();
       } else if (type === "image") {
         refreshImageList();
@@ -9867,7 +9889,9 @@
   function restoreSharedFloatingWindows() {
     if (draftBoardViewId || linkBoardView || isDetachedBoardView) return;
     texts.forEach((text) => {
-      if (text.textMemo || text.calculator) openSharedFloatingItem("text", text.id, { minimized: true });
+      if ((text.textMemo && !text.memoOnBoard) || text.calculator) {
+        openSharedFloatingItem("text", text.id, { minimized: true });
+      }
     });
     images.forEach((image) => {
       if (isSlideshowImage(image)) openSharedFloatingItem("image", image.id, { minimized: true });
@@ -20814,6 +20838,7 @@
             memoTitle: text.memoTitle || "テキストメモ",
             memoScale: text.memoScale || 1,
             memoResizeMode: text.memoResizeMode === "scale" ? "scale" : "fixed",
+            memoOnBoard: !!text.memoOnBoard,
             x: text.x,
             y: text.y,
             frameId: text.frameId || null,
@@ -21042,6 +21067,16 @@
         hideTextMemoContextMenu();
         if (target) openFloatingTextMemo(target);
       });
+      textMemoContextMenu._openButton = openButton;
+      const convertButton = document.createElement("button");
+      convertButton.type = "button";
+      convertButton.textContent = "共有ツールに変換";
+      convertButton.addEventListener("click", () => {
+        const target = textMemoContextMenu._memo;
+        hideTextMemoContextMenu();
+        if (target) convertTextMemoToSharedTool(target);
+      });
+      textMemoContextMenu._convertButton = convertButton;
       const duplicateButton = document.createElement("button");
       duplicateButton.type = "button";
       duplicateButton.textContent = "複製";
@@ -21050,13 +21085,19 @@
         hideTextMemoContextMenu();
         if (target) duplicateTextMemo(target);
       });
-      textMemoContextMenu.append(openButton, duplicateButton);
+      textMemoContextMenu.append(openButton, convertButton, duplicateButton);
       document.body.appendChild(textMemoContextMenu);
       window.addEventListener("pointerdown", (pointerEvent) => {
         if (!textMemoContextMenu?.contains(pointerEvent.target)) hideTextMemoContextMenu();
       });
     }
     textMemoContextMenu._memo = memo;
+    if (textMemoContextMenu._openButton) {
+      textMemoContextMenu._openButton.hidden = !!memo.memoOnBoard;
+    }
+    if (textMemoContextMenu._convertButton) {
+      textMemoContextMenu._convertButton.hidden = !memo.memoOnBoard;
+    }
     textMemoContextMenu.style.left = `${event.clientX}px`;
     textMemoContextMenu.style.top = `${event.clientY}px`;
     textMemoContextMenu.style.display = "block";
@@ -21064,6 +21105,51 @@
     const rect = textMemoContextMenu.getBoundingClientRect();
     textMemoContextMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`;
     textMemoContextMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`;
+  }
+
+  function placeTextMemoOnBoard(memo, floatingFrame = null) {
+    if (!memo?.textMemo || memo.memoOnBoard || !requireUser() || !canInteractText(memo)) return false;
+    ensureSnapshotForAction();
+    const frame = floatingFrame || getFloatingTextMemoWindow(memo.id);
+    const canvasRect = canvas.getBoundingClientRect();
+    const frameRect = frame?.getBoundingClientRect();
+    const position = frameRect
+      ? screenToWorld(frameRect.left - canvasRect.left, frameRect.top - canvasRect.top)
+      : screenToWorld(
+          canvas.width / 2 - (memo.memoWidth || 320) * scale / 2,
+          canvas.height / 2 - (memo.memoHeight || 260) * scale / 2
+        );
+    memo.x = position.x;
+    memo.y = position.y;
+    memo.memoOnBoard = true;
+    const center = {
+      x: memo.x + (memo.memoWidth || 320) / 2,
+      y: memo.y + (memo.memoHeight || 260) / 2,
+    };
+    applyFrameMembershipByPoint(memo, center);
+    emitMemoUpdate(memo, true);
+    frame?._closeFloating?.();
+    switchToSelectTool();
+    redraw();
+    requestAnimationFrame(() => {
+      textMemoLayer
+        ?.querySelector(`.text-memo-object[data-memo-id="${CSS.escape(memo.id)}"] textarea`)
+        ?.focus();
+    });
+    showTransientFooterMessage(`「${memo.memoTitle || "テキストメモ"}」をボード上に配置しました。`, 2500);
+    return true;
+  }
+
+  function convertTextMemoToSharedTool(memo) {
+    if (!memo?.textMemo || !memo.memoOnBoard || !requireUser() || !canInteractText(memo)) return false;
+    ensureSnapshotForAction();
+    memo.memoOnBoard = false;
+    emitMemoUpdate(memo, true);
+    redraw();
+    const floatingMemo = openFloatingTextMemo(memo);
+    requestAnimationFrame(() => floatingMemo?.querySelector("textarea")?.focus());
+    showTransientFooterMessage(`「${memo.memoTitle || "テキストメモ"}」を共有ツールに変換しました。`, 2500);
+    return true;
   }
 
   function duplicateTextMemo(source) {
@@ -21085,6 +21171,7 @@
       vertical: false,
       gridText: false,
       textMemo: true,
+      memoOnBoard: !!source.memoOnBoard,
       memoItems: getMemoItems(source).map((item) => ({ text: item.text, checked: !!item.checked })),
       memoWidth: source.memoWidth || 320,
       memoHeight: source.memoHeight || 260,
@@ -21178,7 +21265,7 @@
       .filter((frame) => frame.classList.contains("floating-text-memo"))
       .forEach((frame) => {
         const memo = texts.find((text) => text.id === frame.dataset.memoId && text.textMemo);
-        if (!memo) {
+        if (!memo || memo.memoOnBoard) {
           frame._closeFloating?.();
           return;
         }
@@ -21498,7 +21585,26 @@
 
   function syncTextMemoElements() {
     if (!textMemoLayer) return;
-    textMemoLayer.querySelectorAll(".text-memo-object").forEach((element) => element.remove());
+    const visibleMemos = texts.filter((text) => text?.textMemo && text.memoOnBoard && isTextVisible(text));
+    const visibleMemoIds = new Set(visibleMemos.map((text) => text.id));
+    textMemoLayer.querySelectorAll(".text-memo-object").forEach((element) => {
+      if (!visibleMemoIds.has(element.dataset.memoId)) element.remove();
+    });
+    visibleMemos.forEach((text) => {
+      let element = textMemoLayer.querySelector(`.text-memo-object[data-memo-id="${CSS.escape(text.id)}"]`);
+      if (element && element._memoText !== text) {
+        element.remove();
+        element = null;
+      }
+      if (!element) element = createTextMemoElement(text);
+      if (
+        element.dataset.memoSignature !== getMemoSignature(text) &&
+        !element.contains(element.ownerDocument.activeElement)
+      ) {
+        rebuildTextMemoRows(element, text);
+      }
+      syncTextMemoElementPosition(element, text);
+    });
     syncCalculatorElements();
     syncFloatingTextMemoWindows();
   }
@@ -21523,6 +21629,7 @@
       vertical: false,
       gridText: false,
       textMemo: true,
+      memoOnBoard: !!options.onBoard,
       memoItems: [{ text: "", checked: false }],
       memoWidth: memoDefaults.memoWidth,
       memoHeight: memoDefaults.memoHeight,
@@ -21533,13 +21640,15 @@
     };
     applyFrameMembershipByPoint(text, center);
     addTextObject(text);
-    const floatingMemo = openFloatingTextMemo(text);
+    const floatingMemo = text.memoOnBoard ? null : openFloatingTextMemo(text);
     switchToSelectTool();
     redraw();
     closeInsertMenu();
     if (options.focus !== false) {
       requestAnimationFrame(() => {
-        floatingMemo?.querySelector("textarea")?.focus();
+        const editor = floatingMemo?.querySelector("textarea") ||
+          textMemoLayer?.querySelector(`.text-memo-object[data-memo-id="${CSS.escape(text.id)}"] textarea`);
+        editor?.focus();
       });
     }
     return text;
@@ -21579,6 +21688,10 @@
 
     addSection("画像", [
       { label: "画像ファイル", onClick: () => chooseImageFiles() },
+    ]);
+
+    addSection("テキスト", [
+      { label: "テキストメモ", onClick: () => createTextMemo({ onBoard: true }) },
     ]);
 
     addSection("フレーム", [

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS texts_v2 (
   memo_title TEXT,
   memo_scale REAL NOT NULL DEFAULT 1,
   memo_resize_mode TEXT NOT NULL DEFAULT 'fixed',
+  memo_on_board INTEGER NOT NULL DEFAULT 0,
   calculator INTEGER NOT NULL DEFAULT 0,
   calculator_state TEXT,
   calculator_width REAL,
@@ -308,6 +309,11 @@ try {
 }
 try {
   db.exec("ALTER TABLE texts_v2 ADD COLUMN memo_resize_mode TEXT NOT NULL DEFAULT 'fixed'");
+} catch (e) {
+  // ignore
+}
+try {
+  db.exec("ALTER TABLE texts_v2 ADD COLUMN memo_on_board INTEGER NOT NULL DEFAULT 0");
 } catch (e) {
   // ignore
 }
@@ -834,8 +840,8 @@ function getDraftStrokes(boardId, user) {
 // --- texts_v2 ---
 function saveText(text) {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab, draft_board_id, text_memo, memo_items, memo_width, memo_height, memo_title, memo_scale, memo_resize_mode, calculator, calculator_state, calculator_width, calculator_height)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO texts_v2 (id, board_id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab, draft_board_id, text_memo, memo_items, memo_width, memo_height, memo_title, memo_scale, memo_resize_mode, memo_on_board, calculator, calculator_state, calculator_width, calculator_height)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     text.id,
@@ -864,6 +870,7 @@ function saveText(text) {
     text.textMemo ? text.memoTitle || "テキストメモ" : null,
     text.textMemo ? text.memoScale || 1 : 1,
     text.textMemo ? text.memoResizeMode || "fixed" : "fixed",
+    text.textMemo && text.memoOnBoard ? 1 : 0,
     text.calculator ? 1 : 0,
     text.calculator ? JSON.stringify(text.calculatorState || {}) : null,
     text.calculator ? text.calculatorWidth || 280 : null,
@@ -967,7 +974,7 @@ function getBoardState(boardId) {
     ORDER BY s."order" ASC
   `);
   const textsStmt = db.prepare(`
-    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab, draft_board_id, text_memo, memo_items, memo_width, memo_height, memo_title, memo_scale, memo_resize_mode, calculator, calculator_state, calculator_width, calculator_height
+    SELECT id, user, lines, x, y, font_size, color, layer, "order", created_at, label, rotation, vertical, grid_text, text_list_order, frame_id, frame_tab, draft_board_id, text_memo, memo_items, memo_width, memo_height, memo_title, memo_scale, memo_resize_mode, memo_on_board, calculator, calculator_state, calculator_width, calculator_height
     FROM texts_v2
     WHERE board_id = ?
     ORDER BY "order" ASC
@@ -1028,6 +1035,7 @@ function getBoardState(boardId) {
     memoTitle: row.memo_title || "テキストメモ",
     memoScale: row.memo_scale || 1,
     memoResizeMode: row.memo_resize_mode === "scale" ? "scale" : "fixed",
+    memoOnBoard: !!row.memo_on_board,
     calculator: !!row.calculator,
     calculatorState: row.calculator_state ? JSON.parse(row.calculator_state) : null,
     calculatorWidth: row.calculator_width || 280,
