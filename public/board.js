@@ -20,6 +20,15 @@
   const toolbarEl = document.getElementById("toolbar");
   const insertMenuBtn = document.getElementById("insert-menu-btn");
   const insertMenu = document.getElementById("insert-menu");
+  const sharedToolsBtn = document.getElementById("shared-tools-btn");
+  const sharedToolsMenu = document.getElementById("shared-tools-menu");
+  const sharedCalculatorBtn = document.getElementById("shared-calculator-btn");
+  const sharedSearchBtn = document.getElementById("shared-search-btn");
+  const sharedTranslateJaBtn = document.getElementById("shared-translate-ja-btn");
+  const sharedTranslateEnBtn = document.getElementById("shared-translate-en-btn");
+  const sharedWebsiteBtn = document.getElementById("shared-website-btn");
+  const sharedTextMemoBtn = document.getElementById("shared-text-memo-btn");
+  const sharedRiddleToolBtn = document.getElementById("shared-riddle-tool-btn");
   const listMenuBtn = document.getElementById("list-menu-btn");
   const listMenu = document.getElementById("list-menu");
   const textListBtn = document.getElementById("text-list-btn");
@@ -340,6 +349,8 @@
   const listFloatingFrames = new Map();
   const floatingPopupWindows = new Map();
   const floatingSpreadsheetWindows = new Map();
+  const floatingGoogleSearchWindows = new Map();
+  const floatingTranslationWindows = new Map();
   let floatingPopupCounter = 0;
   let floatingLinkBoardZ = 2200;
   let textListFloatingFrame = null;
@@ -406,6 +417,7 @@
   let draftBoardDragOffsets = null;
   let linkedBoardLabelDrag = null;
   let contextFrameTabTarget = null;
+  let contextBoardAttentionPoint = null;
   let resizeInfo = null; // { type, index, originX, originY, startW, startH, fontSize }
 
   // テキスト入力用（HTMLの textarea オーバーレイ）
@@ -861,6 +873,18 @@
 
   function isSpreadsheetLink(link) {
     return link?.linkType === "spreadsheet";
+  }
+
+  function isGoogleSearchLink(link) {
+    return link?.linkType === "google-search";
+  }
+
+  function isTranslationLink(link) {
+    return link?.linkType === "translation-en-ja" || link?.linkType === "translation-ja-en";
+  }
+
+  function isEmbeddableLink(link) {
+    return isSpreadsheetLink(link) || link?.linkType === "embed";
   }
 
   function canInteractLink(link) {
@@ -3521,6 +3545,7 @@
   function removeFloatingWindow(frame) {
     closeDetachedFloatingWindow(frame);
     frame?.remove();
+    positionMinimizedSharedWindows();
   }
 
   function popOutFloatingWindow(frame, title) {
@@ -3591,6 +3616,848 @@
     next?.classList.add("active");
   }
 
+  function positionMinimizedSharedWindows() {
+    const gap = 8;
+    const width = 240;
+    const height = 38;
+    const margin = 12;
+    const columns = Math.max(1, Math.floor((window.innerWidth - margin * 2 + gap) / (width + gap)));
+    let autoIndex = 0;
+    Array.from(document.querySelectorAll(".shared-floating-window.minimized")).reverse().forEach((frame) => {
+      if (frame.dataset.sharedUserPositioned === "true") {
+        const rect = frame.getBoundingClientRect();
+        const left = Math.max(0, Math.min(rect.left, window.innerWidth - Math.min(width, window.innerWidth)));
+        const top = Math.max(0, Math.min(rect.top, window.innerHeight - height));
+        frame.style.left = `${left}px`;
+        frame.style.top = `${top}px`;
+        frame.style.right = "auto";
+        frame.style.bottom = "auto";
+        frame._sharedMinimizedPosition = { left, top };
+        return;
+      }
+      const column = autoIndex % columns;
+      const row = Math.floor(autoIndex / columns);
+      autoIndex += 1;
+      frame.style.left = "auto";
+      frame.style.top = "auto";
+      frame.style.right = `${margin + column * (width + gap)}px`;
+      frame.style.bottom = `${margin + row * (height + gap)}px`;
+    });
+  }
+
+  let sharedFloatingContextMenu = null;
+
+  function getSharedFloatingReference(frame) {
+    if (frame?.dataset.memoId) return { itemType: "text", itemId: frame.dataset.memoId };
+    if (frame?.dataset.calculatorId) return { itemType: "text", itemId: frame.dataset.calculatorId };
+    if (frame?.dataset.slideshowId) return { itemType: "image", itemId: frame.dataset.slideshowId };
+    const itemId = frame?.dataset.googleSearchId || frame?.dataset.translationId || frame?.dataset.linkId;
+    return itemId ? { itemType: "link", itemId } : null;
+  }
+
+  function getSharedFloatingTitle(frame) {
+    const options = frame?._sharedRenameOptions;
+    if (typeof options?.getTitle === "function") return String(options.getTitle() || options.fallback || "共有ウィンドウ");
+    return String(frame?.querySelector(".floating-app-window-header span")?.textContent || "共有ウィンドウ");
+  }
+
+  let youtubeIframeApiPromise = null;
+  let vimeoPlayerApiPromise = null;
+
+  function ensureYouTubeIframeApi() {
+    if (window.YT?.Player) return Promise.resolve(window.YT);
+    if (youtubeIframeApiPromise) return youtubeIframeApiPromise;
+    youtubeIframeApiPromise = new Promise((resolve, reject) => {
+      const previousReady = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        previousReady?.();
+        resolve(window.YT);
+      };
+      const script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+      script.onerror = () => reject(new Error("YouTube player API failed to load"));
+      document.head.appendChild(script);
+    });
+    return youtubeIframeApiPromise;
+  }
+
+  function ensureVimeoPlayerApi() {
+    if (window.Vimeo?.Player) return Promise.resolve(window.Vimeo);
+    if (vimeoPlayerApiPromise) return vimeoPlayerApiPromise;
+    vimeoPlayerApiPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://player.vimeo.com/api/player.js";
+      script.async = true;
+      script.onload = () => resolve(window.Vimeo);
+      script.onerror = () => reject(new Error("Vimeo player API failed to load"));
+      document.head.appendChild(script);
+    });
+    return vimeoPlayerApiPromise;
+  }
+
+  function getControllableEmbedUrl(link) {
+    let url;
+    try {
+      url = new URL(link?.url || "", window.location.href);
+    } catch {
+      return link?.url || "";
+    }
+    if (link?.siteName === "YouTube" || /youtube(?:-nocookie)?\.com$/.test(url.hostname)) {
+      url.searchParams.set("enablejsapi", "1");
+      url.searchParams.set("origin", window.location.origin);
+    } else if (link?.siteName === "Vimeo" || url.hostname === "player.vimeo.com") {
+      url.searchParams.set("api", "1");
+    }
+    return url.toString();
+  }
+
+  function isNavigableWebEmbed(link) {
+    if (link?.linkType !== "embed") return false;
+    return !["YouTube", "Vimeo", "Loom", "Spotify", "Video", "Google Slides", "Google Docs", "Google Forms", "Google Drive", "Google Maps"]
+      .includes(link.siteName);
+  }
+
+  function isSharedUrlNavigableLink(link) {
+    return isNavigableWebEmbed(link) || isGoogleSearchLink(link);
+  }
+
+  function getSharedNavigationFrameId(frame) {
+    return frame?.dataset.linkId || frame?.dataset.googleSearchId || "";
+  }
+
+  function getSharedNavigationIframe(frame) {
+    return frame?.querySelector(".google-search-results-frame") || frame?.querySelector("iframe");
+  }
+
+  function normalizeSharedEmbedNavigationUrl(value, currentUrl) {
+    try {
+      let raw = String(value || "").trim();
+      if (/^[\w.-]+\.[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i.test(raw)) raw = `https://${raw}`;
+      const url = new URL(raw, currentUrl || window.location.href);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+      return url.toString();
+    } catch {
+      return "";
+    }
+  }
+
+  function recordSharedEmbedNavigation(frame, url, options = {}) {
+    if (!frame || !url) return;
+    const history = frame._sharedNavigationHistory || [];
+    let index = Number.isInteger(frame._sharedNavigationIndex) ? frame._sharedNavigationIndex : -1;
+    if (options.historyIndex != null) {
+      index = options.historyIndex;
+    } else if (history[index] !== url) {
+      history.splice(index + 1);
+      history.push(url);
+      index = history.length - 1;
+    }
+    frame._sharedNavigationHistory = history;
+    frame._sharedNavigationIndex = index;
+    const back = frame.querySelector(".shared-embed-back");
+    const forward = frame.querySelector(".shared-embed-forward");
+    const link = links.find((item) => item.id === getSharedNavigationFrameId(frame));
+    const editable = !!link && canInteractLink(link);
+    if (back) back.disabled = !editable || index <= 0;
+    if (forward) forward.disabled = !editable || index < 0 || index >= history.length - 1;
+    const input = frame.querySelector(".shared-embed-url-input");
+    const go = frame.querySelector(".shared-embed-go");
+    if (input) input.disabled = !editable;
+    if (go) go.disabled = !editable;
+  }
+
+  function applySharedEmbedNavigation(frame, rawUrl, options = {}) {
+    const id = getSharedNavigationFrameId(frame);
+    const link = links.find((item) => item.id === id);
+    if (!frame || !link || !isSharedUrlNavigableLink(link)) return false;
+    const url = normalizeSharedEmbedNavigationUrl(rawUrl, link.url);
+    if (!url) {
+      if (options.showError !== false) showTransientFooterMessage("http または https のURLを入力してください。", 3500);
+      return false;
+    }
+    const changed = link.url !== url;
+    link.url = url;
+    link.sourceUrl = url;
+    const patch = { url, sourceUrl: url };
+    if (isGoogleSearchLink(link)) {
+      try {
+        const query = new URL(url).searchParams.get("q");
+        if (query != null) {
+          link.description = query;
+          patch.description = query;
+          const searchInput = frame.querySelector('input[name="q"]');
+          if (searchInput && searchInput !== frame.ownerDocument.activeElement) searchInput.value = query;
+        }
+      } catch {
+        // URL validation above already handles invalid input.
+      }
+      frame.querySelector(".google-search-results")?.classList.add("has-results");
+    }
+    frame._sharedNavigationUrl = url;
+    frame._sharedNavigationLoadedUrl = url;
+    const input = frame.querySelector(".shared-embed-url-input");
+    if (input && input.value !== url) input.value = url;
+    recordSharedEmbedNavigation(frame, url, options);
+    const iframe = getSharedNavigationIframe(frame);
+    if (iframe && !options.alreadyLoaded) {
+      frame._sharedNavigationPendingUrl = url;
+      iframe.src = getControllableEmbedUrl(link);
+    }
+    if (changed && options.broadcast !== false) {
+      if (socketConnected) {
+        socket.emit("shared-window:navigate", {
+          boardId,
+          itemId: link.id,
+          url,
+          description: typeof patch.description === "string" ? patch.description : undefined,
+        });
+      }
+      refreshLinkList();
+    }
+    return true;
+  }
+
+  function syncSharedEmbedNavigation(frame, link) {
+    if (!frame || !isSharedUrlNavigableLink(link)) return;
+    const url = normalizeSharedEmbedNavigationUrl(link.url, window.location.href);
+    if (!url) return;
+    const input = frame.querySelector(".shared-embed-url-input");
+    if (input && input !== frame.ownerDocument.activeElement && input.value !== url) input.value = url;
+    if (frame._sharedNavigationUrl !== url) {
+      frame._sharedNavigationUrl = url;
+      recordSharedEmbedNavigation(frame, url);
+    }
+    if (frame._sharedNavigationLoadedUrl === url) return;
+    frame._sharedNavigationLoadedUrl = url;
+    const iframe = getSharedNavigationIframe(frame);
+    if (iframe) {
+      frame._sharedNavigationPendingUrl = url;
+      iframe.src = getControllableEmbedUrl(link);
+    }
+  }
+
+  function createSharedEmbedNavigation(frame, link, iframe) {
+    if (!isSharedUrlNavigableLink(link) || !iframe) return null;
+    const nav = document.createElement("form");
+    nav.className = "shared-embed-navigation";
+    nav.innerHTML = `
+      <button class="shared-embed-back" type="button" title="共有履歴を戻る" aria-label="共有履歴を戻る">←</button>
+      <button class="shared-embed-forward" type="button" title="共有履歴を進む" aria-label="共有履歴を進む">→</button>
+      <input class="shared-embed-url-input" type="text" inputmode="url" aria-label="共有するページURL" title="ここで移動したURLは参加者全員に共有されます" autocomplete="off" spellcheck="false">
+      <button class="shared-embed-go" type="submit">移動・共有</button>
+      <button class="shared-embed-external" type="button" title="現在のページを別ブラウザで開く" aria-label="現在のページを別ブラウザで開く">↗</button>`;
+    const input = nav.querySelector(".shared-embed-url-input");
+    input.value = link.url || "";
+    frame._sharedNavigationUrl = normalizeSharedEmbedNavigationUrl(link.url, window.location.href);
+    recordSharedEmbedNavigation(frame, frame._sharedNavigationUrl);
+    nav.addEventListener("pointerdown", (event) => event.stopPropagation());
+    nav.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const current = links.find((item) => item.id === getSharedNavigationFrameId(frame));
+      if (!current || !canInteractLink(current)) return;
+      applySharedEmbedNavigation(frame, input.value);
+    });
+    const moveHistory = (delta) => {
+      const current = links.find((item) => item.id === getSharedNavigationFrameId(frame));
+      if (!current || !canInteractLink(current)) return;
+      const history = frame._sharedNavigationHistory || [];
+      const index = (frame._sharedNavigationIndex ?? -1) + delta;
+      if (index < 0 || index >= history.length) return;
+      applySharedEmbedNavigation(frame, history[index], { historyIndex: index });
+    };
+    nav.querySelector(".shared-embed-back").addEventListener("click", () => moveHistory(-1));
+    nav.querySelector(".shared-embed-forward").addEventListener("click", () => moveHistory(1));
+    nav.querySelector(".shared-embed-external").addEventListener("click", () => {
+      const current = links.find((item) => item.id === getSharedNavigationFrameId(frame));
+      const url = normalizeSharedEmbedNavigationUrl(current?.url || frame._sharedNavigationUrl, window.location.href);
+      if (url) window.open(url, "_blank", "noopener");
+    });
+
+    const detectSameOriginNavigation = () => {
+      if (!frame.isConnected || !iframe.contentWindow) return;
+      if (frame._sharedNavigationPendingUrl) return;
+      const current = links.find((item) => item.id === getSharedNavigationFrameId(frame));
+      if (!current || !canInteractLink(current)) return;
+      try {
+        const actualUrl = iframe.contentWindow.location.href;
+        if (!actualUrl || actualUrl === "about:blank" || actualUrl === frame._sharedNavigationUrl) return;
+        applySharedEmbedNavigation(frame, actualUrl, { alreadyLoaded: true });
+      } catch {
+        // Cross-origin iframe URLs cannot be inspected by the parent page.
+      }
+    };
+    iframe.addEventListener("load", () => {
+      frame._sharedNavigationPendingUrl = "";
+      detectSameOriginNavigation();
+    });
+    frame._sharedNavigationTimer = window.setInterval(detectSameOriginNavigation, 700);
+    return nav;
+  }
+
+  function getYouTubePlayerConfig(link) {
+    try {
+      const url = new URL(link?.url || link?.sourceUrl || "", window.location.href);
+      const parts = url.pathname.split("/").filter(Boolean);
+      const embedIndex = parts.indexOf("embed");
+      const videoId = embedIndex >= 0 ? parts[embedIndex + 1] : url.searchParams.get("v");
+      if (!videoId) return null;
+      return {
+        videoId,
+        start: Math.max(0, Number(url.searchParams.get("start")) || 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function postYouTubePlayerCommand(frame, func, args = []) {
+    const iframe = frame?.querySelector("iframe");
+    if (!iframe?.contentWindow) return false;
+    iframe.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*");
+    return true;
+  }
+
+  function installYouTubePlayerBridge(frame, iframe, link) {
+    if (!frame || !iframe || frame._youtubeBridgeCleanup) return;
+    frame._sharedMediaKind = "youtube";
+    const listenerId = `whiteboard-${link.id}`;
+    const startListening = () => {
+      if (!iframe.contentWindow) return;
+      iframe.contentWindow.postMessage(JSON.stringify({ event: "listening", id: listenerId }), "*");
+    };
+    const onMessage = (event) => {
+      if (event.source !== iframe.contentWindow) return;
+      if (!/^https:\/\/(?:www\.)?youtube(?:-nocookie)?\.com$/.test(event.origin)) return;
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (!message || typeof message !== "object") return;
+      const info = message.info && typeof message.info === "object" ? message.info : {};
+      const previous = frame._youtubeBridgeState || {};
+      const currentTime = Number.isFinite(info.currentTime) ? info.currentTime : previous.currentTime;
+      const playerState = Number.isFinite(info.playerState) ? info.playerState : previous.playerState;
+      frame._youtubeBridgeState = { currentTime, playerState };
+    };
+    window.addEventListener("message", onMessage);
+    iframe.addEventListener("load", () => {
+      startListening();
+      setTimeout(startListening, 400);
+      setTimeout(startListening, 1200);
+    });
+    startListening();
+    setTimeout(startListening, 400);
+    frame._youtubeBridgeCleanup = () => window.removeEventListener("message", onMessage);
+  }
+
+  function initializeSharedEmbedController(frame, link, embedElement) {
+    if (!frame || !embedElement) return;
+    if (link?.siteName === "YouTube") {
+      const config = getYouTubePlayerConfig(link);
+      if (!config) return;
+      frame._sharedMediaKind = "youtube";
+      if (!embedElement.id) embedElement.id = `youtube-player-${String(link.id).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      installYouTubePlayerBridge(frame, embedElement, link);
+      frame._sharedMediaReady = ensureYouTubeIframeApi()
+        .then((YT) => new Promise((resolve) => {
+          const player = new YT.Player(embedElement.id, {
+            events: {
+              onReady: (event) => {
+                frame._youtubePlayer = event.target;
+                const generatedIframe = event.target.getIframe?.();
+                if (generatedIframe) {
+                  generatedIframe.className = "floating-spreadsheet-content";
+                  generatedIframe.title = link.title || "YouTube 動画";
+                  generatedIframe.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media";
+                  generatedIframe.allowFullscreen = true;
+                  installYouTubePlayerBridge(frame, generatedIframe, link);
+                }
+                resolve(event.target);
+              },
+            },
+          });
+          frame._youtubePlayer = player;
+        }))
+        .then((player) => {
+          if (frame._pendingSharedAttentionState) {
+            setTimeout(() => applySharedFloatingViewState(frame, frame._pendingSharedAttentionState), 0);
+          }
+          return player;
+        })
+        .catch(() => null);
+    } else if (link?.siteName === "Vimeo") {
+      const iframe = embedElement;
+      frame._sharedMediaReady = ensureVimeoPlayerApi()
+        .then((Vimeo) => {
+          const player = new Vimeo.Player(iframe);
+          frame._vimeoPlayer = player;
+          return player.ready().then(() => player);
+        })
+        .then((player) => {
+          if (frame._pendingSharedAttentionState) {
+            setTimeout(() => applySharedFloatingViewState(frame, frame._pendingSharedAttentionState), 0);
+          }
+          return player;
+        })
+        .catch(() => null);
+    }
+  }
+
+  async function captureSharedFloatingViewState(frame) {
+    const state = {};
+    const ready = frame?._sharedMediaReady;
+    if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 1200))]);
+    if (frame?._sharedMediaKind === "youtube" && !frame._youtubePlayer?.getCurrentTime && !Number.isFinite(frame._youtubeBridgeState?.currentTime)) {
+      postYouTubePlayerCommand(frame, "getCurrentTime");
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+    try {
+      if (frame?._youtubePlayer?.getCurrentTime) {
+        state.media = "youtube";
+        state.currentTime = Number(frame._youtubePlayer.getCurrentTime()) || 0;
+        state.playing = frame._youtubePlayer.getPlayerState?.() === 1;
+      } else if (Number.isFinite(frame?._youtubeBridgeState?.currentTime)) {
+        state.media = "youtube";
+        state.currentTime = frame._youtubeBridgeState.currentTime;
+        state.playing = frame._youtubeBridgeState.playerState === 1;
+      } else if (frame?._vimeoPlayer) {
+        state.media = "vimeo";
+        state.currentTime = Number(await frame._vimeoPlayer.getCurrentTime()) || 0;
+        state.playing = !(await frame._vimeoPlayer.getPaused());
+      }
+    } catch {}
+    const iframe = frame?.querySelector("iframe");
+    if (iframe) {
+      try {
+        const contentWindow = iframe.contentWindow;
+        state.scrollX = Number(contentWindow.scrollX) || 0;
+        state.scrollY = Number(contentWindow.scrollY) || 0;
+        const video = contentWindow.document.querySelector("video");
+        if (video) {
+          state.media = "html5";
+          state.currentTime = Number(video.currentTime) || 0;
+          state.playing = !video.paused;
+        }
+      } catch {}
+    }
+    return Object.keys(state).length ? state : null;
+  }
+
+  async function applySharedFloatingViewState(frame, state) {
+    if (!frame || !state) return;
+    frame._pendingSharedAttentionState = state;
+    let mediaApplied = !state.media;
+    const ready = frame._sharedMediaReady;
+    if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 1800))]);
+    try {
+      if (state.media === "youtube" && frame._youtubePlayer?.seekTo) {
+        frame._youtubePlayer.seekTo(Number(state.currentTime) || 0, true);
+        if (state.playing) frame._youtubePlayer.playVideo?.();
+        else frame._youtubePlayer.pauseVideo?.();
+        mediaApplied = true;
+      } else if (state.media === "youtube" && frame._sharedMediaKind === "youtube") {
+        postYouTubePlayerCommand(frame, "seekTo", [Number(state.currentTime) || 0, true]);
+        postYouTubePlayerCommand(frame, state.playing ? "playVideo" : "pauseVideo");
+        mediaApplied = true;
+      } else if (state.media === "vimeo" && frame._vimeoPlayer) {
+        await frame._vimeoPlayer.setCurrentTime(Number(state.currentTime) || 0);
+        if (state.playing) await frame._vimeoPlayer.play().catch(() => {});
+        else await frame._vimeoPlayer.pause();
+        mediaApplied = true;
+      }
+    } catch {}
+    const iframe = frame.querySelector("iframe");
+    if (iframe) {
+      try {
+        const contentWindow = iframe.contentWindow;
+        if (Number.isFinite(state.scrollX) && Number.isFinite(state.scrollY)) {
+          contentWindow.scrollTo(state.scrollX, state.scrollY);
+        }
+        if (state.media === "html5") {
+          const video = contentWindow.document.querySelector("video");
+          if (video) {
+            video.currentTime = Number(state.currentTime) || 0;
+            if (state.playing) await video.play().catch(() => {});
+            else video.pause();
+            mediaApplied = true;
+          }
+        }
+      } catch {}
+    }
+    if (mediaApplied) frame._pendingSharedAttentionState = null;
+  }
+
+  function restoreSharedFloatingWindow(frame) {
+    if (!frame?.classList.contains("shared-maximized")) return;
+    frame.classList.remove("shared-maximized");
+    const rect = frame._sharedBeforeMaximizeRect;
+    if (rect) {
+      frame.style.left = `${rect.left}px`;
+      frame.style.top = `${rect.top}px`;
+      frame.style.width = `${rect.width}px`;
+      frame.style.height = `${rect.height}px`;
+      frame.style.right = "auto";
+      frame.style.bottom = "auto";
+      frame.style.resize = rect.resize || "both";
+    }
+  }
+
+  function showSharedFloatingWindowForAttention(frame) {
+    if (!frame) return;
+    restoreSharedFloatingWindow(frame);
+    frame._setSharedMinimized?.(false);
+    const rect = frame.getBoundingClientRect();
+    const margin = 12;
+    const availableWidth = Math.max(280, window.innerWidth - margin * 2);
+    const availableHeight = Math.max(220, window.innerHeight - margin * 2);
+    const width = Math.min(rect.width, availableWidth);
+    const height = Math.min(rect.height, availableHeight);
+    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    const top = Math.max(margin, Math.min(rect.top, window.innerHeight - height - margin));
+    if (width !== rect.width) frame.style.width = `${width}px`;
+    if (height !== rect.height) frame.style.height = `${height}px`;
+    frame.style.left = `${left}px`;
+    frame.style.top = `${top}px`;
+    frame.style.right = "auto";
+    frame.style.bottom = "auto";
+    if (!frame.style.resize || frame.style.resize === "none") {
+      frame.style.resize = "both";
+    }
+    activateFloatingAppWindow(frame);
+  }
+
+  async function notifyEveryoneToViewSharedWindow(frame) {
+    const reference = getSharedFloatingReference(frame);
+    if (!reference || !socketConnected) {
+      showTransientFooterMessage("共有ウィンドウの通知を送信できませんでした。", 3500);
+      return;
+    }
+    const viewState = await captureSharedFloatingViewState(frame);
+    socket.timeout(5000).emit(
+      "shared-window:attention",
+      { boardId, ...reference, title: getSharedFloatingTitle(frame), viewState },
+      (error, response) => {
+        showTransientFooterMessage(
+          !error && response?.ok ? "みんなに表示のお願いを送りました。" : "通知を送信できませんでした。",
+          3500
+        );
+      }
+    );
+  }
+
+  function closeSharedFloatingContextMenu(menu = sharedFloatingContextMenu) {
+    if (!menu) return;
+    menu._cleanupSharedContextMenu?.();
+    menu.remove();
+    if (sharedFloatingContextMenu === menu) sharedFloatingContextMenu = null;
+  }
+
+  function showSharedFloatingContextMenu(event, frame) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSharedFloatingContextMenu();
+    const menu = frame.ownerDocument.createElement("div");
+    menu.className = "shared-floating-context-menu";
+    const renameOptions = frame._sharedRenameOptions;
+    if (renameOptions) {
+      const rename = frame.ownerDocument.createElement("button");
+      rename.type = "button";
+      rename.textContent = "名称を変更";
+      rename.addEventListener("click", () => {
+        closeSharedFloatingContextMenu(menu);
+        const currentTitle = String(renameOptions.getTitle() || renameOptions.fallback || "共有ウィンドウ").trim();
+        const nextValue = (frame.ownerDocument.defaultView || window).prompt("ウィンドウの名称を入力してください。", currentTitle);
+        if (nextValue == null) return;
+        renameOptions.setTitle(nextValue.trim().slice(0, 80) || renameOptions.fallback || "共有ウィンドウ");
+      });
+      menu.appendChild(rename);
+    }
+    const browserLink = frame.dataset.linkId
+      ? links.find((item) => item.id === frame.dataset.linkId && isEmbeddableLink(item))
+      : null;
+    if (browserLink) {
+      const openInBrowser = frame.ownerDocument.createElement("button");
+      openInBrowser.type = "button";
+      openInBrowser.textContent = "ブラウザで開く";
+      openInBrowser.addEventListener("click", () => {
+        closeSharedFloatingContextMenu(menu);
+        const current = links.find((item) => item.id === browserLink.id && isEmbeddableLink(item));
+        const url = current ? getSpreadsheetSourceUrl(current) || current.url : "";
+        if (!url) return;
+        (frame.ownerDocument.defaultView || window).open(url, "_blank", "noopener,noreferrer");
+      });
+      menu.appendChild(openInBrowser);
+    }
+    const attention = frame.ownerDocument.createElement("button");
+    attention.type = "button";
+    attention.className = "shared-floating-attention-action";
+    attention.textContent = "📣 みんな見て！";
+    attention.addEventListener("click", () => {
+      closeSharedFloatingContextMenu(menu);
+      notifyEveryoneToViewSharedWindow(frame);
+    });
+    menu.appendChild(attention);
+    frame.ownerDocument.body.appendChild(menu);
+    sharedFloatingContextMenu = menu;
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+    const rect = menu.getBoundingClientRect();
+    const view = frame.ownerDocument.defaultView || window;
+    menu.style.left = `${Math.max(6, Math.min(event.clientX, view.innerWidth - rect.width - 6))}px`;
+    menu.style.top = `${Math.max(6, Math.min(event.clientY, view.innerHeight - rect.height - 6))}px`;
+    const ownerDocument = frame.ownerDocument;
+    const closeOnOutsidePointer = (pointerEvent) => {
+      if (!menu.contains(pointerEvent.target)) closeSharedFloatingContextMenu(menu);
+    };
+    const closeOnEscape = (keyEvent) => {
+      if (keyEvent.key === "Escape") closeSharedFloatingContextMenu(menu);
+    };
+    const closeMenu = () => closeSharedFloatingContextMenu(menu);
+    menu.addEventListener("mouseleave", closeMenu);
+    ownerDocument.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    ownerDocument.addEventListener("keydown", closeOnEscape, true);
+    ownerDocument.addEventListener("scroll", closeMenu, true);
+    view.addEventListener("blur", closeMenu);
+    menu._cleanupSharedContextMenu = () => {
+      menu.removeEventListener("mouseleave", closeMenu);
+      ownerDocument.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      ownerDocument.removeEventListener("keydown", closeOnEscape, true);
+      ownerDocument.removeEventListener("scroll", closeMenu, true);
+      view.removeEventListener("blur", closeMenu);
+      menu._cleanupSharedContextMenu = null;
+    };
+  }
+
+  function showSharedWindowAttentionNotification(data) {
+    if (!data?.itemType || !data?.itemId) return;
+    let container = document.querySelector(".shared-window-notifications");
+    if (!container) {
+      container = document.createElement("div");
+      container.className = "shared-window-notifications";
+      container.setAttribute("aria-live", "polite");
+      document.body.appendChild(container);
+    }
+    const banner = document.createElement("div");
+    banner.className = "shared-window-notification";
+    const sender = String(data.user || "参加者");
+    const title = String(data.title || "共有ウィンドウ");
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "shared-window-notification-main";
+    openButton.innerHTML = `<span class="shared-window-notification-icon" aria-hidden="true">📣</span><span><strong></strong><small></small></span>`;
+    openButton.querySelector("strong").textContent = `${sender}さんから「みんな見て！」`;
+    openButton.querySelector("small").textContent = `${title}を最大化する`;
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "shared-window-notification-close";
+    closeButton.textContent = "×";
+    closeButton.setAttribute("aria-label", "通知を閉じる");
+    const removeBanner = () => {
+      clearTimeout(banner._removeTimer);
+      banner.remove();
+      if (!container.children.length) container.remove();
+    };
+    openButton.addEventListener("click", () => {
+      const frame = openSharedFloatingItem(data.itemType, data.itemId);
+      if (!frame) {
+        showTransientFooterMessage("対象の共有ウィンドウを開けませんでした。", 3500);
+        removeBanner();
+        return;
+      }
+      showSharedFloatingWindowForAttention(frame);
+      applySharedFloatingViewState(frame, data.viewState);
+      removeBanner();
+    });
+    closeButton.addEventListener("click", removeBanner);
+    banner.append(openButton, closeButton);
+    container.appendChild(banner);
+    banner._removeTimer = setTimeout(removeBanner, 15000);
+  }
+
+  function centerBoardOnWorldPoint(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    offsetX = canvas.width / 2 - x * scale;
+    offsetY = canvas.height / 2 - y * scale;
+    redraw();
+  }
+
+  function showBoardPointAttentionNotification(data) {
+    if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
+    let container = document.querySelector(".shared-window-notifications");
+    if (!container) {
+      container = document.createElement("div");
+      container.className = "shared-window-notifications";
+      container.setAttribute("aria-live", "polite");
+      document.body.appendChild(container);
+    }
+    const banner = document.createElement("div");
+    banner.className = "shared-window-notification board-point-notification";
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "shared-window-notification-main";
+    openButton.innerHTML = `<span class="shared-window-notification-icon" aria-hidden="true">📍</span><span><strong></strong><small>クリックしてその場所を中央表示</small></span>`;
+    openButton.querySelector("strong").textContent = `${String(data.user || "参加者")}さんから「みんな見て！」`;
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "shared-window-notification-close";
+    closeButton.textContent = "×";
+    closeButton.setAttribute("aria-label", "通知を閉じる");
+    const removeBanner = () => {
+      clearTimeout(banner._removeTimer);
+      banner.remove();
+      if (!container.children.length) container.remove();
+    };
+    openButton.addEventListener("click", () => {
+      centerBoardOnWorldPoint(data.x, data.y);
+      removeBanner();
+    });
+    closeButton.addEventListener("click", removeBanner);
+    banner.append(openButton, closeButton);
+    container.appendChild(banner);
+    banner._removeTimer = setTimeout(removeBanner, 15000);
+  }
+
+  function notifyEveryoneToViewBoardPoint(point) {
+    if (!point || !socketConnected) {
+      showTransientFooterMessage("場所の通知を送信できませんでした。", 3500);
+      return;
+    }
+    socket.timeout(5000).emit(
+      "board-point:attention",
+      { boardId, x: point.x, y: point.y },
+      (error, response) => {
+        showTransientFooterMessage(
+          !error && response?.ok ? "この場所をみんなに知らせました。" : "場所の通知を送信できませんでした。",
+          3500
+        );
+      }
+    );
+  }
+
+  function configureSharedFloatingWindow(frame, actions, options = {}) {
+    if (!frame || !actions) return;
+    frame.classList.add("shared-floating-window");
+    frame.addEventListener("contextmenu", (event) => {
+      if (event.target.closest("input, textarea, [contenteditable='true'], iframe")) return;
+      showSharedFloatingContextMenu(event, frame);
+    });
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "shared-floating-toggle";
+    const setMinimized = (minimized) => {
+      if (minimized && frame.classList.contains("shared-maximized")) restoreSharedFloatingWindow(frame);
+      if (minimized === frame.classList.contains("minimized")) return;
+      if (minimized) {
+        const rect = frame.getBoundingClientRect();
+        frame._sharedExpandedRect = {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+        };
+        frame.classList.add("minimized");
+        frame.classList.remove("active");
+        toggle.textContent = "□";
+        toggle.title = "大きくする";
+        toggle.setAttribute("aria-label", "ウィンドウを大きくする");
+        if (frame._sharedMinimizedPosition) {
+          frame.dataset.sharedUserPositioned = "true";
+          frame.style.left = `${frame._sharedMinimizedPosition.left}px`;
+          frame.style.top = `${frame._sharedMinimizedPosition.top}px`;
+          frame.style.right = "auto";
+          frame.style.bottom = "auto";
+        } else {
+          delete frame.dataset.sharedUserPositioned;
+        }
+      } else {
+        frame.classList.remove("minimized");
+        const rect = frame._sharedExpandedRect;
+        if (rect) {
+          frame.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 288))}px`;
+          frame.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - 228))}px`;
+          frame.style.width = `${rect.width}px`;
+          frame.style.height = `${rect.height}px`;
+        }
+        frame.style.right = "auto";
+        frame.style.bottom = "auto";
+        toggle.textContent = "−";
+        toggle.title = "最小化";
+        toggle.setAttribute("aria-label", "ウィンドウを最小化");
+        activateFloatingAppWindow(frame);
+      }
+      positionMinimizedSharedWindows();
+    };
+    frame._setSharedMinimized = setMinimized;
+    toggle.addEventListener("click", () => setMinimized(!frame.classList.contains("minimized")));
+    actions.appendChild(toggle);
+    if (typeof options.onDelete === "function") {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "shared-floating-delete";
+      remove.textContent = "×";
+      remove.title = "共有ツールを全ユーザーから閉じる";
+      remove.setAttribute("aria-label", "共有ツールを全ユーザーから閉じる");
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const targetWindow = frame.ownerDocument.defaultView || window;
+        const title = getSharedFloatingTitle(frame);
+        const confirmed = targetWindow.confirm(
+          `「${title}」を閉じると、全ユーザーの画面からこの共有ツールが削除されます。\n本当に閉じますか？`
+        );
+        if (confirmed) options.onDelete();
+      });
+      actions.appendChild(remove);
+    }
+    if (options.minimized) {
+      setMinimized(true);
+    } else {
+      toggle.textContent = "−";
+      toggle.title = "最小化";
+      toggle.setAttribute("aria-label", "ウィンドウを最小化");
+    }
+  }
+
+  function enableSharedWindowRename(header, options = {}) {
+    if (!header || typeof options.getTitle !== "function" || typeof options.setTitle !== "function") return;
+    const frame = header.closest(".shared-floating-window");
+    if (frame) frame._sharedRenameOptions = options;
+    header.title = "右クリックでメニューを表示";
+    header.addEventListener("contextmenu", (event) => {
+      if (event.target.closest("button")) return;
+      showSharedFloatingContextMenu(event, frame || header.closest(".floating-app-window"));
+    });
+  }
+
+  function removeSharedItem(type, id) {
+    const list = type === "text" ? texts : type === "image" ? images : links;
+    const item = list.find((entry) => entry.id === id);
+    const allowed = type === "text"
+      ? canDeleteText(item)
+      : type === "image"
+      ? canInteractImage(item)
+      : canInteractLink(item);
+    if (!item || !allowed) return;
+    removeAllById(list, id);
+    if (socketConnected) socket.emit("item:remove", { boardId, type, id });
+    if (type === "text") {
+      getFloatingTextMemoWindow(id)?._closeFloating?.();
+      getFloatingCalculatorWindow(id)?._closeFloating?.();
+    } else if (type === "image") {
+      getFloatingSlideshowWindow(id)?._closeFloating?.();
+    } else {
+      floatingSpreadsheetWindows.get(id)?._closeFloating?.();
+      floatingGoogleSearchWindows.get(id)?._closeFloating?.();
+      floatingTranslationWindows.get(id)?._closeFloating?.();
+    }
+    refreshTextList();
+    refreshImageList();
+    refreshLinkList();
+    redraw();
+  }
+
+  window.addEventListener("resize", positionMinimizedSharedWindows);
+
   function getSharedToolbarState() {
     return {
       tool: pendingTextMode ? `text:${pendingTextMode}` : currentTool,
@@ -3617,6 +4484,7 @@
     frame.addEventListener("pointerdown", () => activateFloatingAppWindow(frame));
     handle.addEventListener("pointerdown", (event) => {
       if (event.target.closest("button, input, label, a")) return;
+      restoreSharedFloatingWindow(frame);
       const rect = frame.getBoundingClientRect();
       drag = { pointerId: event.pointerId, dx: event.clientX - rect.left, dy: event.clientY - rect.top };
       handle.setPointerCapture?.(event.pointerId);
@@ -3625,8 +4493,11 @@
     });
     handle.addEventListener("pointermove", (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
-      const minLeft = Math.min(0, 80 - frame.offsetWidth);
-      const maxLeft = Math.max(minLeft, window.innerWidth - 80);
+      const minimized = frame.classList.contains("minimized");
+      const minLeft = minimized ? 0 : Math.min(0, 80 - frame.offsetWidth);
+      const maxLeft = minimized
+        ? Math.max(0, window.innerWidth - frame.offsetWidth)
+        : Math.max(minLeft, window.innerWidth - 80);
       const maxTop = Math.max(0, window.innerHeight - 38);
       frame.style.left = `${Math.min(Math.max(minLeft, event.clientX - drag.dx), maxLeft)}px`;
       frame.style.top = `${Math.min(Math.max(0, event.clientY - drag.dy), maxTop)}px`;
@@ -3637,6 +4508,11 @@
       if (!drag || drag.pointerId !== event.pointerId) return;
       handle.releasePointerCapture?.(event.pointerId);
       drag = null;
+      if (frame.classList.contains("minimized")) {
+        const rect = frame.getBoundingClientRect();
+        frame.dataset.sharedUserPositioned = "true";
+        frame._sharedMinimizedPosition = { left: rect.left, top: rect.top };
+      }
     };
     handle.addEventListener("pointerup", endDrag);
     handle.addEventListener("pointercancel", endDrag);
@@ -4034,7 +4910,7 @@
   }
 
   function shouldRefreshLinkPreview(link) {
-    if (!link?.url || isSpreadsheetLink(link)) return false;
+    if (!link?.url || isEmbeddableLink(link) || isGoogleSearchLink(link) || isTranslationLink(link)) return false;
     return !link.image || !link.title || link.title === link.url;
   }
 
@@ -6057,6 +6933,7 @@
     if (frameImg.frameId) return;
     const frameBounds = getImageBoundsWorld(frameImg);
     if (!frameBounds) return;
+    const frameContentBounds = getFrameViewportWorld(frameImg) || frameBounds;
     const adoptLayer = options.adoptLayer || null;
     const contentTab = frameImg.frameTabs?.[0]?.id || "tab-1";
     const nestedFrameIds = new Set(
@@ -6130,7 +7007,7 @@
       emitTextAdd(clone);
     };
     const copyImageIntoFrame = (source, patch) => {
-      if (!source) return;
+      if (!source) return null;
       const clone = {
         ...source,
         id: genId(),
@@ -6147,7 +7024,10 @@
       images.push(clone);
       registerUser(clone.user);
       emitImageAdd(clone);
+      return clone;
     };
+
+    const copiedSourceImageIds = new Set();
 
     strokes.slice().forEach((s, index) => {
       if (belongsToNestedFrame({ type: "stroke", index })) return;
@@ -6165,12 +7045,27 @@
       if (!img || img.id === frameImg.id) return;
       if (img.frameId === frameImg.id) return;
       if (belongsToNestedFrame({ type: "image", index })) return;
-      const bounds = getBoundsForFrameContentCandidate({ type: "image", index });
-      if (!bounds || !rectContainsRect(frameBounds, bounds)) return;
-      copyImageIntoFrame(img, {
+      const bounds = isFrameContainer(img)
+        ? getBoundsForFrameContentCandidate({ type: "image", index })
+        : getRotatedImageVisualBoundsWorld(img);
+      const containmentBounds = isFrameContainer(img) ? frameBounds : frameContentBounds;
+      if (!bounds || !rectContainsRect(containmentBounds, bounds)) return;
+      const clone = copyImageIntoFrame(img, {
         frameId: frameImg.id,
         frameTab: isFrameContainer(img) ? contentTab : "background",
       });
+      if (clone && !isFrameContainer(img) && !isBoardOverlayImage(img)) {
+        copiedSourceImageIds.add(img.id);
+      }
+    });
+    copiedSourceImageIds.forEach((id) => {
+      const index = findIndexById(images, id);
+      if (index < 0) return;
+      const removed = images.splice(index, 1)[0];
+      invalidatePendingImageLoad(removed?.id);
+      if (removed && socketConnected) {
+        socket.emit("item:remove", { boardId, type: "image", id });
+      }
     });
     draftStrokes.slice().forEach((s, index) => {
       if (belongsToNestedFrame({ type: "draft", index })) return;
@@ -7400,6 +8295,10 @@
     pendingImageLoadTokens.clear();
     floatingSpreadsheetWindows.forEach((frame) => frame?._closeFloating?.());
     floatingSpreadsheetWindows.clear();
+    floatingGoogleSearchWindows.forEach((frame) => frame?._closeFloating?.());
+    floatingGoogleSearchWindows.clear();
+    floatingTranslationWindows.forEach((frame) => frame?._closeFloating?.());
+    floatingTranslationWindows.clear();
     images.forEach((imgObj) => {
       if (imgObj?.id && imgObj?.src && imgObj?.img) {
         imageElementCache.set(imgObj.id, { src: imgObj.src, img: imgObj.img });
@@ -7539,7 +8438,7 @@
       favicon: linkData.favicon || "",
       siteName: linkData.siteName || "",
       width: linkData.width || 320,
-      height: linkData.height || 150,
+      height: isGoogleSearchLink(linkData) && (linkData.height || 0) < 360 ? 620 : linkData.height || 150,
       layer: linkData.layer || "user",
       createdAt: linkData.createdAt || Date.now(),
     });
@@ -7562,6 +8461,7 @@
     else {
       restoreFloatingDraftBoards();
     }
+    restoreSharedFloatingWindows();
   });
 
   socket.on("stroke:add", (stroke) => {
@@ -7570,14 +8470,46 @@
 
   socket.on("text:add", (text) => {
     addTextFromNetwork(text);
+    if (text?.textMemo || text?.calculator) openSharedFloatingItem("text", text.id, { minimized: true });
   });
 
   socket.on("image:add", (img) => {
     addImageFromNetwork(img);
+    if (isSlideshowImage(img)) openSharedFloatingItem("image", img.id, { minimized: true });
   });
 
   socket.on("link:add", (link) => {
     addLinkFromNetwork(link);
+    if (isEmbeddableLink(link) || isGoogleSearchLink(link) || isTranslationLink(link)) {
+      openSharedFloatingItem("link", link.id, { minimized: true });
+    }
+  });
+
+  socket.on("shared-window:navigate", ({ itemId, url, description }) => {
+    const link = links.find((item) => item.id === itemId);
+    if (!link || !isSharedUrlNavigableLink(link)) return;
+    const nextUrl = normalizeSharedEmbedNavigationUrl(url, link.url);
+    if (!nextUrl) return;
+    link.url = nextUrl;
+    link.sourceUrl = nextUrl;
+    if (typeof description === "string") link.description = description;
+    const frame = isGoogleSearchLink(link)
+      ? floatingGoogleSearchWindows.get(itemId)
+      : floatingSpreadsheetWindows.get(itemId);
+    if (frame) {
+      applySharedEmbedNavigation(frame, nextUrl, { broadcast: false });
+      if (isGoogleSearchLink(link)) syncFloatingGoogleSearchWindow(frame, link);
+    }
+    refreshLinkList();
+    redraw();
+  });
+
+  socket.on("shared-window:attention", (data) => {
+    showSharedWindowAttentionNotification(data);
+  });
+
+  socket.on("board-point:attention", (data) => {
+    showBoardPointAttentionNotification(data);
   });
 
   socket.on("draft:init", (drafts) => {
@@ -7797,11 +8729,14 @@
       removeAllById(images, id);
       invalidatePendingImageLoad(id);
       refreshImageList();
+      getFloatingSlideshowWindow(id)?._closeFloating?.();
       const draftFrame = getAllFloatingWindows()
         .find((item) => item.matches(".floating-draft-board") && item.dataset.boardId === id);
       draftFrame?._closeFloating?.();
     } else if (type === "link") {
       floatingSpreadsheetWindows.get(id)?._closeFloating?.();
+      floatingGoogleSearchWindows.get(id)?._closeFloating?.();
+      floatingTranslationWindows.get(id)?._closeFloating?.();
       removeAllById(links, id);
       refreshLinkList();
     }
@@ -7837,6 +8772,7 @@
         refreshTextList();
       } else if (type === "image") {
         refreshImageList();
+        syncFloatingSlideshowWindows();
       } else if (type === "link") {
         refreshLinkList();
       }
@@ -8777,7 +9713,171 @@
       imageName: imgObj.imageName,
     });
     refreshImageList();
+    syncFloatingSlideshowWindows();
     redraw();
+  }
+
+  function getFloatingSlideshowWindow(id) {
+    return getAllFloatingWindows().find(
+      (frame) => frame.classList.contains("floating-slideshow") && frame.dataset.slideshowId === id
+    ) || null;
+  }
+
+  function syncFloatingSlideshowWindow(frame, slideshow) {
+    if (!frame || !isSlideshowImage(slideshow)) return;
+    const index = Math.max(0, Math.min(Number(slideshow.slideshowIndex) || 0, slideshow.slideshowSlides.length - 1));
+    const slide = slideshow.slideshowSlides[index];
+    const title = frame.querySelector(".floating-slideshow-title");
+    if (title) title.textContent = slideshow.imageName || "スライドショー";
+    const count = frame.querySelector(".floating-slideshow-count");
+    if (count) count.textContent = `${index + 1} / ${slideshow.slideshowSlides.length}`;
+    const image = frame.querySelector(".floating-slideshow-image");
+    if (image && image.getAttribute("src") !== slide?.src) {
+      image.src = slide?.src || "";
+      image.alt = slide?.name || `スライド ${index + 1}`;
+    }
+    const strip = frame.querySelector(".floating-slideshow-thumbnails");
+    const signature = slideshow.slideshowSlides.map((item) => item.src).join("\n");
+    if (strip && strip.dataset.signature !== signature) {
+      strip.dataset.signature = signature;
+      strip.innerHTML = "";
+      slideshow.slideshowSlides.forEach((item, slideIndex) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "floating-slideshow-thumbnail";
+        button.dataset.index = String(slideIndex);
+        button.title = item.name || `スライド ${slideIndex + 1}`;
+        const thumbnail = document.createElement("img");
+        thumbnail.src = item.src;
+        thumbnail.alt = "";
+        button.appendChild(thumbnail);
+        button.addEventListener("click", () => {
+          const current = images.find((entry) => entry.id === slideshow.id);
+          if (current && canInteractImage(current)) setBoardSlideshowIndex(current, slideIndex);
+        });
+        strip.appendChild(button);
+      });
+    }
+    strip?.querySelectorAll(".floating-slideshow-thumbnail").forEach((button) => {
+      button.classList.toggle("active", Number(button.dataset.index) === index);
+    });
+    frame.querySelectorAll(".floating-slideshow-nav, .floating-slideshow-thumbnail")
+      .forEach((button) => { button.disabled = !canInteractImage(slideshow); });
+  }
+
+  function syncFloatingSlideshowWindows() {
+    getAllFloatingWindows()
+      .filter((frame) => frame.classList.contains("floating-slideshow"))
+      .forEach((frame) => {
+        const slideshow = images.find((image) => image.id === frame.dataset.slideshowId && isSlideshowImage(image));
+        if (!slideshow) frame._closeFloating?.();
+        else syncFloatingSlideshowWindow(frame, slideshow);
+      });
+  }
+
+  function openFloatingSlideshow(slideshow, options = {}) {
+    if (!isSlideshowImage(slideshow)) return null;
+    const existing = getFloatingSlideshowWindow(slideshow.id);
+    if (existing) {
+      if (!options.minimized) existing._setSharedMinimized?.(false);
+      return existing;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-slideshow";
+    frame.dataset.slideshowId = slideshow.id;
+    frame.style.width = "720px";
+    frame.style.height = "520px";
+    const count = getAllFloatingWindows().filter((item) => item.classList.contains("floating-slideshow")).length;
+    frame.style.left = `${Math.min(90 + count * 28, Math.max(8, window.innerWidth - 730))}px`;
+    frame.style.top = `${Math.min(70 + count * 28, Math.max(8, window.innerHeight - 530))}px`;
+
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.className = "floating-slideshow-title";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    header.append(title, actions);
+    const content = document.createElement("div");
+    content.className = "floating-slideshow-content";
+    content.innerHTML = `
+      <div class="floating-slideshow-stage">
+        <button class="floating-slideshow-nav previous" type="button" aria-label="前のスライド">‹</button>
+        <img class="floating-slideshow-image" alt="">
+        <button class="floating-slideshow-nav next" type="button" aria-label="次のスライド">›</button>
+        <span class="floating-slideshow-count"></span>
+      </div>
+      <div class="floating-slideshow-thumbnails"></div>`;
+    frame.append(header, content);
+    document.body.appendChild(frame);
+    content.querySelector(".previous").addEventListener("click", () => {
+      const current = images.find((entry) => entry.id === slideshow.id);
+      if (current && canInteractImage(current)) moveBoardSlideshow(current, -1);
+    });
+    content.querySelector(".next").addEventListener("click", () => {
+      const current = images.find((entry) => entry.id === slideshow.id);
+      if (current && canInteractImage(current)) moveBoardSlideshow(current, 1);
+    });
+    enableFloatingWindowDrag(frame, header);
+    const closeFrame = () => {
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    configureSharedFloatingWindow(frame, actions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("image", slideshow.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: "スライドショー",
+      getTitle: () => images.find((item) => item.id === slideshow.id)?.imageName || "スライドショー",
+      setTitle: (nextTitle) => {
+        const current = images.find((item) => item.id === slideshow.id);
+        if (!current || !canInteractImage(current)) return;
+        current.imageName = nextTitle;
+        emitItemPatch("image", current, { imageName: nextTitle });
+        syncFloatingSlideshowWindow(frame, current);
+        refreshImageList();
+      },
+    });
+    activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
+    syncFloatingSlideshowWindow(frame, slideshow);
+    return frame;
+  }
+
+  function openSharedFloatingItem(type, id, options = {}) {
+    if (draftBoardViewId || linkBoardView || isDetachedBoardView) return null;
+    if (type === "text") {
+      const text = texts.find((item) => item.id === id);
+      if (text?.textMemo) return openFloatingTextMemo(text, options);
+      if (text?.calculator) return openFloatingCalculator(text, options);
+    }
+    if (type === "image") return openFloatingSlideshow(images.find((item) => item.id === id), options);
+    if (type === "link") {
+      const link = links.find((item) => item.id === id);
+      if (isGoogleSearchLink(link)) return openFloatingGoogleSearch(link, options);
+      if (isTranslationLink(link)) return openFloatingTranslation(link, options);
+      return openFloatingSpreadsheet(link, options);
+    }
+    return null;
+  }
+
+  function restoreSharedFloatingWindows() {
+    if (draftBoardViewId || linkBoardView || isDetachedBoardView) return;
+    texts.forEach((text) => {
+      if (text.textMemo || text.calculator) openSharedFloatingItem("text", text.id, { minimized: true });
+    });
+    images.forEach((image) => {
+      if (isSlideshowImage(image)) openSharedFloatingItem("image", image.id, { minimized: true });
+    });
+    links.forEach((link) => {
+      if (isEmbeddableLink(link) || isGoogleSearchLink(link) || isTranslationLink(link)) {
+        openSharedFloatingItem("link", link.id, { minimized: true });
+      }
+    });
+    positionMinimizedSharedWindows();
   }
 
   async function syncLinkedDriveSlideshows() {
@@ -9372,6 +10472,7 @@
       });
     });
     images.forEach((img, idx) => {
+      if (isSlideshowImage(img)) return;
       if (!isImageVisible(img)) return;
       if (!isFrameMemberVisible(img, { type: "image", index: idx })) return;
       if (!isImageNearViewport(img)) return;
@@ -9392,6 +10493,7 @@
       }
     });
     texts.forEach((t, idx) => {
+      if (t.textMemo || t.calculator) return;
       if (!isTextVisible(t)) return;
       const item = { type: "text", index: idx };
       if (!isFramedObjectNearViewport(t, item)) return;
@@ -9404,6 +10506,7 @@
       });
     });
     links.forEach((link, idx) => {
+      if (isEmbeddableLink(link)) return;
       if (!isLinkVisible(link)) return;
       if (!isWorldRectNearViewport(getLinkBoundsWorld(link), 512)) return;
       combined.push({
@@ -9542,6 +10645,7 @@
       try {
       if (item.type === "image") {
         const imgObj = images[item.index];
+        if (isSlideshowImage(imgObj)) continue;
         if (isBoardOverlayImage(imgObj)) {
           drawBoardOverlayImage(imgObj);
           if (selected && selected.type === "image" && selected.index === item.index) {
@@ -9563,9 +10667,7 @@
         const h = imgObj.height * scale;
         const rotation = normalizeRotation(imgObj.rotation || 0);
         try {
-          if (isSlideshowImage(imgObj)) {
-            drawBoardSlideshowFrame(imgObj, renderImg);
-          } else if (imgObj.tagType) {
+          if (imgObj.tagType) {
             drawFrameTagImage(ctx, imgObj, p, w, h, rotation);
           } else {
             ctx.save();
@@ -9771,7 +10873,7 @@
       } else if (item.type === "link") {
         const link = links[item.index];
         if (!link) continue;
-        if (isSpreadsheetLink(link)) continue;
+        if (isEmbeddableLink(link) || isGoogleSearchLink(link) || isTranslationLink(link)) continue;
         drawLinkCard(link);
         if (selected && selected.type === "link" && selected.index === item.index) {
           drawSelectionBoundsWorld(getLinkBoundsWorld(link), 0);
@@ -9915,6 +11017,7 @@
     drawWritingLabels();
     syncSpreadsheetElements();
     syncTextMemoElements();
+    syncFloatingSlideshowWindows();
     frameRenderCache = null;
     emitCurrentViewPresence();
   }
@@ -14220,13 +15323,12 @@
           imgObj.frameTab = parentMembership.frameTab;
         }
         images.push(imgObj);
-        const frameIndex = images.length - 1;
         registerUser(currentUser);
         refreshImageList();
         emitImageAdd(imgObj);
         addCroppedImageBackgroundsToNewFrame(imgObj, frameContentOptions);
         assignExistingObjectsToNewFrame(imgObj, frameContentOptions);
-        selected = { type: "image", index: frameIndex };
+        selected = { type: "image", index: findIndexById(images, imgObj.id) };
         multiSelection = null;
         updateFooterByState();
         redraw();
@@ -14536,7 +15638,42 @@
     if (listMenu) listMenu.classList.add("hidden");
   }
 
+  function closeSharedToolsMenu(delay = 0) {
+    if (!sharedToolsMenu) return;
+    const doClose = () => {
+      sharedToolsMenu.classList.add("hidden");
+      sharedToolsBtn?.classList.remove("active");
+      sharedToolsBtn?.setAttribute("aria-expanded", "false");
+    };
+    if (sharedToolsMenu._closeTimer) clearTimeout(sharedToolsMenu._closeTimer);
+    sharedToolsMenu._closeTimer = null;
+    if (delay > 0) sharedToolsMenu._closeTimer = setTimeout(doClose, delay);
+    else doClose();
+  }
+
+  function openSharedToolsMenu() {
+    if (!sharedToolsMenu || !sharedToolsBtn || isCreationLockedLayer()) return;
+    if (sharedToolsMenu._closeTimer) {
+      clearTimeout(sharedToolsMenu._closeTimer);
+      sharedToolsMenu._closeTimer = null;
+    }
+    closeInsertMenu();
+    closeListMenu();
+    closeOtherMenu();
+    if (textToolMenu) textToolMenu.classList.add("hidden");
+    sharedToolsMenu.classList.remove("hidden");
+    sharedToolsBtn.classList.add("active");
+    sharedToolsBtn.setAttribute("aria-expanded", "true");
+  }
+
+  function toggleSharedToolsMenu() {
+    if (!sharedToolsMenu) return;
+    if (sharedToolsMenu.classList.contains("hidden")) openSharedToolsMenu();
+    else closeSharedToolsMenu();
+  }
+
   function openListMenu() {
+    closeSharedToolsMenu();
     if (listMenu) listMenu.classList.remove("hidden");
   }
 
@@ -14586,6 +15723,7 @@
       if (textToolMenu) textToolMenu.classList.add("hidden");
       closeListMenu();
       closeInsertMenu();
+      closeSharedToolsMenu();
       otherMenu.classList.remove("hidden");
     }
   }
@@ -15267,6 +16405,11 @@
       insertMenuBtn.classList.toggle("active", isInsertMode);
       insertMenuBtn.title = creationLocked ? "このレイヤーでは挿入は使えません" : "挿入";
     }
+    if (sharedToolsBtn) {
+      sharedToolsBtn.disabled = creationLocked;
+      sharedToolsBtn.title = creationLocked ? "このレイヤーでは共有ツールを追加できません" : "共有ツール";
+      if (creationLocked) closeSharedToolsMenu();
+    }
     if (otherMenuBtn) {
       otherMenuBtn.classList.toggle("active", isFill);
     }
@@ -15509,6 +16652,7 @@
       if (textToolMenu) textToolMenu.classList.add("hidden");
       closeListMenu();
       closeOtherMenu();
+      closeSharedToolsMenu();
       lassoCopyToolMenu.classList.remove("hidden");
     };
     const closeLassoCopyToolMenu = () => {
@@ -15712,6 +16856,7 @@
       contextMenu.classList.add("hidden");
     }
     contextFrameTabTarget = null;
+    contextBoardAttentionPoint = null;
   }
 
   function positionContextMenu(x, y) {
@@ -15734,6 +16879,8 @@
   function showContextMenu(x, y, options = {}) {
     if (!contextMenu) return;
     contextFrameTabTarget = options.frameTabTarget || null;
+    const canvasRect = canvas.getBoundingClientRect();
+    contextBoardAttentionPoint = screenToWorld(x - canvasRect.left, y - canvasRect.top);
     if (options.lassoCopySelection) {
       const isFreehandLasso = lassoCopySelection?.mode === "freehand";
       contextMenu.querySelectorAll("button").forEach((btn) => {
@@ -15779,12 +16926,13 @@
     const spreadsheetOnlySelection =
       selectionItems.length === 1 &&
       selectionItems[0].type === "link" &&
-      isSpreadsheetLink(links[selectionItems[0].index]);
+      isEmbeddableLink(links[selectionItems[0].index]);
     const spreadsheetSelectionEditable =
       spreadsheetOnlySelection && canInteractLink(links[selectionItems[0].index]);
 
     const isActionVisible = (action) => {
       if (action === "open-drive") return true;
+      if (action === "board-attention") return true;
       if (!hasAny) return false;
       if (spreadsheetOnlySelection && !spreadsheetSelectionEditable) {
         return action === "open-spreadsheet-window" || action === "open-spreadsheet-source";
@@ -15821,6 +16969,11 @@
       const action = btn.getAttribute("data-action");
       btn.classList.toggle("hidden", !isActionVisible(action));
     });
+    const sourceButton = contextMenu.querySelector('button[data-action="open-spreadsheet-source"]');
+    if (sourceButton && spreadsheetOnlySelection) {
+      const link = links[selectionItems[0].index];
+      sourceButton.textContent = isSpreadsheetLink(link) ? "スプレッドシートで開く" : "元のページで開く";
+    }
     if (draftBoardOnlySelection) {
       contextMenu.querySelectorAll("button").forEach((btn) => btn.classList.add("hidden"));
       const publishBtn = contextMenu.querySelector('button[data-action="publish-draft-board"]');
@@ -15847,6 +17000,8 @@
       const action = btn.getAttribute("data-action");
       if (action === "open-drive") {
         openDrive();
+      } else if (action === "board-attention") {
+        notifyEveryoneToViewBoardPoint(contextBoardAttentionPoint);
       } else if (action === "apply-draft") {
         applyDraftSelectionToPublic();
       } else if (action === "delete") {
@@ -16140,6 +17295,7 @@
       if (isCreationLockedLayer()) return;
       closeListMenu();
       closeOtherMenu();
+      closeSharedToolsMenu();
       if (textToolMenu) textToolMenu.classList.remove("hidden");
     });
     textToolBtn.addEventListener("click", (e) => {
@@ -16162,6 +17318,45 @@
       setPendingTextMode(btn.getAttribute("data-text-mode"));
     });
   }
+
+  if (sharedToolsBtn && sharedToolsMenu) {
+    sharedToolsBtn.addEventListener("mouseenter", openSharedToolsMenu);
+    sharedToolsBtn.addEventListener("mouseleave", () => closeSharedToolsMenu(800));
+    sharedToolsBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSharedToolsMenu();
+    });
+    sharedToolsMenu.addEventListener("mouseenter", openSharedToolsMenu);
+    sharedToolsMenu.addEventListener("mouseleave", () => closeSharedToolsMenu(800));
+  }
+  sharedCalculatorBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createCalculator();
+  });
+  sharedSearchBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createGoogleSearch();
+  });
+  sharedTranslateJaBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createTranslation("translation-en-ja");
+  });
+  sharedTranslateEnBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createTranslation("translation-ja-en");
+  });
+  sharedWebsiteBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createGenericEmbed();
+  });
+  sharedTextMemoBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createTextMemo();
+  });
+  sharedRiddleToolBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    createRiddleTool();
+  });
 
   if (listMenuBtn) {
     listMenuBtn.addEventListener("mouseenter", () => {
@@ -16240,6 +17435,10 @@
       listMenu &&
       listMenuBtn &&
       (listMenu.contains(target) || listMenuBtn.contains(target));
+    const insideSharedTools =
+      sharedToolsMenu &&
+      sharedToolsBtn &&
+      (sharedToolsMenu.contains(target) || sharedToolsBtn.contains(target));
     const insideTextTool =
       textToolMenu &&
       textToolBtn &&
@@ -16252,6 +17451,7 @@
     if (!insideInsert) closeInsertMenu();
     if (!insideOther) closeOtherMenu();
     if (!insideList) closeListMenu();
+    if (!insideSharedTools) closeSharedToolsMenu();
     if (!insideWatchUsers) closeWatchUsersMenu();
     if (!insideTextTool && textToolMenu) textToolMenu.classList.add("hidden");
   });
@@ -17374,6 +18574,28 @@
     });
   }
 
+  async function createRiddleTool() {
+    if (!requireUser() || !canCreateOnCurrentLayer()) return;
+    if (!templates.length) await loadTemplates();
+    const preferredNames = ["五十音表.png", "アルファベット.png", "干支.png", "星座.png"];
+    const selectedNames = preferredNames.filter((name) => templates.includes(name));
+    templates.forEach((name) => {
+      if (selectedNames.length < 4 && !selectedNames.includes(name)) selectedNames.push(name);
+    });
+    if (selectedNames.length < 4) {
+      window.alert("謎解きツールに必要なテンプレ画像4種を読み込めませんでした。");
+      return;
+    }
+    const sourceImages = selectedNames.slice(0, 4).map((name) => ({
+      src: `/templates/${encodeURIComponent(name)}`,
+      name: name.replace(/\.png$/i, ""),
+    }));
+    await insertDriveSlideshowObject(sourceImages, 0, {
+      title: "謎解きツール",
+      successMessage: "謎解きツールを共有ウィンドウで開きました。",
+    });
+  }
+
   async function insertDriveFolderSlideshow() {
     const folder = driveContextFolder ? { ...driveContextFolder } : null;
     hideDriveFolderMenu();
@@ -17437,7 +18659,7 @@
         order: orderCounter++,
         user: currentUser,
         rotation: 0,
-        imageName: `スライドショー（${assets.length}枚）`,
+        imageName: options.title || `スライドショー（${assets.length}枚）`,
         imageListOrder: bumpImageListOrderCounter(),
         slideshowSlides: assets.map(({ src, name, driveImageId }) => ({ src, name, driveImageId })),
         slideshowIndex: activeIndex,
@@ -17449,6 +18671,7 @@
       registerUser(currentUser);
       refreshImageList();
       emitImageAdd(imgObj);
+      openFloatingSlideshow(imgObj);
       selected = { type: "image", index: images.length - 1 };
       multiSelection = null;
       resetShapeMode();
@@ -17456,7 +18679,10 @@
       closeDrive();
       updateFooterByState();
       redraw();
-      showTransientFooterMessage(`${assets.length}枚のスライドショーをボードに配置しました。`, 3500);
+      showTransientFooterMessage(
+        options.successMessage || `${assets.length}枚の共有スライドショーを開きました。`,
+        3500
+      );
     } catch (err) {
       console.error(err);
       setDriveStatus("スライドショーの作成に失敗しました");
@@ -17614,6 +18840,917 @@
     return parsed.toString();
   }
 
+  function getIframeSource(rawValue) {
+    const value = String(rawValue || "").trim();
+    const iframeMatch = value.match(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/i);
+    return (iframeMatch ? iframeMatch[1] : value).replace(/&amp;/g, "&").trim();
+  }
+
+  function getYouTubeEmbedUrl(parsed) {
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    let videoId = "";
+    if (host === "youtu.be") videoId = parsed.pathname.split("/").filter(Boolean)[0] || "";
+    if (["youtube.com", "m.youtube.com", "music.youtube.com"].includes(host)) {
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      videoId = parsed.searchParams.get("v") || (["embed", "shorts", "live"].includes(parts[0]) ? parts[1] : "") || "";
+    }
+    if (!/^[\w-]{6,}$/.test(videoId)) return "";
+    const embed = new URL(`https://www.youtube-nocookie.com/embed/${videoId}`);
+    embed.searchParams.set("enablejsapi", "1");
+    embed.searchParams.set("origin", window.location.origin);
+    const start = parsed.searchParams.get("start") || parsed.searchParams.get("t");
+    if (start && /^\d+$/.test(start)) embed.searchParams.set("start", start);
+    return embed.toString();
+  }
+
+  function normalizeGenericEmbed(rawValue) {
+    const sourceValue = getIframeSource(rawValue);
+    let parsed;
+    try {
+      parsed = new URL(sourceValue);
+    } catch {
+      return null;
+    }
+    if (parsed.protocol !== "https:") return null;
+
+    const sourceUrl = parsed.toString();
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const youtubeUrl = getYouTubeEmbedUrl(parsed);
+    if (youtubeUrl) {
+      return { url: youtubeUrl, sourceUrl, title: "YouTube 動画", siteName: "YouTube", width: 720, height: 445 };
+    }
+
+    if (host === "vimeo.com" || host === "player.vimeo.com") {
+      const match = parsed.pathname.match(/(?:video\/)?(\d+)/);
+      if (match) {
+        return {
+          url: `https://player.vimeo.com/video/${match[1]}?api=1`,
+          sourceUrl,
+          title: "Vimeo 動画",
+          siteName: "Vimeo",
+          width: 720,
+          height: 445,
+        };
+      }
+    }
+
+    if (host === "loom.com") {
+      const match = parsed.pathname.match(/\/(?:share|embed)\/([\w-]+)/);
+      if (match) {
+        return {
+          url: `https://www.loom.com/embed/${match[1]}`,
+          sourceUrl,
+          title: "Loom 動画",
+          siteName: "Loom",
+          width: 720,
+          height: 445,
+        };
+      }
+    }
+
+    if (host === "open.spotify.com") {
+      const match = parsed.pathname.match(/^\/(?:embed\/)?(track|episode|show|album|playlist)\/([\w-]+)/);
+      if (match) {
+        return {
+          url: `https://open.spotify.com/embed/${match[1]}/${match[2]}`,
+          sourceUrl,
+          title: "Spotify",
+          siteName: "Spotify",
+          width: 640,
+          height: match[1] === "track" || match[1] === "episode" ? 232 : 445,
+        };
+      }
+    }
+
+    if (host === "docs.google.com") {
+      if (parsed.pathname.includes("/spreadsheets/")) {
+        const url = normalizeSpreadsheetEmbedUrl(sourceValue);
+        if (!url) return null;
+        return {
+          url,
+          sourceUrl: getSpreadsheetSourceUrlFromInput(sourceValue, url),
+          title: "スプレッドシート",
+          siteName: "Google Sheets",
+          width: 720,
+          height: 460,
+        };
+      }
+      if (parsed.pathname.includes("/presentation/")) {
+        parsed.pathname = parsed.pathname.replace(/\/(?:edit|preview)(?:\/|$).*/, "/embed");
+        parsed.search = "";
+        return { url: parsed.toString(), sourceUrl, title: "Google スライド", siteName: "Google Slides", width: 720, height: 445 };
+      }
+      if (parsed.pathname.includes("/document/")) {
+        parsed.pathname = parsed.pathname.replace(/\/(?:edit|view)(?:\/|$).*/, "/preview");
+        parsed.search = "";
+        return { url: parsed.toString(), sourceUrl, title: "Google ドキュメント", siteName: "Google Docs", width: 720, height: 460 };
+      }
+      if (parsed.pathname.includes("/forms/")) {
+        parsed.pathname = parsed.pathname.replace(/\/edit(?:\/|$).*/, "/viewform");
+        parsed.searchParams.set("embedded", "true");
+        return { url: parsed.toString(), sourceUrl, title: "Google フォーム", siteName: "Google Forms", width: 640, height: 560 };
+      }
+    }
+
+    if (host === "drive.google.com") {
+      const match = parsed.pathname.match(/\/file\/d\/([^/]+)/);
+      if (match) {
+        return {
+          url: `https://drive.google.com/file/d/${match[1]}/preview`,
+          sourceUrl,
+          title: "Google Drive ファイル",
+          siteName: "Google Drive",
+          width: 720,
+          height: 460,
+        };
+      }
+    }
+
+    if (host.includes("google.") && parsed.pathname.includes("/maps/embed")) {
+      return { url: parsed.toString(), sourceUrl, title: "Google マップ", siteName: "Google Maps", width: 720, height: 445 };
+    }
+
+    const isVideo = /\.(?:mp4|webm|ogg)(?:$|\?)/i.test(parsed.pathname + parsed.search);
+    return {
+      url: parsed.toString(),
+      sourceUrl,
+      title: isVideo ? "動画" : parsed.hostname,
+      siteName: isVideo ? "Video" : parsed.hostname,
+      width: 720,
+      height: isVideo ? 445 : 460,
+    };
+  }
+
+  function createGoogleSearch() {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image" || activeLayer === "draft") return;
+    ensureSnapshotForAction();
+    const width = 520;
+    const height = 620;
+    const center = getCanvasCenterWorld();
+    const link = {
+      id: genId(),
+      url: "https://www.google.com/search",
+      title: "Google検索",
+      description: "",
+      image: "",
+      favicon: "",
+      siteName: "Google",
+      linkType: "google-search",
+      sourceUrl: "https://www.google.com/search",
+      spreadsheetScale: 1,
+      spreadsheetResizeMode: "fixed",
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      width,
+      height,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : activeLayer === "admin" ? "admin" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    emitLinkAdd(link);
+    const floatingSearch = openFloatingGoogleSearch(link);
+    refreshLinkList();
+    selected = { type: "link", index: links.length - 1 };
+    multiSelection = null;
+    switchToSelectTool();
+    redraw();
+    closeInsertMenu();
+    requestAnimationFrame(() => {
+      floatingSearch?.querySelector('input[name="q"]')?.focus();
+    });
+    showTransientFooterMessage("共有Google検索を開きました。", 3000);
+  }
+
+  function createGoogleSearchElement(link) {
+    const element = document.createElement("article");
+    element.className = "google-search-object";
+    element.dataset.googleSearchId = link.id;
+    element.innerHTML = `
+      <header class="google-search-header">
+        <span class="google-search-mark" aria-hidden="true">G</span>
+        <span class="google-search-title">Google検索</span>
+      </header>
+      <form class="google-search-form" action="https://www.google.com/search" method="get">
+        <label class="google-search-field">
+          <span class="google-search-icon" aria-hidden="true"></span>
+          <span class="sr-only">Googleで検索</span>
+          <input type="search" name="q" placeholder="Googleで検索" autocomplete="off" required />
+        </label>
+        <button type="submit" class="google-search-submit">検索</button>
+      </form>
+      <div class="google-search-results">
+        <iframe class="google-search-results-frame" title="Google検索結果"></iframe>
+        <div class="google-search-results-placeholder">検索結果がここに表示されます</div>
+      </div>
+      <div class="google-search-resize" title="枠の大きさを変更"></div>`;
+    spreadsheetLayer.appendChild(element);
+
+    const getLink = () => links.find((item) => item.id === element.dataset.googleSearchId);
+    const header = element.querySelector(".google-search-header");
+    const handle = element.querySelector(".google-search-resize");
+    const form = element.querySelector("form");
+    const searchInput = form.querySelector('input[name="q"]');
+    const resultsFrame = element.querySelector("iframe");
+    resultsFrame.referrerPolicy = "strict-origin-when-cross-origin";
+    resultsFrame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const query = searchInput.value.trim();
+      if (!query) {
+        searchInput.focus();
+        return;
+      }
+      const searchUrl = new URL("https://www.google.com/search");
+      searchUrl.searchParams.set("q", query);
+      // 通常の検索URLは iframe を拒否するため、Googleの埋め込み表示フラグを付ける。
+      searchUrl.searchParams.set("igu", "1");
+      resultsFrame.src = searchUrl.toString();
+      element.classList.add("has-results");
+      showTransientFooterMessage("Googleの検索結果をフォームの下に表示します。", 2500);
+    });
+
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      selected = { type: "link", index: findIndexById(links, current.id) };
+      multiSelection = null;
+      drag = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: current.x, y: current.y };
+      header.setPointerCapture?.(event.pointerId);
+      element.classList.add("dragging");
+      event.preventDefault();
+      redraw();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.x = drag.x + (event.clientX - drag.clientX) / scale;
+      current.y = drag.y + (event.clientY - drag.clientY) / scale;
+      syncGoogleSearchElement(element, current);
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      element.classList.remove("dragging");
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { x: current.x, y: current.y });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    let resizing = null;
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      selected = { type: "link", index: findIndexById(links, current.id) };
+      multiSelection = null;
+      resizing = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        width: current.width,
+        height: current.height,
+      };
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.width = Math.max(340, resizing.width + (event.clientX - resizing.clientX) / scale);
+      current.height = Math.max(360, resizing.height + (event.clientY - resizing.clientY) / scale);
+      syncGoogleSearchElement(element, current);
+    });
+    const finishResize = (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      resizing = null;
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { width: current.width, height: current.height });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    handle.addEventListener("pointerup", finishResize);
+    handle.addEventListener("pointercancel", finishResize);
+    return element;
+  }
+
+  function syncGoogleSearchElement(element, link) {
+    const point = worldToScreen(link.x, link.y);
+    element.style.left = `${point.x}px`;
+    element.style.top = `${point.y}px`;
+    element.style.width = `${(link.width || 520) * scale}px`;
+    element.style.height = `${(link.height || 620) * scale}px`;
+    element.style.setProperty("--google-search-scale", String(scale));
+    element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
+    element.classList.toggle("read-only", !canInteractLink(link));
+  }
+
+  function syncGoogleSearchElements() {
+    if (!spreadsheetLayer) return;
+    spreadsheetLayer.querySelectorAll(".google-search-object").forEach((element) => element.remove());
+    syncFloatingGoogleSearchWindows();
+  }
+
+  function getGoogleSearchResultsUrl(query) {
+    const searchUrl = new URL("https://www.google.com/search");
+    searchUrl.searchParams.set("q", query);
+    searchUrl.searchParams.set("igu", "1");
+    searchUrl.searchParams.set("newwindow", "1");
+    return searchUrl.toString();
+  }
+
+  function getGoogleSearchSharedUrl(link) {
+    const query = String(link?.description || "").trim();
+    const currentUrl = normalizeSharedEmbedNavigationUrl(link?.url, "https://www.google.com/search");
+    if (!query) return currentUrl || "";
+    try {
+      const parsed = new URL(currentUrl);
+      if (parsed.hostname === "www.google.com" && parsed.pathname === "/search") {
+        if (!parsed.searchParams.get("q")) parsed.searchParams.set("q", query);
+        parsed.searchParams.set("igu", "1");
+        parsed.searchParams.set("newwindow", "1");
+        return parsed.toString();
+      }
+      return parsed.toString();
+    } catch {
+      // Older Google search items only stored the query.
+    }
+    return getGoogleSearchResultsUrl(query);
+  }
+
+  function syncFloatingGoogleSearchWindow(frame, link) {
+    if (!frame || !isGoogleSearchLink(link)) return;
+    const title = frame.querySelector(".floating-google-search-title");
+    if (title) title.textContent = link.title || "Google検索";
+    const input = frame.querySelector('input[name="q"]');
+    const query = String(link.description || "");
+    if (input && input !== frame.ownerDocument.activeElement && input.value !== query) input.value = query;
+    const results = frame.querySelector(".google-search-results");
+    const iframe = frame.querySelector(".google-search-results-frame");
+    const sharedUrl = getGoogleSearchSharedUrl(link);
+    if (sharedUrl && iframe) syncSharedEmbedNavigation(frame, { ...link, url: sharedUrl });
+    results?.classList.toggle("has-results", !!sharedUrl && (sharedUrl !== "https://www.google.com/search" || !!query));
+    const editable = canInteractLink(link);
+    if (input) input.disabled = !editable;
+    const submit = frame.querySelector(".google-search-submit");
+    if (submit) submit.disabled = !editable;
+    recordSharedEmbedNavigation(frame, frame._sharedNavigationUrl);
+  }
+
+  function syncFloatingGoogleSearchWindows() {
+    floatingGoogleSearchWindows.forEach((frame, id) => {
+      const link = links.find((item) => item.id === id && isGoogleSearchLink(item));
+      if (!link) frame._closeFloating?.();
+      else syncFloatingGoogleSearchWindow(frame, link);
+    });
+  }
+
+  function openFloatingGoogleSearch(link, options = {}) {
+    if (!isGoogleSearchLink(link)) return null;
+    const existing = floatingGoogleSearchWindows.get(link.id);
+    if (existing) {
+      if (!options.minimized) existing._setSharedMinimized?.(false);
+      return existing;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-google-search";
+    frame.dataset.googleSearchId = link.id;
+    frame.style.width = "600px";
+    frame.style.height = "640px";
+    frame.style.left = `${Math.max(12, Math.min(150, window.innerWidth - 610))}px`;
+    frame.style.top = `${Math.max(12, Math.min(80, window.innerHeight - 650))}px`;
+    frame.style.setProperty("--google-search-scale", "1");
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.className = "floating-google-search-title";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    header.append(title, actions);
+    const content = document.createElement("div");
+    content.className = "floating-google-search-content";
+    content.innerHTML = `
+      <form class="google-search-form" action="https://www.google.com/search" method="get">
+        <label class="google-search-field">
+          <span class="google-search-icon" aria-hidden="true"></span>
+          <span class="sr-only">Googleで検索</span>
+          <input type="search" name="q" placeholder="Googleで検索" autocomplete="off" required>
+        </label>
+        <button type="submit" class="google-search-submit">検索</button>
+      </form>
+      <div class="google-search-results">
+        <iframe class="google-search-results-frame" title="Google検索結果"></iframe>
+        <div class="google-search-results-placeholder">検索結果がここに表示されます</div>
+      </div>`;
+    frame.append(header, content);
+    document.body.appendChild(frame);
+    floatingGoogleSearchWindows.set(link.id, frame);
+    const resultsFrame = content.querySelector(".google-search-results-frame");
+    resultsFrame.referrerPolicy = "strict-origin-when-cross-origin";
+    resultsFrame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox");
+    const sharedUrl = getGoogleSearchSharedUrl(link);
+    const navigation = createSharedEmbedNavigation(frame, { ...link, url: sharedUrl }, resultsFrame);
+    if (navigation) {
+      content.insertBefore(navigation, content.querySelector(".google-search-results"));
+      recordSharedEmbedNavigation(frame, frame._sharedNavigationUrl);
+    }
+    const form = content.querySelector("form");
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const current = links.find((item) => item.id === link.id);
+      const query = form.elements.q.value.trim();
+      if (!current || !canInteractLink(current) || !query) return;
+      const searchUrl = getGoogleSearchResultsUrl(query);
+      applySharedEmbedNavigation(frame, searchUrl);
+      frame.querySelector(".google-search-results")?.classList.add("has-results");
+    });
+    enableFloatingWindowDrag(frame, header);
+    const closeFrame = () => {
+      if (frame._sharedNavigationTimer) window.clearInterval(frame._sharedNavigationTimer);
+      if (floatingGoogleSearchWindows.get(link.id) === frame) floatingGoogleSearchWindows.delete(link.id);
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    configureSharedFloatingWindow(frame, actions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("link", link.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: "Google検索",
+      getTitle: () => links.find((item) => item.id === link.id)?.title || "Google検索",
+      setTitle: (nextTitle) => {
+        const current = links.find((item) => item.id === link.id);
+        if (!current || !canInteractLink(current)) return;
+        current.title = nextTitle;
+        emitItemPatch("link", current, { title: nextTitle });
+        syncFloatingGoogleSearchWindow(frame, current);
+      },
+    });
+    activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
+    syncFloatingGoogleSearchWindow(frame, link);
+    return frame;
+  }
+
+  function getSharedTranslationConfig(link) {
+    const enToJa = link?.linkType !== "translation-ja-en";
+    return enToJa
+      ? { source: "en", target: "ja", sourceLabel: "English", targetLabel: "日本語", defaultTitle: "英語 → 日本語 翻訳" }
+      : { source: "ja", target: "en", sourceLabel: "日本語", targetLabel: "English", defaultTitle: "日本語 → 英語 翻訳" };
+  }
+
+  function createTranslation(linkType = "translation-en-ja") {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image" || activeLayer === "draft") return;
+    const type = linkType === "translation-ja-en" ? linkType : "translation-en-ja";
+    const config = getSharedTranslationConfig({ linkType: type });
+    const center = getCanvasCenterWorld();
+    const link = {
+      id: genId(),
+      url: "/api/translate",
+      title: config.defaultTitle,
+      description: "",
+      image: "",
+      favicon: "",
+      siteName: `${config.sourceLabel} → ${config.targetLabel}`,
+      linkType: type,
+      sourceUrl: "",
+      x: center.x - 260,
+      y: center.y - 230,
+      width: 520,
+      height: 460,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : activeLayer === "admin" ? "admin" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    emitLinkAdd(link);
+    const frame = openFloatingTranslation(link);
+    refreshLinkList();
+    closeInsertMenu();
+    switchToSelectTool();
+    redraw();
+    requestAnimationFrame(() => frame?.querySelector(".floating-translation-source")?.focus());
+    showTransientFooterMessage("共有翻訳ウィンドウを開きました。", 3000);
+  }
+
+  function syncFloatingTranslationWindow(frame, link) {
+    if (!frame || !isTranslationLink(link)) return;
+    const config = getSharedTranslationConfig(link);
+    const title = frame.querySelector(".floating-translation-title");
+    if (title) title.textContent = link.title || config.defaultTitle;
+    const direction = frame.querySelector(".floating-translation-direction");
+    if (direction) direction.textContent = `${config.sourceLabel} → ${config.targetLabel}`;
+    const source = frame.querySelector(".floating-translation-source");
+    const result = frame.querySelector(".floating-translation-result");
+    if (source && source !== frame.ownerDocument.activeElement && source.value !== (link.description || "")) {
+      source.value = link.description || "";
+    }
+    if (result && result.value !== (link.sourceUrl || "")) result.value = link.sourceUrl || "";
+    const editable = canInteractLink(link);
+    if (source) source.disabled = !editable;
+    const submit = frame.querySelector(".floating-translation-submit");
+    if (submit && !frame.classList.contains("translating")) submit.disabled = !editable;
+  }
+
+  function syncFloatingTranslationWindows() {
+    floatingTranslationWindows.forEach((frame, id) => {
+      const link = links.find((item) => item.id === id && isTranslationLink(item));
+      if (!link) frame._closeFloating?.();
+      else syncFloatingTranslationWindow(frame, link);
+    });
+  }
+
+  function openFloatingTranslation(link, options = {}) {
+    if (!isTranslationLink(link)) return null;
+    const existing = floatingTranslationWindows.get(link.id);
+    if (existing) {
+      if (!options.minimized) existing._setSharedMinimized?.(false);
+      return existing;
+    }
+    const config = getSharedTranslationConfig(link);
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-translation";
+    frame.dataset.translationId = link.id;
+    frame.style.width = "560px";
+    frame.style.height = "520px";
+    frame.style.left = `${Math.max(12, Math.min(170, window.innerWidth - 570))}px`;
+    frame.style.top = `${Math.max(12, Math.min(90, window.innerHeight - 530))}px`;
+    const header = document.createElement("header");
+    header.className = "floating-app-window-header";
+    const title = document.createElement("span");
+    title.className = "floating-translation-title";
+    const actions = document.createElement("div");
+    actions.className = "floating-app-window-actions";
+    header.append(title, actions);
+    const content = document.createElement("form");
+    content.className = "floating-translation-content";
+    content.innerHTML = `
+      <div class="floating-translation-direction"></div>
+      <label class="floating-translation-field">
+        <span>${config.sourceLabel}</span>
+        <textarea class="floating-translation-source" maxlength="500" placeholder="翻訳する文章を入力"></textarea>
+      </label>
+      <button class="floating-translation-submit" type="submit">翻訳する</button>
+      <label class="floating-translation-field result">
+        <span>${config.targetLabel}</span>
+        <textarea class="floating-translation-result" readonly placeholder="翻訳結果"></textarea>
+      </label>
+      <div class="floating-translation-status" role="status" aria-live="polite"></div>`;
+    frame.append(header, content);
+    document.body.appendChild(frame);
+    floatingTranslationWindows.set(link.id, frame);
+    const source = content.querySelector(".floating-translation-source");
+    const status = content.querySelector(".floating-translation-status");
+    source.addEventListener("input", () => {
+      const bytes = new TextEncoder().encode(source.value).length;
+      status.textContent = `${bytes} / 500バイト`;
+      clearTimeout(frame._translationInputTimer);
+      frame._translationInputTimer = setTimeout(() => {
+        const current = links.find((item) => item.id === link.id);
+        if (!current || !canInteractLink(current)) return;
+        current.description = source.value;
+        emitItemPatch("link", current, { description: current.description });
+      }, 350);
+    });
+    content.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const current = links.find((item) => item.id === link.id);
+      const text = source.value.trim();
+      if (!current || !canInteractLink(current) || !text || frame.classList.contains("translating")) return;
+      if (new TextEncoder().encode(text).length > 500) {
+        status.textContent = "翻訳する文章を500バイト以内にしてください。";
+        return;
+      }
+      clearTimeout(frame._translationInputTimer);
+      current.description = text;
+      emitItemPatch("link", current, { description: text });
+      frame.classList.add("translating");
+      content.querySelector(".floating-translation-submit").disabled = true;
+      status.textContent = "翻訳中…";
+      try {
+        const response = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, source: config.source, target: config.target }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "翻訳できませんでした。");
+        current.sourceUrl = String(data.translatedText || "");
+        emitItemPatch("link", current, { description: text, sourceUrl: current.sourceUrl });
+        syncFloatingTranslationWindow(frame, current);
+        status.textContent = "翻訳しました";
+      } catch (error) {
+        status.textContent = error.message || "翻訳できませんでした。";
+      } finally {
+        frame.classList.remove("translating");
+        syncFloatingTranslationWindow(frame, current);
+      }
+    });
+    enableFloatingWindowDrag(frame, header);
+    const closeFrame = () => {
+      clearTimeout(frame._translationInputTimer);
+      if (floatingTranslationWindows.get(link.id) === frame) floatingTranslationWindows.delete(link.id);
+      const wasActive = frame.classList.contains("active");
+      removeFloatingWindow(frame);
+      if (wasActive) activateTopFloatingAppWindow();
+    };
+    frame._closeFloating = closeFrame;
+    configureSharedFloatingWindow(frame, actions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("link", link.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: config.defaultTitle,
+      getTitle: () => links.find((item) => item.id === link.id)?.title || config.defaultTitle,
+      setTitle: (nextTitle) => {
+        const current = links.find((item) => item.id === link.id);
+        if (!current || !canInteractLink(current)) return;
+        current.title = nextTitle;
+        emitItemPatch("link", current, { title: nextTitle });
+        syncFloatingTranslationWindow(frame, current);
+      },
+    });
+    activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
+    syncFloatingTranslationWindow(frame, link);
+    return frame;
+  }
+
+  function getTranslationConfig(linkOrDirection) {
+    const type = typeof linkOrDirection === "string" ? linkOrDirection : linkOrDirection?.linkType;
+    const toJapanese = type === "ja" || type === "translation-en-ja";
+    return toJapanese
+      ? { linkType: "translation-en-ja", source: "en", target: "ja", title: "和訳", sourceLabel: "英語", targetLabel: "日本語" }
+      : { linkType: "translation-ja-en", source: "ja", target: "en", title: "英訳", sourceLabel: "日本語", targetLabel: "英語" };
+  }
+
+  function createTranslationWindow(direction) {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image" || activeLayer === "draft") return;
+    const config = getTranslationConfig(direction);
+    ensureSnapshotForAction();
+    const width = 520;
+    const height = 430;
+    const center = getCanvasCenterWorld();
+    const link = {
+      id: genId(),
+      url: "https://mymemory.translated.net/",
+      title: config.title,
+      description: `${config.sourceLabel}から${config.targetLabel}へ翻訳`,
+      image: "",
+      favicon: "",
+      siteName: "MyMemory",
+      linkType: config.linkType,
+      sourceUrl: "https://mymemory.translated.net/",
+      spreadsheetScale: 1,
+      spreadsheetResizeMode: "fixed",
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      width,
+      height,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : activeLayer === "admin" ? "admin" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    emitLinkAdd(link);
+    refreshLinkList();
+    selected = { type: "link", index: links.length - 1 };
+    multiSelection = null;
+    switchToSelectTool();
+    redraw();
+    closeInsertMenu();
+    requestAnimationFrame(() => {
+      spreadsheetLayer?.querySelector(`[data-translation-id="${CSS.escape(link.id)}"] textarea`)?.focus();
+    });
+    showTransientFooterMessage(`${config.title}窓を追加しました。`, 3000);
+  }
+
+  function createTranslationElement(link) {
+    const config = getTranslationConfig(link);
+    const element = document.createElement("article");
+    element.className = "translation-object";
+    element.dataset.translationId = link.id;
+    element.innerHTML = `
+      <header class="translation-header">
+        <span class="translation-mark" aria-hidden="true">文</span>
+        <span class="translation-title"></span>
+        <span class="translation-direction"></span>
+      </header>
+      <form class="translation-form">
+        <label class="translation-source-label"></label>
+        <textarea class="translation-source" maxlength="500" placeholder="翻訳する文章を入力"></textarea>
+        <div class="translation-actions">
+          <span class="translation-count">0 / 500バイト</span>
+          <button type="submit" class="translation-submit">翻訳</button>
+        </div>
+      </form>
+      <section class="translation-result" aria-live="polite">
+        <div class="translation-target-label"></div>
+        <div class="translation-output">翻訳結果がここに表示されます</div>
+      </section>
+      <div class="translation-resize" title="枠の大きさを変更"></div>`;
+    spreadsheetLayer.appendChild(element);
+
+    element.querySelector(".translation-title").textContent = config.title;
+    element.querySelector(".translation-direction").textContent = `${config.sourceLabel} → ${config.targetLabel}`;
+    element.querySelector(".translation-source-label").textContent = config.sourceLabel;
+    element.querySelector(".translation-target-label").textContent = config.targetLabel;
+
+    const getLink = () => links.find((item) => item.id === element.dataset.translationId);
+    const header = element.querySelector(".translation-header");
+    const handle = element.querySelector(".translation-resize");
+    const form = element.querySelector("form");
+    const sourceInput = element.querySelector(".translation-source");
+    const output = element.querySelector(".translation-output");
+    const count = element.querySelector(".translation-count");
+    const submit = element.querySelector(".translation-submit");
+    const updateCount = () => {
+      const bytes = new TextEncoder().encode(sourceInput.value).length;
+      count.textContent = `${bytes} / 500バイト`;
+      count.classList.toggle("over-limit", bytes > 500);
+      submit.disabled = bytes === 0 || bytes > 500;
+    };
+    sourceInput.addEventListener("input", updateCount);
+    updateCount();
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = sourceInput.value.trim();
+      if (!text || submit.disabled) return;
+      submit.disabled = true;
+      output.classList.remove("is-error");
+      output.classList.add("is-loading");
+      output.textContent = "翻訳中...";
+      try {
+        const response = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, source: config.source, target: config.target }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "翻訳に失敗しました。");
+        output.textContent = data.translatedText;
+      } catch (error) {
+        output.textContent = error.message || "翻訳に失敗しました。";
+        output.classList.add("is-error");
+      } finally {
+        output.classList.remove("is-loading");
+        updateCount();
+      }
+    });
+
+    let drag = null;
+    header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      selected = { type: "link", index: findIndexById(links, current.id) };
+      multiSelection = null;
+      drag = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: current.x, y: current.y };
+      header.setPointerCapture?.(event.pointerId);
+      element.classList.add("dragging");
+      event.preventDefault();
+      redraw();
+    });
+    header.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.x = drag.x + (event.clientX - drag.clientX) / scale;
+      current.y = drag.y + (event.clientY - drag.clientY) / scale;
+      syncTranslationElement(element, current);
+    });
+    const finishDrag = (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      header.releasePointerCapture?.(event.pointerId);
+      drag = null;
+      element.classList.remove("dragging");
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { x: current.x, y: current.y });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    header.addEventListener("pointerup", finishDrag);
+    header.addEventListener("pointercancel", finishDrag);
+
+    let resizing = null;
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const current = getLink();
+      if (!current || !canInteractLink(current)) return;
+      pushSnapshot();
+      selected = { type: "link", index: findIndexById(links, current.id) };
+      multiSelection = null;
+      resizing = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, width: current.width, height: current.height };
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      const current = getLink();
+      if (!current) return;
+      current.width = Math.max(360, resizing.width + (event.clientX - resizing.clientX) / scale);
+      current.height = Math.max(360, resizing.height + (event.clientY - resizing.clientY) / scale);
+      syncTranslationElement(element, current);
+    });
+    const finishResize = (event) => {
+      if (!resizing || resizing.pointerId !== event.pointerId) return;
+      handle.releasePointerCapture?.(event.pointerId);
+      resizing = null;
+      const current = getLink();
+      if (current) emitItemPatch("link", current, { width: current.width, height: current.height });
+      actionSnapshotTaken = false;
+      redraw();
+    };
+    handle.addEventListener("pointerup", finishResize);
+    handle.addEventListener("pointercancel", finishResize);
+    return element;
+  }
+
+  function syncTranslationElement(element, link) {
+    const point = worldToScreen(link.x, link.y);
+    element.style.left = `${point.x}px`;
+    element.style.top = `${point.y}px`;
+    element.style.width = `${(link.width || 520) * scale}px`;
+    element.style.height = `${(link.height || 430) * scale}px`;
+    element.style.setProperty("--translation-scale", String(scale));
+    element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
+    element.classList.toggle("read-only", !canInteractLink(link));
+  }
+
+  function syncTranslationElements() {
+    if (!spreadsheetLayer) return;
+    spreadsheetLayer.querySelectorAll(".translation-object").forEach((element) => element.remove());
+    syncFloatingTranslationWindows();
+  }
+
+  function createGenericEmbed() {
+    if (!requireUser() || !canCreateOnCurrentLayer() || activeLayer === "image" || activeLayer === "draft") return;
+    const raw = window.prompt(
+      "埋め込みたいURLまたはiframeコードを貼り付けてください。\nYouTube、Vimeo、Loom、Spotify、Googleドキュメント／スライド／フォーム／マップ／Drive、その他のWebページに対応しています。"
+    );
+    if (raw == null) return;
+    const embed = normalizeGenericEmbed(raw);
+    if (!embed) {
+      window.alert("HTTPSのURLまたは埋め込みコードを確認してください。");
+      return;
+    }
+    ensureSnapshotForAction();
+    const center = getCanvasCenterWorld();
+    const link = {
+      id: genId(),
+      url: embed.url,
+      title: embed.title,
+      description: "",
+      image: "",
+      favicon: "",
+      siteName: embed.siteName,
+      linkType: embed.siteName === "Google Sheets" ? "spreadsheet" : "embed",
+      sourceUrl: embed.sourceUrl,
+      spreadsheetScale: 1,
+      spreadsheetResizeMode: "fixed",
+      x: center.x - embed.width / 2,
+      y: center.y - embed.height / 2,
+      width: embed.width,
+      height: embed.height,
+      user: currentUser,
+      layer: activeLayer === "base" ? "base" : activeLayer === "admin" ? "admin" : "user",
+      order: orderCounter++,
+      createdAt: Date.now(),
+    };
+    links.push(link);
+    registerUser(currentUser);
+    emitLinkAdd(link);
+    openFloatingSpreadsheet(link);
+    refreshLinkList();
+    selected = { type: "link", index: links.length - 1 };
+    multiSelection = null;
+    switchToSelectTool();
+    redraw();
+    showTransientFooterMessage("コンテンツを埋め込みました。表示されないサイトは、埋め込み表示を許可していない場合があります。", 6000);
+  }
+
   function getSpreadsheetSourceUrlFromInput(rawValue, embedUrl = "") {
     let value = String(rawValue || "").trim();
     const iframeMatch = value.match(/<iframe\b[^>]*\bsrc=["']([^"']+)["']/i);
@@ -17632,7 +19769,7 @@
   }
 
   function getSpreadsheetSourceUrl(link) {
-    if (!isSpreadsheetLink(link)) return "";
+    if (!isEmbeddableLink(link)) return "";
     if (link.sourceUrl) return link.sourceUrl;
     return getSpreadsheetSourceUrlFromInput(link.url, link.url);
   }
@@ -17676,23 +19813,25 @@
     links.push(link);
     registerUser(currentUser);
     emitLinkAdd(link);
+    openFloatingSpreadsheet(link);
     refreshLinkList();
     selected = { type: "link", index: links.length - 1 };
     multiSelection = null;
     switchToSelectTool();
     redraw();
-    showTransientFooterMessage("スプレッドシートを埋め込みました。枠の見出しをドラッグして移動できます。", 5000);
+    showTransientFooterMessage("共有スプレッドシートを開きました。", 5000);
   }
 
-  function openFloatingSpreadsheet(link) {
-    if (!isSpreadsheetLink(link)) return;
+  function openFloatingSpreadsheet(link, options = {}) {
+    if (!isEmbeddableLink(link)) return;
     const existing = floatingSpreadsheetWindows.get(link.id);
     if (existing?.isConnected || floatingPopupWindows.has(existing)) {
-      activateFloatingAppWindow(existing);
-      return;
+      if (!options.minimized) existing._setSharedMinimized?.(false);
+      return existing;
     }
     const frame = document.createElement("section");
     frame.className = "floating-app-window floating-spreadsheet-window";
+    frame.classList.add(isSpreadsheetLink(link) ? "shared-spreadsheet-window" : "shared-embed-window");
     frame.dataset.linkId = link.id;
     frame.style.left = `${Math.max(12, Math.min(140, window.innerWidth - 360))}px`;
     frame.style.top = `${Math.max(12, Math.min(90, window.innerHeight - 280))}px`;
@@ -17701,42 +19840,76 @@
     header.className = "floating-app-window-header";
     const title = document.createElement("span");
     title.className = "floating-spreadsheet-title";
-    title.textContent = link.title || "スプレッドシート";
+    title.textContent = link.title || "埋め込みコンテンツ";
     const actions = document.createElement("div");
     actions.className = "floating-app-window-actions";
     const reload = document.createElement("button");
     reload.type = "button";
     reload.className = "floating-spreadsheet-reload";
     reload.textContent = "↺";
-    reload.title = "スプレッドシートを再読み込み";
-    reload.setAttribute("aria-label", "スプレッドシートを再読み込み");
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "floating-app-window-close";
-    close.textContent = "×";
-    close.setAttribute("aria-label", "別窓を閉じる");
-    actions.append(reload, close);
+    reload.title = "埋め込みコンテンツを再読み込み";
+    reload.setAttribute("aria-label", "埋め込みコンテンツを再読み込み");
+    actions.append(reload);
     header.append(title, actions);
 
-    const iframe = document.createElement("iframe");
-    iframe.className = "floating-spreadsheet-content";
-    iframe.src = link.url;
-    iframe.title = link.title || "スプレッドシート";
-    iframe.referrerPolicy = "strict-origin-when-cross-origin";
-    frame.append(header, iframe);
+    const isYouTube = link.siteName === "YouTube";
+    const embedElement = document.createElement("iframe");
+    embedElement.className = "floating-spreadsheet-content";
+    embedElement.src = getControllableEmbedUrl(link);
+    embedElement.title = link.title || "埋め込みコンテンツ";
+    embedElement.referrerPolicy = "strict-origin-when-cross-origin";
+    embedElement.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write";
+    embedElement.allowFullscreen = true;
+    embedElement.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-downloads");
+    const navigation = !isYouTube ? createSharedEmbedNavigation(frame, link, embedElement) : null;
+    if (navigation && embedElement.src) frame._sharedNavigationLoadedUrl = frame._sharedNavigationUrl;
+    frame.append(header);
+    if (navigation) frame.append(navigation);
+    frame.append(embedElement);
+    if (navigation) recordSharedEmbedNavigation(frame, frame._sharedNavigationUrl);
     document.body.appendChild(frame);
     floatingSpreadsheetWindows.set(link.id, frame);
+    initializeSharedEmbedController(frame, link, embedElement);
     enableFloatingWindowDrag(frame, header);
     const closeFrame = () => {
+      frame._youtubeBridgeCleanup?.();
+      if (frame._sharedNavigationTimer) window.clearInterval(frame._sharedNavigationTimer);
       if (floatingSpreadsheetWindows.get(link.id) === frame) floatingSpreadsheetWindows.delete(link.id);
       const wasActive = frame.classList.contains("active");
       removeFloatingWindow(frame);
       if (wasActive) activateTopFloatingAppWindow();
     };
     frame._closeFloating = closeFrame;
-    reload.addEventListener("click", () => reloadSpreadsheetIframe(iframe));
-    close.addEventListener("click", closeFrame);
+    reload.addEventListener("click", () => {
+      if (isYouTube) {
+        const config = getYouTubePlayerConfig(link);
+        if (config && frame._youtubePlayer?.cueVideoById) {
+          frame._youtubePlayer.cueVideoById({ videoId: config.videoId, startSeconds: config.start });
+        }
+        return;
+      }
+      reloadSpreadsheetIframe(embedElement);
+    });
+    configureSharedFloatingWindow(frame, actions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("link", link.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: isSpreadsheetLink(link) ? "スプレッドシート" : "埋め込みコンテンツ",
+      getTitle: () => links.find((item) => item.id === link.id)?.title || link.title,
+      setTitle: (nextTitle) => {
+        const current = links.find((item) => item.id === link.id);
+        if (!current || !canInteractLink(current)) return;
+        current.title = nextTitle;
+        emitItemPatch("link", current, { title: nextTitle });
+        const titleElement = frame.querySelector(".floating-spreadsheet-title");
+        if (titleElement) titleElement.textContent = nextTitle;
+        refreshLinkList();
+      },
+    });
     activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
+    return frame;
   }
 
   function showSpreadsheetContextMenu(event, link) {
@@ -17808,16 +19981,19 @@
     element.className = "spreadsheet-object";
     element.dataset.linkId = link.id;
     element.innerHTML =
-      '<header class="spreadsheet-header"><span class="spreadsheet-badge">▦</span><span class="spreadsheet-title"></span>' +
-      '<button type="button" class="spreadsheet-reload" title="スプレッドシートを再読み込み" aria-label="スプレッドシートを再読み込み">↺</button></header>' +
+      '<header class="spreadsheet-header"><span class="spreadsheet-badge"></span><span class="spreadsheet-title"></span>' +
+      '<button type="button" class="spreadsheet-reload" title="埋め込みコンテンツを再読み込み" aria-label="埋め込みコンテンツを再読み込み">↺</button></header>' +
       '<div class="spreadsheet-viewport"><iframe class="spreadsheet-content"></iframe></div>' +
       '<div class="spreadsheet-resize" title="枠の大きさを変更（右クリックでモード変更）"></div>';
     spreadsheetLayer.appendChild(element);
     const header = element.querySelector(".spreadsheet-header");
     const iframe = element.querySelector("iframe");
     iframe.src = link.url;
-    iframe.title = link.title || "スプレッドシート";
+    iframe.title = link.title || "埋め込みコンテンツ";
     iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    iframe.allow = "autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write";
+    iframe.allowFullscreen = true;
+    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-downloads");
     element.querySelector(".spreadsheet-reload").addEventListener("click", (event) => {
       event.stopPropagation();
       reloadSpreadsheetIframe(iframe);
@@ -17943,7 +20119,7 @@
     if (!iframe?.src) return;
     const src = iframe.src;
     iframe.src = src;
-    showTransientFooterMessage("スプレッドシートを再読み込みしました。", 2500);
+    showTransientFooterMessage("埋め込みコンテンツを再読み込みしました。", 2500);
   }
 
   function syncSpreadsheetElementPosition(element, link) {
@@ -17962,7 +20138,9 @@
     element.classList.toggle("selected", selected?.type === "link" && links[selected.index]?.id === link.id);
     element.classList.toggle("read-only", !canInteractLink(link));
     const title = element.querySelector(".spreadsheet-title");
-    if (title) title.textContent = link.title || "スプレッドシート";
+    if (title) title.textContent = link.title || "埋め込みコンテンツ";
+    const badge = element.querySelector(".spreadsheet-badge");
+    if (badge) badge.textContent = isSpreadsheetLink(link) ? "▦" : link.siteName === "YouTube" || link.siteName === "Vimeo" || link.siteName === "Video" ? "▶" : "◇";
     const iframe = element.querySelector("iframe");
     if (iframe) {
       iframe.style.width = `${100 / contentScale}%`;
@@ -17981,23 +20159,21 @@
 
   function syncSpreadsheetElements() {
     if (!spreadsheetLayer) return;
-    const activeIds = new Set();
+    syncGoogleSearchElements();
+    syncTranslationElements();
     links.forEach((link) => {
-      if (!isSpreadsheetLink(link) || !isLinkVisible(link)) return;
-      activeIds.add(link.id);
-      let element = spreadsheetLayer.querySelector(`[data-link-id="${CSS.escape(link.id)}"]`);
-      if (!element) element = createSpreadsheetElement(link);
-      syncSpreadsheetElementPosition(element, link);
+      if (!isEmbeddableLink(link) || !isLinkVisible(link)) return;
       const floating = floatingSpreadsheetWindows.get(link.id);
       if (floating) {
         const title = floating.querySelector(".floating-spreadsheet-title");
-        if (title) title.textContent = link.title || "スプレッドシート";
+        if (title) title.textContent = link.title || "埋め込みコンテンツ";
         const iframe = floating.querySelector("iframe");
-        if (iframe && iframe.src !== link.url) iframe.src = link.url;
+        if (isNavigableWebEmbed(link)) syncSharedEmbedNavigation(floating, link);
+        else if (iframe && iframe.src !== link.url) iframe.src = link.url;
       }
     });
     spreadsheetLayer.querySelectorAll(".spreadsheet-object").forEach((element) => {
-      if (!activeIds.has(element.dataset.linkId)) element.remove();
+      element.remove();
     });
   }
 
@@ -18013,6 +20189,11 @@
       operator,
       waitingForOperand: !!state.waitingForOperand,
     };
+  }
+
+  function getCalculatorWindowTitle(calculator) {
+    const value = Array.isArray(calculator?.lines) ? calculator.lines[0] : "";
+    return String(value || "").trim() || "計算機";
   }
 
   function formatCalculatorNumber(value) {
@@ -18338,21 +20519,7 @@
 
   function syncCalculatorElements() {
     if (!textMemoLayer) return;
-    const activeIds = new Set();
-    texts.forEach((text) => {
-      if (!text.calculator || !isTextVisible(text)) return;
-      activeIds.add(text.id);
-      let element = Array.from(textMemoLayer.children).find((item) => item.dataset.calculatorId === text.id) || null;
-      if (element && element._calculatorText !== text) {
-        element.remove();
-        element = null;
-      }
-      if (!element) element = createCalculatorElement(text);
-      syncCalculatorElementPosition(element, text);
-    });
-    textMemoLayer.querySelectorAll(".calculator-object").forEach((element) => {
-      if (!activeIds.has(element.dataset.calculatorId)) element.remove();
-    });
+    textMemoLayer.querySelectorAll(".calculator-object").forEach((element) => element.remove());
     syncFloatingCalculatorWindows();
   }
 
@@ -18403,6 +20570,8 @@
   function syncFloatingCalculatorWindow(frame, calculator) {
     if (!frame || !calculator) return;
     frame._calculatorText = calculator;
+    const title = frame.querySelector(".floating-calculator-title");
+    if (title) title.textContent = getCalculatorWindowTitle(calculator);
     const state = normalizeCalculatorState(calculator.calculatorState);
     const display = frame.querySelector(".calculator-display");
     const expression = frame.querySelector(".calculator-expression");
@@ -18442,11 +20611,11 @@
       });
   }
 
-  function openFloatingCalculator(calculator) {
+  function openFloatingCalculator(calculator, options = {}) {
     if (!calculator?.calculator) return null;
     const existing = getFloatingCalculatorWindow(calculator.id);
     if (existing) {
-      activateFloatingAppWindow(existing);
+      if (!options.minimized) existing._setSharedMinimized?.(false);
       return existing;
     }
 
@@ -18463,16 +20632,10 @@
     const header = document.createElement("header");
     header.className = "floating-app-window-header";
     const title = document.createElement("span");
-    title.textContent = "計算機";
+    title.className = "floating-calculator-title";
+    title.textContent = getCalculatorWindowTitle(calculator);
     const actions = document.createElement("div");
     actions.className = "floating-app-window-actions";
-    const popout = createFloatingPopoutButton(frame, "計算機");
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "floating-app-window-close";
-    close.textContent = "×";
-    close.setAttribute("aria-label", "別窓を閉じる");
-    actions.append(popout, close);
     header.append(title, actions);
 
     const content = document.createElement("div");
@@ -18525,8 +20688,24 @@
       if (wasActive) activateTopFloatingAppWindow();
     };
     frame._closeFloating = closeFrame;
-    close.addEventListener("click", closeFrame);
+    configureSharedFloatingWindow(frame, actions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("text", calculator.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: "計算機",
+      getTitle: () => getCalculatorWindowTitle(texts.find((item) => item.id === calculator.id)),
+      setTitle: (nextTitle) => {
+        const current = texts.find((item) => item.id === calculator.id);
+        if (!current || !canInteractText(current)) return;
+        current.lines = [nextTitle];
+        emitItemPatch("text", current, { lines: current.lines });
+        syncFloatingCalculatorWindow(frame, current);
+        refreshTextList();
+      },
+    });
     activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
     syncFloatingCalculatorWindow(frame, calculator);
     requestAnimationFrame(() => frame.focus());
     return frame;
@@ -18559,13 +20738,11 @@
     };
     applyFrameMembershipByPoint(text, center);
     addTextObject(text);
+    openFloatingCalculator(text);
     switchToSelectTool();
     redraw();
     closeInsertMenu();
-    requestAnimationFrame(() => {
-      const element = Array.from(textMemoLayer?.children || []).find((item) => item.dataset.calculatorId === text.id);
-      element?.focus();
-    });
+    requestAnimationFrame(() => getFloatingCalculatorWindow(text.id)?.focus());
     return text;
   }
 
@@ -18988,10 +21165,6 @@
     if (!frame || !memo) return;
     const windowTitle = frame.querySelector(".floating-text-memo-window-title");
     if (windowTitle) windowTitle.textContent = memo.memoTitle || "テキストメモ";
-    const titleInput = frame.querySelector(".floating-text-memo-title-input");
-    if (titleInput && titleInput !== frame.ownerDocument.activeElement) {
-      titleInput.value = memo.memoTitle || "テキストメモ";
-    }
     if (frame.dataset.memoSignature !== getMemoSignature(memo) && !frame.contains(frame.ownerDocument.activeElement)) {
       rebuildTextMemoRows(frame, memo);
     }
@@ -19016,11 +21189,11 @@
       });
   }
 
-  function openFloatingTextMemo(memo) {
+  function openFloatingTextMemo(memo, options = {}) {
     if (!memo?.textMemo) return null;
     const existing = getFloatingTextMemoWindow(memo.id);
     if (existing) {
-      activateFloatingAppWindow(existing);
+      if (!options.minimized) existing._setSharedMinimized?.(false);
       return existing;
     }
     const frame = document.createElement("section");
@@ -19041,13 +21214,6 @@
     windowTitle.textContent = memo.memoTitle || "テキストメモ";
     const windowActions = document.createElement("div");
     windowActions.className = "floating-app-window-actions";
-    const popout = createFloatingPopoutButton(frame, memo.memoTitle || "テキストメモ");
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "floating-app-window-close";
-    close.textContent = "×";
-    close.setAttribute("aria-label", "別窓を閉じる");
-    windowActions.append(popout, close);
     header.append(windowTitle, windowActions);
 
     const editor = document.createElement("div");
@@ -19055,7 +21221,6 @@
     const toolbar = document.createElement("div");
     toolbar.className = "floating-text-memo-toolbar";
     toolbar.innerHTML = `
-      <input class="floating-text-memo-title-input" type="text" maxlength="80" aria-label="メモのタイトル">
       <div class="text-memo-sort-menu">
         <button class="text-memo-sort-trigger" type="button" aria-haspopup="true">並び替え</button>
         <div class="text-memo-sort-options">
@@ -19071,20 +21236,6 @@
     frame.append(header, editor);
     document.body.appendChild(frame);
 
-    const titleInput = toolbar.querySelector(".floating-text-memo-title-input");
-    titleInput.value = memo.memoTitle || "テキストメモ";
-    titleInput.addEventListener("input", () => {
-      const current = getCurrentMemo();
-      if (!canInteractText(current)) return;
-      current.memoTitle = titleInput.value;
-      emitMemoUpdate(current);
-    });
-    titleInput.addEventListener("change", () => {
-      const current = getCurrentMemo();
-      current.memoTitle = titleInput.value.trim() || "テキストメモ";
-      titleInput.value = current.memoTitle;
-      emitMemoUpdate(current, true);
-    });
     toolbar.querySelector('[data-sort="length"]').addEventListener("click", () => {
       const current = getCurrentMemo();
       current.memoItems = getMemoItems(current)
@@ -19119,8 +21270,23 @@
       if (wasActive) activateTopFloatingAppWindow();
     };
     frame._closeFloating = closeFrame;
-    close.addEventListener("click", closeFrame);
+    configureSharedFloatingWindow(frame, windowActions, {
+      minimized: !!options.minimized,
+      onDelete: () => removeSharedItem("text", memo.id),
+    });
+    enableSharedWindowRename(header, {
+      fallback: "テキストメモ",
+      getTitle: () => texts.find((item) => item.id === memo.id)?.memoTitle || "テキストメモ",
+      setTitle: (nextTitle) => {
+        const current = getCurrentMemo();
+        if (!current || !canInteractText(current)) return;
+        current.memoTitle = nextTitle;
+        emitMemoUpdate(current, true);
+        syncFloatingTextMemoWindow(frame, current);
+      },
+    });
     activateFloatingAppWindow(frame);
+    if (options.minimized) frame.classList.remove("active");
     syncFloatingTextMemoWindow(frame, memo);
     return frame;
   }
@@ -19332,24 +21498,7 @@
 
   function syncTextMemoElements() {
     if (!textMemoLayer) return;
-    const activeIds = new Set();
-    texts.forEach((text) => {
-      if (!text.textMemo || !isTextVisible(text)) return;
-      activeIds.add(text.id);
-      let element = Array.from(textMemoLayer.children).find((item) => item.dataset.memoId === text.id) || null;
-      if (element && element._memoText !== text && !element.contains(document.activeElement)) {
-        element.remove();
-        element = null;
-      }
-      if (!element) element = createTextMemoElement(text);
-      syncTextMemoElementPosition(element, text);
-      if (element.dataset.memoSignature !== getMemoSignature(text) && !element.contains(document.activeElement)) {
-        rebuildTextMemoRows(element, text);
-      }
-    });
-    textMemoLayer.querySelectorAll(".text-memo-object").forEach((element) => {
-      if (!activeIds.has(element.dataset.memoId)) element.remove();
-    });
+    textMemoLayer.querySelectorAll(".text-memo-object").forEach((element) => element.remove());
     syncCalculatorElements();
     syncFloatingTextMemoWindows();
   }
@@ -19384,13 +21533,13 @@
     };
     applyFrameMembershipByPoint(text, center);
     addTextObject(text);
+    const floatingMemo = openFloatingTextMemo(text);
     switchToSelectTool();
     redraw();
     closeInsertMenu();
     if (options.focus !== false) {
       requestAnimationFrame(() => {
-        const element = Array.from(textMemoLayer?.children || []).find((item) => item.dataset.memoId === text.id);
-        element?.querySelector("textarea")?.focus();
+        floatingMemo?.querySelector("textarea")?.focus();
       });
     }
     return text;
@@ -19432,15 +21581,6 @@
       { label: "画像ファイル", onClick: () => chooseImageFiles() },
     ]);
 
-    addSection("メモ", [
-      { label: "テキストメモ", onClick: () => createTextMemo() },
-    ]);
-
-    addSection("ツール", [
-      { label: "計算機", onClick: () => createCalculator() },
-      { label: "スプレッドシート", onClick: () => createSpreadsheetEmbed() },
-    ]);
-
     addSection("フレーム", [
       { label: "表裏", onClick: () => startFramePlacement("omoteura") },
       {
@@ -19471,6 +21611,7 @@
     }
     closeOtherMenu();
     closeListMenu();
+    closeSharedToolsMenu();
     if (textToolMenu) textToolMenu.classList.add("hidden");
     insertMenu.style.visibility = "hidden";
     insertMenu.classList.remove("hidden");

@@ -335,6 +335,37 @@ app.get("/api/templates", (req, res) => {
   }
 });
 
+app.post("/api/translate", async (req, res) => {
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const source = req.body?.source;
+  const target = req.body?.target;
+  const allowedPair = (source === "en" && target === "ja") || (source === "ja" && target === "en");
+
+  if (!text) return res.status(400).json({ error: "翻訳する文章を入力してください。" });
+  if (!allowedPair) return res.status(400).json({ error: "対応していない言語の組み合わせです。" });
+  if (Buffer.byteLength(text, "utf8") > 500) {
+    return res.status(400).json({ error: "一度に翻訳できる文章は500バイトまでです。" });
+  }
+
+  try {
+    const params = new URLSearchParams({ q: text, langpair: `${source}|${target}`, mt: "1" });
+    const response = await fetch(`https://api.mymemory.translated.net/get?${params}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`translation service returned ${response.status}`);
+    const data = await response.json();
+    const translatedText = data?.responseData?.translatedText;
+    if (typeof translatedText !== "string" || !translatedText.trim()) {
+      throw new Error("translation response was empty");
+    }
+    res.json({ translatedText });
+  } catch (error) {
+    console.error("Translation failed:", error.message);
+    res.status(502).json({ error: "翻訳サービスに接続できませんでした。少し待ってから再試行してください。" });
+  }
+});
+
 function driveImageResponse(row) {
   return {
     id: row.id,
@@ -1283,6 +1314,91 @@ io.on("connection", (socket) => {
   socket.on("attention:end", ({ boardId, user }) => {
     if (boardId !== currentBoardId) return;
     socket.to(boardId).emit("attention:end", { user });
+  });
+
+  socket.on("shared-window:attention", ({ boardId, itemType, itemId, title, viewState }, ack) => {
+    if (boardId !== currentBoardId || !["text", "image", "link"].includes(itemType) || !itemId) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const state = ensureBoardState(boardId);
+    const item = getItemsByType(state, itemType)?.find((entry) => entry?.id === itemId);
+    const isSharedWindow = itemType === "text"
+      ? !!(item?.textMemo || item?.calculator)
+      : itemType === "image"
+      ? Array.isArray(item?.slideshowSlides) && item.slideshowSlides.length > 0
+      : ["embed", "spreadsheet", "google-search", "translation-en-ja", "translation-ja-en"].includes(item?.linkType);
+    if (!isSharedWindow) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const safeViewState = viewState && typeof viewState === "object" ? {
+      media: ["youtube", "vimeo", "html5"].includes(viewState.media) ? viewState.media : undefined,
+      currentTime: Number.isFinite(viewState.currentTime)
+        ? Math.max(0, Math.min(86400 * 7, viewState.currentTime))
+        : undefined,
+      playing: typeof viewState.playing === "boolean" ? viewState.playing : undefined,
+      scrollX: Number.isFinite(viewState.scrollX) ? Math.max(-1e7, Math.min(1e7, viewState.scrollX)) : undefined,
+      scrollY: Number.isFinite(viewState.scrollY) ? Math.max(-1e7, Math.min(1e7, viewState.scrollY)) : undefined,
+    } : null;
+    socket.to(boardId).emit("shared-window:attention", {
+      itemType,
+      itemId,
+      title: String(title || item.title || item.imageName || item.memoTitle || "共有ウィンドウ").slice(0, 80),
+      user: currentUserName || "参加者",
+      viewState: safeViewState,
+    });
+    if (typeof ack === "function") ack({ ok: true });
+  });
+
+  socket.on("shared-window:navigate", ({ boardId, itemId, url, description }, ack) => {
+    if (boardId !== currentBoardId || !itemId || typeof url !== "string" || url.length > 4096) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    let safeUrl;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("unsupported protocol");
+      safeUrl = parsed.toString();
+    } catch {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const state = ensureBoardState(boardId);
+    const link = state.links.find((item) => item?.id === itemId);
+    if (!link || !["embed", "google-search"].includes(link.linkType)) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    link.url = safeUrl;
+    link.sourceUrl = safeUrl;
+    if (typeof description === "string") link.description = description.slice(0, 2000);
+    try {
+      saveLink({ ...link, board_id: boardId });
+      socket.to(boardId).emit("shared-window:navigate", {
+        itemId,
+        url: safeUrl,
+        description: typeof description === "string" ? link.description : undefined,
+      });
+      if (typeof ack === "function") ack({ ok: true });
+    } catch (err) {
+      notifyPersistenceError(socket, "navigate shared window", err);
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on("board-point:attention", ({ boardId, x, y }, ack) => {
+    if (boardId !== currentBoardId || !Number.isFinite(x) || !Number.isFinite(y)) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    socket.to(boardId).emit("board-point:attention", {
+      x: Math.max(-1e7, Math.min(1e7, x)),
+      y: Math.max(-1e7, Math.min(1e7, y)),
+      user: currentUserName || "参加者",
+    });
+    if (typeof ack === "function") ack({ ok: true });
   });
 
   socket.on("presence:view", ({ boardId, view }) => {
