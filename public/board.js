@@ -18633,7 +18633,7 @@
 
   const DRIVE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
   const DRIVE_UPLOAD_TARGET_BYTES = DRIVE_UPLOAD_MAX_BYTES - 512 * 1024;
-  const DRIVE_COMPRESSION_MAX_PIXELS = 24 * 1024 * 1024;
+  const DRIVE_COMPRESSION_MAX_PIXELS = 16 * 1024 * 1024;
   const DRIVE_COMPRESSION_MAX_EDGE = 8192;
 
   function canvasToBlob(canvas, type, quality) {
@@ -18645,15 +18645,16 @@
     });
   }
 
-  function getCompressedDriveImageName(name) {
+  function getCompressedDriveImageName(name, mimeType) {
     const baseName = String(name || "image").replace(/\.[^.]*$/, "") || "image";
-    return `${baseName}.webp`;
+    return `${baseName}.${mimeType === "image/webp" ? "webp" : "jpg"}`;
   }
 
   async function loadDriveCompressionImage(file) {
     if (typeof createImageBitmap === "function") {
       try {
-        return await createImageBitmap(file, { imageOrientation: "from-image" });
+        const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+        return { source: bitmap, release: () => bitmap.close() };
       } catch {
         // Safariなど、オプション未対応のブラウザでは通常の画像読み込みへフォールバックする。
       }
@@ -18666,19 +18667,46 @@
         image.onerror = () => reject(new Error("image decode failed"));
         image.src = objectUrl;
       });
-      return image;
-    } finally {
+      return { source: image, release: () => URL.revokeObjectURL(objectUrl) };
+    } catch (err) {
       URL.revokeObjectURL(objectUrl);
+      throw err;
+    }
+  }
+
+  async function encodeDriveCompressionCanvas(canvas, quality) {
+    const webpBlob = await canvasToBlob(canvas, "image/webp", quality);
+    if (webpBlob.type === "image/webp") return { blob: webpBlob, mimeType: "image/webp" };
+
+    const jpegCanvas = document.createElement("canvas");
+    jpegCanvas.width = canvas.width;
+    jpegCanvas.height = canvas.height;
+    try {
+      const context = jpegCanvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("canvas is unavailable");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, jpegCanvas.width, jpegCanvas.height);
+      context.drawImage(canvas, 0, 0);
+      const jpegBlob = await canvasToBlob(jpegCanvas, "image/jpeg", quality);
+      if (jpegBlob.type !== "image/jpeg") throw new Error("image encoding is unavailable");
+      return { blob: jpegBlob, mimeType: "image/jpeg" };
+    } finally {
+      jpegCanvas.width = 1;
+      jpegCanvas.height = 1;
     }
   }
 
   async function compressDriveImageForUpload(file) {
     if (file.size <= DRIVE_UPLOAD_MAX_BYTES) return file;
 
-    const source = await loadDriveCompressionImage(file);
+    const loadedImage = await loadDriveCompressionImage(file);
+    const source = loadedImage.source;
     const sourceWidth = Number(source.width || source.naturalWidth);
     const sourceHeight = Number(source.height || source.naturalHeight);
-    if (!sourceWidth || !sourceHeight) throw new Error("invalid image dimensions");
+    if (!sourceWidth || !sourceHeight) {
+      loadedImage.release();
+      throw new Error("invalid image dimensions");
+    }
 
     let scale = Math.min(
       1,
@@ -18699,12 +18727,11 @@
 
         let smallestBlob = null;
         for (const quality of [0.9, 0.78, 0.66, 0.54, 0.42]) {
-          const blob = await canvasToBlob(canvas, "image/webp", quality);
-          if (blob.type !== "image/webp") throw new Error("WebP conversion is unavailable");
+          const { blob, mimeType } = await encodeDriveCompressionCanvas(canvas, quality);
           smallestBlob = blob;
           if (blob.size <= DRIVE_UPLOAD_TARGET_BYTES) {
-            return new File([blob], getCompressedDriveImageName(file.name), {
-              type: "image/webp",
+            return new File([blob], getCompressedDriveImageName(file.name, mimeType), {
+              type: mimeType,
               lastModified: file.lastModified || Date.now(),
             });
           }
@@ -18717,7 +18744,7 @@
       }
       throw new Error("image could not be reduced below the upload limit");
     } finally {
-      if (typeof source.close === "function") source.close();
+      loadedImage.release();
       canvas.width = 1;
       canvas.height = 1;
       canvas = null;
@@ -18726,11 +18753,16 @@
 
   async function prepareDriveImagesForUpload(files) {
     const preparedFiles = [];
+    const oversizedCount = files.filter((file) => file.size > DRIVE_UPLOAD_MAX_BYTES).length;
     let compressedCount = 0;
     for (const file of files) {
       if (file.size > DRIVE_UPLOAD_MAX_BYTES) {
-        setDriveStatus(`画像を圧縮中...（${compressedCount + 1}件目）`);
-        preparedFiles.push(await compressDriveImageForUpload(file));
+        setDriveStatus(`画像を圧縮中...（${compressedCount + 1}/${oversizedCount}件）`);
+        try {
+          preparedFiles.push(await compressDriveImageForUpload(file));
+        } catch (err) {
+          throw new Error(`${file.name || "画像"}の変換に失敗しました: ${err.message || "不明なエラー"}`);
+        }
         compressedCount += 1;
       } else {
         preparedFiles.push(file);
@@ -18749,7 +18781,10 @@
       prepared.files.forEach((file) => data.append("images", file));
       setDriveStatus("アップロード中...");
       const res = await fetch(`${getDriveApiBase(scopeBoardId)}/images`, { method: "POST", body: data });
-      if (!res.ok) throw new Error("upload failed");
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(`送信が拒否されました: ${detail.error || `HTTP ${res.status}`}`);
+      }
       if (driveVirtualHome) await renderDriveHome();
       else await loadDriveFolder(driveCurrentFolderId);
       if (prepared.compressedCount > 0) {
@@ -18758,7 +18793,7 @@
     } catch (err) {
       console.error(err);
       setDriveStatus("アップロードに失敗しました");
-      window.alert("画像を20MB以下に変換してアップロードできませんでした。画像形式やサイズを確認してください。");
+      window.alert(`画像をアップロードできませんでした。\n${err.message || "不明なエラー"}`);
     }
   }
 
