@@ -18631,8 +18631,8 @@
     await loadDriveFolder(driveCurrentFolderId);
   }
 
-  const DRIVE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
-  const DRIVE_UPLOAD_TARGET_BYTES = DRIVE_UPLOAD_MAX_BYTES - 512 * 1024;
+  // リバースプロキシの20MB制限にはmultipartの付加情報も含まれるため余裕を持たせる。
+  const DRIVE_UPLOAD_TARGET_BYTES = 18 * 1024 * 1024;
   const DRIVE_COMPRESSION_MAX_PIXELS = 16 * 1024 * 1024;
   const DRIVE_COMPRESSION_MAX_EDGE = 8192;
 
@@ -18697,7 +18697,7 @@
   }
 
   async function compressDriveImageForUpload(file) {
-    if (file.size <= DRIVE_UPLOAD_MAX_BYTES) return file;
+    if (file.size <= DRIVE_UPLOAD_TARGET_BYTES) return file;
 
     const loadedImage = await loadDriveCompressionImage(file);
     const source = loadedImage.source;
@@ -18753,10 +18753,10 @@
 
   async function prepareDriveImagesForUpload(files) {
     const preparedFiles = [];
-    const oversizedCount = files.filter((file) => file.size > DRIVE_UPLOAD_MAX_BYTES).length;
+    const oversizedCount = files.filter((file) => file.size > DRIVE_UPLOAD_TARGET_BYTES).length;
     let compressedCount = 0;
     for (const file of files) {
-      if (file.size > DRIVE_UPLOAD_MAX_BYTES) {
+      if (file.size > DRIVE_UPLOAD_TARGET_BYTES) {
         setDriveStatus(`画像を圧縮中...（${compressedCount + 1}/${oversizedCount}件）`);
         try {
           preparedFiles.push(await compressDriveImageForUpload(file));
@@ -18776,14 +18776,17 @@
     if (!imageFiles.length) return;
     try {
       const prepared = await prepareDriveImagesForUpload(imageFiles);
-      const data = new FormData();
-      data.append("folderId", folderId || "");
-      prepared.files.forEach((file) => data.append("images", file));
-      setDriveStatus("アップロード中...");
-      const res = await fetch(`${getDriveApiBase(scopeBoardId)}/images`, { method: "POST", body: data });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        throw new Error(`送信が拒否されました: ${detail.error || `HTTP ${res.status}`}`);
+      for (let index = 0; index < prepared.files.length; index += 1) {
+        const file = prepared.files[index];
+        const data = new FormData();
+        data.append("folderId", folderId || "");
+        data.append("images", file);
+        setDriveStatus(`アップロード中...（${index + 1}/${prepared.files.length}件）`);
+        const res = await fetch(`${getDriveApiBase(scopeBoardId)}/images`, { method: "POST", body: data });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          throw new Error(`${file.name || "画像"}の送信が拒否されました: ${detail.error || `HTTP ${res.status}`}`);
+        }
       }
       if (driveVirtualHome) await renderDriveHome();
       else await loadDriveFolder(driveCurrentFolderId);
