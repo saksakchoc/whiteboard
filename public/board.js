@@ -199,6 +199,13 @@
   let rightButtonDown = false;
   let rightButtonStart = null;
   const CONTEXT_DRAG_THRESHOLD = 6;
+  const LONG_PRESS_DELAY = 550;
+  const LONG_PRESS_MOVE_THRESHOLD = 12;
+  const contextMenuGestureLabel = window.matchMedia?.("(pointer: coarse)").matches
+    ? "長押し"
+    : "右クリック";
+  let pendingCanvasTouch = null;
+  let suppressCanvasTouchEnd = false;
   let footerMessage = "";
   let footerMessageTimer = null;
   const MAX_HINT_DURATION = 15000;
@@ -1370,8 +1377,9 @@
 
   function getCanvasPointFromEvent(e) {
     const rect = canvas.getBoundingClientRect();
-    const clientX = e.clientX ?? (e.touches && e.touches[0].clientX);
-    const clientY = e.clientY ?? (e.touches && e.touches[0].clientY);
+    const touch = e.touches?.[0] || e.changedTouches?.[0];
+    const clientX = e.clientX ?? touch?.clientX;
+    const clientY = e.clientY ?? touch?.clientY;
     return {
       x: clientX - rect.left,
       y: clientY - rect.top,
@@ -13729,7 +13737,7 @@
       return;
     }
 
-    if (framePlaceType && e.button === 0) {
+    if (framePlaceType && primaryButton) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       ensureSnapshotForAction();
@@ -13746,7 +13754,7 @@
       return;
     }
 
-    if (shapeMode && e.button === 0) {
+    if (shapeMode && primaryButton) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       ensureSnapshotForAction();
@@ -13770,7 +13778,7 @@
 
     if (
       lassoCopySelection &&
-      e.button === 0 &&
+      primaryButton &&
       currentTool === "select" &&
       !hitTestLassoCopySelectionScreen(canvasPos)
     ) {
@@ -13782,7 +13790,7 @@
       return;
     }
 
-    if (e.button === 0 && currentTool === "select") {
+    if (primaryButton && currentTool === "select") {
       const slideshowHit = hitTestBoardSlideshowControl(canvasPos.x, canvasPos.y);
       if (slideshowHit) {
         e.preventDefault();
@@ -13833,7 +13841,7 @@
       }
     }
 
-    if (pendingTextListGridCopies && e.button === 0) {
+    if (pendingTextListGridCopies && primaryButton) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       placePendingTextListGridCopies(worldPos);
@@ -13861,7 +13869,7 @@
       return;
     }
 
-    if (e.button === 0 && currentTool === "select") {
+    if (primaryButton && currentTool === "select") {
       const tabHit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
       if (tabHit && tabHit.action !== "header") {
         e.preventDefault();
@@ -13879,7 +13887,7 @@
       }
     }
 
-    if (pendingTextMode && e.button === 0) {
+    if (pendingTextMode && primaryButton) {
       if (!canCreateOnCurrentLayer()) return;
       e.preventDefault();
       const linked = getLinkedBoardAtWorldPoint(worldPos);
@@ -13893,7 +13901,7 @@
 
     pendingTextPos = null;
 
-    if (e.button === 0 && e.altKey) {
+    if (primaryButton && e.altKey) {
       e.preventDefault();
       const wasSelected = selectAtPoint(canvasPos);
       if (wasSelected) {
@@ -13902,7 +13910,7 @@
       }
     }
 
-    if (e.button === 0 && e.detail >= 2) {
+    if (primaryButton && e.detail >= 2) {
       const frameIndex = hitTestFrameLabel(canvasPos.x, canvasPos.y);
       if (frameIndex >= 0 && editFrameLabelAt(frameIndex)) {
         ignoreNextDblClick = true;
@@ -13944,14 +13952,14 @@
       return;
     }
 
-    if (currentTool === "select" && e.button === 0 && e.ctrlKey) {
+    if (currentTool === "select" && primaryButton && e.ctrlKey) {
       e.preventDefault();
       toggleSelectionAtPoint(canvasPos);
       return;
     }
 
     const shapeSupportPoint =
-      currentTool === "select" && e.button === 0
+      currentTool === "select" && primaryButton
         ? hitTestSelectedShapeSupportPoint(canvasPos.x, canvasPos.y)
         : null;
     if (shapeSupportPoint) {
@@ -13970,7 +13978,7 @@
     }
 
     const multiResizeHandle =
-      currentTool === "select" && e.button === 0
+      currentTool === "select" && primaryButton
         ? hitTestMultiSelectionResizeHandle(canvasPos.x, canvasPos.y)
         : null;
     if (multiResizeHandle) {
@@ -14710,6 +14718,7 @@
       }
       isPanning = false;
     }
+    const canvasPos = getCanvasPointFromEvent(e);
 
     if (slideshowImagePanDrag) {
       const drag = slideshowImagePanDrag;
@@ -15151,31 +15160,11 @@
     if (wasRightButton) {
       if (!isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
         hideContextMenu();
-        const tabHit = hitTestFrameTabControl(
-          rightButtonStart?.canvas?.x ?? canvasPos.x,
-          rightButtonStart?.canvas?.y ?? canvasPos.y
+        openBoardContextMenuAt(
+          rightButtonStart?.canvas || canvasPos,
+          e.clientX,
+          e.clientY
         );
-        if (tabHit?.action === "tab") {
-          selected = { type: "image", index: tabHit.index };
-          multiSelection = null;
-          showContextMenu(e.clientX, e.clientY, { frameTabTarget: tabHit });
-          rightButtonDown = false;
-          rightButtonStart = null;
-          return;
-        }
-        if (hitTestLassoCopySelectionScreen(rightButtonStart?.canvas || canvasPos)) {
-          selected = null;
-          multiSelection = null;
-          showContextMenu(e.clientX, e.clientY, { lassoCopySelection: true });
-          rightButtonDown = false;
-          rightButtonStart = null;
-          return;
-        }
-        let hasSel = getSelectionItems().length > 0;
-        if (!hasSel) {
-          hasSel = selectAtPoint(rightButtonStart?.canvas || canvasPos);
-        }
-        showContextMenu(e.clientX, e.clientY);
       }
       rightButtonDown = false;
       rightButtonStart = null;
@@ -15604,6 +15593,139 @@
   });
 
   // --- イベント登録 ---
+  function openBoardContextMenuAt(canvasPos, clientX, clientY) {
+    hideContextMenu();
+    const tabHit = hitTestFrameTabControl(canvasPos.x, canvasPos.y);
+    if (tabHit?.action === "tab") {
+      selected = { type: "image", index: tabHit.index };
+      multiSelection = null;
+      showContextMenu(clientX, clientY, { frameTabTarget: tabHit });
+      redraw();
+      return;
+    }
+    if (hitTestLassoCopySelectionScreen(canvasPos)) {
+      selected = null;
+      multiSelection = null;
+      showContextMenu(clientX, clientY, { lassoCopySelection: true });
+      redraw();
+      return;
+    }
+    if (getSelectionItems().length === 0) selectAtPoint(canvasPos);
+    showContextMenu(clientX, clientY);
+    redraw();
+  }
+
+  function isDeferredCanvasTouch(e) {
+    return (
+      e.touches?.length === 1 &&
+      currentTool === "select" &&
+      !pendingTextMode &&
+      !pendingTextListGridCopies &&
+      !framePlaceType &&
+      !shapeMode &&
+      !linkBoardMode &&
+      !screenShareFocus
+    );
+  }
+
+  function makeDeferredTouchStart(touch) {
+    return {
+      button: 0,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      touches: [{ clientX: touch.clientX, clientY: touch.clientY }],
+      target: canvas,
+      detail: 1,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+      preventDefault() {},
+      stopPropagation() {},
+    };
+  }
+
+  function clearPendingCanvasTouch() {
+    if (pendingCanvasTouch?.timer) clearTimeout(pendingCanvasTouch.timer);
+    pendingCanvasTouch = null;
+  }
+
+  function handleCanvasTouchStart(e) {
+    if (!isDeferredCanvasTouch(e)) {
+      clearPendingCanvasTouch();
+      handlePointerDown(e);
+      return;
+    }
+    e.preventDefault();
+    const touch = e.touches[0];
+    const pending = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      timer: null,
+    };
+    pending.timer = setTimeout(() => {
+      if (pendingCanvasTouch !== pending) return;
+      pendingCanvasTouch = null;
+      suppressCanvasTouchEnd = true;
+      const canvasRect = canvas.getBoundingClientRect();
+      openBoardContextMenuAt(
+        { x: pending.clientX - canvasRect.left, y: pending.clientY - canvasRect.top },
+        pending.clientX,
+        pending.clientY
+      );
+      navigator.vibrate?.(25);
+    }, LONG_PRESS_DELAY);
+    pendingCanvasTouch = pending;
+  }
+
+  function handleCanvasTouchMove(e) {
+    if (!pendingCanvasTouch) {
+      handlePointerMove(e);
+      return;
+    }
+    if (e.touches?.length !== 1) {
+      clearPendingCanvasTouch();
+      handlePointerDown(e);
+      return;
+    }
+    const touch = e.touches[0];
+    const distance = Math.hypot(
+      touch.clientX - pendingCanvasTouch.clientX,
+      touch.clientY - pendingCanvasTouch.clientY
+    );
+    if (distance <= LONG_PRESS_MOVE_THRESHOLD) {
+      e.preventDefault();
+      return;
+    }
+    const start = makeDeferredTouchStart(pendingCanvasTouch);
+    clearPendingCanvasTouch();
+    handlePointerDown(start);
+    handlePointerMove(e);
+  }
+
+  function handleCanvasTouchEnd(e) {
+    if (suppressCanvasTouchEnd) {
+      suppressCanvasTouchEnd = false;
+      e.preventDefault();
+      return;
+    }
+    if (pendingCanvasTouch) {
+      const start = makeDeferredTouchStart(pendingCanvasTouch);
+      clearPendingCanvasTouch();
+      handlePointerDown(start);
+    }
+    handlePointerUp(e);
+  }
+
+  function handleCanvasTouchCancel(e) {
+    if (pendingCanvasTouch) {
+      clearPendingCanvasTouch();
+      return;
+    }
+    suppressCanvasTouchEnd = false;
+    handlePointerUp(e);
+  }
+
   function suppressBoardContextMenu(e) {
     const target = e.target;
     if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object, .spreadsheet-object")) return;
@@ -15638,6 +15760,47 @@
     const target = e && e.target;
     if (isInsideToolbar(target)) return;
     document.body.classList.remove("mobile-menu-open");
+  }
+
+  function installLongPressMenuTrigger(element, openMenu) {
+    if (!element || typeof openMenu !== "function") return;
+    let press = null;
+    let suppressClick = false;
+    const cancel = () => {
+      if (press?.timer) clearTimeout(press.timer);
+      press = null;
+    };
+    element.addEventListener("pointerdown", (event) => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      cancel();
+      press = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        timer: setTimeout(() => {
+          if (!press) return;
+          press = null;
+          suppressClick = true;
+          openMenu();
+          navigator.vibrate?.(25);
+        }, LONG_PRESS_DELAY),
+      };
+    });
+    element.addEventListener("pointermove", (event) => {
+      if (!press || press.pointerId !== event.pointerId) return;
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > LONG_PRESS_MOVE_THRESHOLD) {
+        cancel();
+      }
+    });
+    element.addEventListener("pointerup", cancel);
+    element.addEventListener("pointercancel", cancel);
+    element.addEventListener("pointerleave", cancel);
+    element.addEventListener("click", (event) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
   }
 
   function closeOtherMenu(delay = 0) {
@@ -16036,10 +16199,10 @@
     }
   });
 
-  canvas.addEventListener("touchstart", handlePointerDown, { passive: false });
-  canvas.addEventListener("touchmove", handlePointerMove, { passive: false });
-  canvas.addEventListener("touchend", handlePointerUp);
-  canvas.addEventListener("touchcancel", handlePointerUp);
+  canvas.addEventListener("touchstart", handleCanvasTouchStart, { passive: false });
+  canvas.addEventListener("touchmove", handleCanvasTouchMove, { passive: false });
+  canvas.addEventListener("touchend", handleCanvasTouchEnd, { passive: false });
+  canvas.addEventListener("touchcancel", handleCanvasTouchCancel, { passive: false });
 
   // --- UIイベント ---
 
@@ -16641,7 +16804,7 @@
     lassoCopyActive = false;
     lassoCopyPath = [];
     updateToolButtons();
-    showTransientFooterMessage("選択ツール：右クリックでメニューを開けます。", 5000);
+    showTransientFooterMessage(`選択ツール：${contextMenuGestureLabel}でメニューを開けます。`, 5000);
     resetShapeMode();
   });
 
@@ -16657,7 +16820,7 @@
       currentTool = "lasso-copy";
       updateToolButtons();
       showTransientFooterMessage(
-        `投げ縄スクショ（${lassoCopyMode === "rect" ? "四角形" : "フリーハンド"}）：範囲を選択して右クリックメニューを開いてください。`,
+        `投げ縄スクショ（${lassoCopyMode === "rect" ? "四角形" : "フリーハンド"}）：範囲を選択して${contextMenuGestureLabel}でメニューを開いてください。`,
         6000
       );
       resetShapeMode();
@@ -16690,6 +16853,7 @@
     lassoCopyToolMenu.addEventListener("mouseleave", () => setTimeout(() => {
       if (!lassoCopyToolMenu.matches(":hover") && !lassoCopyToolBtn.matches(":hover")) closeLassoCopyToolMenu();
     }, 120));
+    installLongPressMenuTrigger(lassoCopyToolBtn, openLassoCopyToolMenu);
     lassoCopyToolMenu.querySelectorAll("button[data-lasso-copy-mode]").forEach((btn) => {
       btn.addEventListener("click", () => {
         startLassoCopyTool(btn.getAttribute("data-lasso-copy-mode"));
@@ -17161,7 +17325,7 @@
     }
 
     if (lassoCopySelection) {
-      setFooterMessage("投げ縄スクショ：選択範囲を右クリックして「コピー」「リンクボード作成」「下書きボード作成」を選んでください。");
+      setFooterMessage(`投げ縄スクショ：選択範囲を${contextMenuGestureLabel}して「コピー」「リンクボード作成」「下書きボード作成」を選んでください。`);
       return;
     }
 
@@ -17175,10 +17339,10 @@
     if (currentTool === "select") {
       const hasSelection = getSelectionItems().length > 0;
       if (hasSelection) {
-        setFooterMessage("選択中：右クリックで「提出」または「削除」メニューを開けます。");
+        setFooterMessage(`選択中：${contextMenuGestureLabel}で「提出」または「削除」メニューを開けます。`);
         return;
       } else {
-        setFooterMessage("選択ツール：右クリックでメニューを開けます。");
+        setFooterMessage(`選択ツール：${contextMenuGestureLabel}でメニューを開けます。`);
         return;
       }
     }
@@ -17186,7 +17350,7 @@
     // 下書きレイヤー中（ツールは自由）
     if (activeLayer === "draft") {
       setFooterMessage(
-        "下書きペン：このペンで描いた線はあなたにしか見えません。選択ツールで囲って右クリックすると提出できます。"
+        `下書きペン：このペンで描いた線はあなたにしか見えません。選択ツールで囲って${contextMenuGestureLabel}すると提出できます。`
       );
       return;
     }
@@ -17291,6 +17455,12 @@
         }
       });
     }
+    installLongPressMenuTrigger(insertMenuBtn, () => {
+      if (isCreationLockedLayer()) return;
+      if (!templates) templates = [];
+      renderInsertMenu();
+      openInsertMenu();
+    });
   }
 
   function setPendingTextMode(mode) {
@@ -17329,6 +17499,13 @@
         return;
       }
       setPendingTextMode(lastTextMode);
+    });
+    installLongPressMenuTrigger(textToolBtn, () => {
+      if (isCreationLockedLayer()) return;
+      closeListMenu();
+      closeOtherMenu();
+      closeSharedToolsMenu();
+      textToolMenu?.classList.remove("hidden");
     });
   }
   if (textToolMenu) {
@@ -17395,6 +17572,7 @@
       else if (lastListMenuAction === "link") toggleLinkListPanelView();
       else toggleTextListPanelView();
     });
+    installLongPressMenuTrigger(listMenuBtn, openListMenu);
   }
   if (listMenu) {
     listMenu.addEventListener("mouseenter", () => openListMenu());
@@ -17421,6 +17599,7 @@
         openWatchUsersMenu();
       }
     });
+    installLongPressMenuTrigger(watchUsersBtn, openWatchUsersMenu);
   }
 
   if (otherMenuBtn) {
@@ -17430,6 +17609,7 @@
       e.stopPropagation();
       document.getElementById(lastOtherMenuActionId)?.click();
     });
+    installLongPressMenuTrigger(otherMenuBtn, openOtherMenu);
   }
   if (otherMenu) {
     otherMenu.addEventListener("mouseenter", () => openOtherMenu());

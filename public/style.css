@@ -3426,3 +3426,54 @@ body.mobile-menu-open #toolbar {
     grid-template-columns: 42px minmax(0, 1fr) 42px;
   }
 }
+
+@media (pointer: coarse) {
+  button,
+  .context-menu button,
+  .insert-menu button.item,
+  .side-menu button {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  .side-button {
+    height: 46px;
+  }
+
+  .color-swatch,
+  .color-fav {
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+  }
+
+  .context-menu {
+    min-width: min(220px, calc(100vw - 16px));
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .context-menu button {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+  }
+
+  .insert-menu,
+  .side-menu {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 720px) {
+  .side-menu {
+    position: fixed;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    left: calc(var(--side-toolbar-width) + 8px);
+    max-width: calc(100vw - var(--side-toolbar-width) - 16px);
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px));
+    overflow-y: auto;
+  }
+}
