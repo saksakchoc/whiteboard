@@ -18631,22 +18631,134 @@
     await loadDriveFolder(driveCurrentFolderId);
   }
 
+  const DRIVE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+  const DRIVE_UPLOAD_TARGET_BYTES = DRIVE_UPLOAD_MAX_BYTES - 512 * 1024;
+  const DRIVE_COMPRESSION_MAX_PIXELS = 24 * 1024 * 1024;
+  const DRIVE_COMPRESSION_MAX_EDGE = 8192;
+
+  function canvasToBlob(canvas, type, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("image compression failed"));
+      }, type, quality);
+    });
+  }
+
+  function getCompressedDriveImageName(name) {
+    const baseName = String(name || "image").replace(/\.[^.]*$/, "") || "image";
+    return `${baseName}.webp`;
+  }
+
+  async function loadDriveCompressionImage(file) {
+    if (typeof createImageBitmap === "function") {
+      try {
+        return await createImageBitmap(file, { imageOrientation: "from-image" });
+      } catch {
+        // Safariなど、オプション未対応のブラウザでは通常の画像読み込みへフォールバックする。
+      }
+    }
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error("image decode failed"));
+        image.src = objectUrl;
+      });
+      return image;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function compressDriveImageForUpload(file) {
+    if (file.size <= DRIVE_UPLOAD_MAX_BYTES) return file;
+
+    const source = await loadDriveCompressionImage(file);
+    const sourceWidth = Number(source.width || source.naturalWidth);
+    const sourceHeight = Number(source.height || source.naturalHeight);
+    if (!sourceWidth || !sourceHeight) throw new Error("invalid image dimensions");
+
+    let scale = Math.min(
+      1,
+      DRIVE_COMPRESSION_MAX_EDGE / Math.max(sourceWidth, sourceHeight),
+      Math.sqrt(DRIVE_COMPRESSION_MAX_PIXELS / (sourceWidth * sourceHeight))
+    );
+    let width = Math.max(1, Math.round(sourceWidth * scale));
+    let height = Math.max(1, Math.round(sourceHeight * scale));
+    let canvas = document.createElement("canvas");
+
+    try {
+      for (let resizeAttempt = 0; resizeAttempt < 8; resizeAttempt += 1) {
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { alpha: true });
+        if (!context) throw new Error("canvas is unavailable");
+        context.drawImage(source, 0, 0, width, height);
+
+        let smallestBlob = null;
+        for (const quality of [0.9, 0.78, 0.66, 0.54, 0.42]) {
+          const blob = await canvasToBlob(canvas, "image/webp", quality);
+          if (blob.type !== "image/webp") throw new Error("WebP conversion is unavailable");
+          smallestBlob = blob;
+          if (blob.size <= DRIVE_UPLOAD_TARGET_BYTES) {
+            return new File([blob], getCompressedDriveImageName(file.name), {
+              type: "image/webp",
+              lastModified: file.lastModified || Date.now(),
+            });
+          }
+        }
+
+        const sizeRatio = Math.sqrt(DRIVE_UPLOAD_TARGET_BYTES / smallestBlob.size) * 0.92;
+        const resizeRatio = Math.max(0.45, Math.min(0.85, sizeRatio));
+        width = Math.max(1, Math.floor(width * resizeRatio));
+        height = Math.max(1, Math.floor(height * resizeRatio));
+      }
+      throw new Error("image could not be reduced below the upload limit");
+    } finally {
+      if (typeof source.close === "function") source.close();
+      canvas.width = 1;
+      canvas.height = 1;
+      canvas = null;
+    }
+  }
+
+  async function prepareDriveImagesForUpload(files) {
+    const preparedFiles = [];
+    let compressedCount = 0;
+    for (const file of files) {
+      if (file.size > DRIVE_UPLOAD_MAX_BYTES) {
+        setDriveStatus(`画像を圧縮中...（${compressedCount + 1}件目）`);
+        preparedFiles.push(await compressDriveImageForUpload(file));
+        compressedCount += 1;
+      } else {
+        preparedFiles.push(file);
+      }
+    }
+    return { files: preparedFiles, compressedCount };
+  }
+
   async function uploadDriveImages(files, folderId = driveCurrentFolderId, scopeBoardId = driveScopeBoardId) {
     const imageFiles = Array.from(files || []).filter(isImageFile);
     if (!imageFiles.length) return;
-    const data = new FormData();
-    data.append("folderId", folderId || "");
-    imageFiles.forEach((file) => data.append("images", file));
-    setDriveStatus("アップロード中...");
     try {
+      const prepared = await prepareDriveImagesForUpload(imageFiles);
+      const data = new FormData();
+      data.append("folderId", folderId || "");
+      prepared.files.forEach((file) => data.append("images", file));
+      setDriveStatus("アップロード中...");
       const res = await fetch(`${getDriveApiBase(scopeBoardId)}/images`, { method: "POST", body: data });
       if (!res.ok) throw new Error("upload failed");
       if (driveVirtualHome) await renderDriveHome();
       else await loadDriveFolder(driveCurrentFolderId);
+      if (prepared.compressedCount > 0) {
+        showTransientFooterMessage(`${prepared.compressedCount}件の画像を20MB以下に圧縮してアップロードしました。`, 4000);
+      }
     } catch (err) {
       console.error(err);
       setDriveStatus("アップロードに失敗しました");
-      window.alert("画像をアップロードできませんでした（1枚20MBまで）。");
+      window.alert("画像を20MB以下に変換してアップロードできませんでした。画像形式やサイズを確認してください。");
     }
   }
 
@@ -18665,7 +18777,6 @@
         "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif",
       ]);
       if (!supportedTypes.has(mimeType)) throw new Error("unsupported web image type");
-      if (blob.size > 20 * 1024 * 1024) throw new Error("image is too large");
       const file = new File([blob], getWebImageFilename(url, mimeType), { type: mimeType });
       await uploadDriveImages([file], folderId, scopeBoardId);
     } catch (err) {
