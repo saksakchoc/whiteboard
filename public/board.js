@@ -32,6 +32,7 @@
   const sharedWebsiteBtn = document.getElementById("shared-website-btn");
   const sharedTextMemoBtn = document.getElementById("shared-text-memo-btn");
   const sharedRiddleToolBtn = document.getElementById("shared-riddle-tool-btn");
+  const sharedQrReaderBtn = document.getElementById("shared-qr-reader-btn");
   const listMenuBtn = document.getElementById("list-menu-btn");
   const listMenu = document.getElementById("list-menu");
   const textListBtn = document.getElementById("text-list-btn");
@@ -180,6 +181,8 @@
   let lassoCopyPath = [];
   let lassoCopyMode = "rect"; // "freehand" | "rect"
   let lassoCopySelection = null; // { mode, worldPath, worldBounds }
+  let qrLassoPending = false;
+  let qrReaderWindow = null;
   const pendingImageLoadTokens = new Map();
   const imageElementCache = new Map();
   const slideshowPreviewCache = new Map();
@@ -11858,6 +11861,7 @@
     lassoCopySelection = null;
     lassoCopyActive = false;
     lassoCopyPath = [];
+    qrLassoPending = false;
   }
 
   function getLassoSelectionScreenPath(selection = lassoCopySelection) {
@@ -14810,8 +14814,12 @@
       lassoCopyActive = false;
       lassoCopyPath = [];
       if (!createLassoCopySelectionFromScreenPath(path, lassoCopyMode)) {
+        qrLassoPending = false;
         updateToolButtons();
         redraw();
+      } else if (qrLassoPending) {
+        qrLassoPending = false;
+        readQrFromLassoSelection();
       }
     }
 
@@ -15168,8 +15176,10 @@
 
     // 右クリックリリース時にコンテキストメニューを出す
     if (wasRightButton) {
-      const releasedOverFloatingWindow = e.target?.closest?.(".floating-app-window");
-      if (!releasedOverFloatingWindow && !isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
+      const releasedOverOverlay = e.target?.closest?.(
+        ".floating-app-window, #drive-modal, #drive-selection-menu, #drive-folder-menu"
+      );
+      if (!releasedOverOverlay && !isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
         hideContextMenu();
         openBoardContextMenuAt(
           rightButtonStart?.canvas || canvasPos,
@@ -15739,8 +15749,11 @@
 
   function suppressBoardContextMenu(e) {
     const target = e.target;
-    if (target?.closest?.(".floating-app-window")) {
+    if (target?.closest?.(
+      ".floating-app-window, #drive-modal, #drive-selection-menu, #drive-folder-menu"
+    )) {
       hideContextMenu();
+      e.preventDefault();
       return;
     }
     if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object, .spreadsheet-object")) return;
@@ -16871,9 +16884,9 @@
     resetShapeMode();
   });
 
-  function startLassoCopyTool(mode = lassoCopyMode) {
-      if (!requireUser()) return;
-      if (!canCreateOnCurrentLayer()) return;
+  function startLassoCopyTool(mode = lassoCopyMode, options = {}) {
+      if (!options.readOnly && (!requireUser() || !canCreateOnCurrentLayer())) return;
+      if (!options.qrReader) qrLassoPending = false;
       pendingTextListGridCopies = null;
       pendingTextMode = null;
       lassoCopyActive = false;
@@ -17032,6 +17045,7 @@
   driveGrid?.addEventListener("contextmenu", (event) => {
     if (driveVirtualHome || event.target.closest(".drive-item")) return;
     event.preventDefault();
+    event.stopPropagation();
     const currentFolder = driveContents.breadcrumb?.[driveContents.breadcrumb.length - 1];
     if (!currentFolder || !driveCurrentFolderId) return;
     driveContextFolder = {
@@ -17587,6 +17601,169 @@
     });
   }
 
+  function setQrReaderMessage(message, kind = "status") {
+    if (!qrReaderWindow?.isConnected) openQrReader();
+    const status = qrReaderWindow?.querySelector(".qr-reader-status");
+    const result = qrReaderWindow?.querySelector(".qr-reader-result");
+    const copy = qrReaderWindow?.querySelector(".qr-reader-copy");
+    const open = qrReaderWindow?.querySelector(".qr-reader-open");
+    if (!status || !result) return;
+    if (kind === "result") {
+      status.textContent = "QRコードを読み取りました。";
+      result.value = message;
+      result.classList.remove("hidden");
+      copy?.classList.remove("hidden");
+      const isUrl = /^https?:\/\//i.test(message);
+      open?.classList.toggle("hidden", !isUrl);
+      if (open) open.dataset.url = isUrl ? message : "";
+    } else {
+      status.textContent = message;
+      result.value = "";
+      result.classList.add("hidden");
+      copy?.classList.add("hidden");
+      open?.classList.add("hidden");
+    }
+  }
+
+  async function decodeQrImageSource(source) {
+    if (typeof window.jsQR !== "function") throw new Error("QR読み取り機能を読み込めませんでした。");
+    const bitmap = await createImageBitmap(source);
+    try {
+      const decodeCanvas = document.createElement("canvas");
+      decodeCanvas.width = bitmap.width;
+      decodeCanvas.height = bitmap.height;
+      const decodeContext = decodeCanvas.getContext("2d", { willReadFrequently: true });
+      decodeContext.drawImage(bitmap, 0, 0);
+      const pixels = decodeContext.getImageData(0, 0, bitmap.width, bitmap.height);
+      return window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" })?.data || "";
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  async function readQrImage(source) {
+    setQrReaderMessage("読み取り中…");
+    try {
+      const value = await decodeQrImageSource(source);
+      setQrReaderMessage(value || "QRコードを検出できませんでした。", value ? "result" : "status");
+    } catch (error) {
+      console.warn("failed to read QR code", error);
+      setQrReaderMessage(error?.message || "QRコードを読み取れませんでした。");
+    }
+  }
+
+  async function readQrFromLassoSelection() {
+    if (!lassoCopySelection) return;
+    const path = getLassoSelectionScreenPath();
+    clearLassoCopySelection();
+    redraw();
+    try {
+      const capture = createHighQualityLassoScreenshot(path);
+      const response = await fetch(capture.src);
+      await readQrImage(await response.blob());
+    } catch (error) {
+      console.warn("failed to capture QR selection", error);
+      setQrReaderMessage("選択範囲を画像にできませんでした。");
+    } finally {
+      switchToSelectTool();
+    }
+  }
+
+  function startQrLassoReader() {
+    openQrReader();
+    qrReaderWindow?.classList.remove("active");
+    qrLassoPending = true;
+    startLassoCopyTool("rect", { readOnly: true, qrReader: true });
+    showTransientFooterMessage("QRコードの周囲を四角形で囲んでください。", 6000);
+  }
+
+  async function readQrFromClipboard() {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imageType = item.types.find((type) => type.startsWith("image/"));
+        if (imageType) {
+          await readQrImage(await item.getType(imageType));
+          return;
+        }
+      }
+      setQrReaderMessage("クリップボードに画像がありません。");
+    } catch (_error) {
+      setQrReaderMessage("下の貼り付け欄を選択し、Ctrl+Vで画像を貼り付けてください。");
+      qrReaderWindow?.querySelector(".qr-reader-paste-zone")?.focus();
+    }
+  }
+
+  function openQrReader() {
+    if (qrReaderWindow?.isConnected) {
+      activateFloatingAppWindow(qrReaderWindow);
+      return qrReaderWindow;
+    }
+    const frame = document.createElement("section");
+    frame.className = "floating-app-window floating-qr-reader";
+    frame.style.left = `${Math.max(8, Math.min(170, window.innerWidth - 440))}px`;
+    frame.style.top = `${Math.max(8, Math.min(110, window.innerHeight - 430))}px`;
+    frame.innerHTML = `
+      <header class="floating-app-window-header">
+        <span>QRコード読み取り</span>
+        <button class="floating-app-window-close" type="button" aria-label="閉じる">×</button>
+      </header>
+      <div class="qr-reader-content">
+        <button class="qr-reader-file" type="button">📁 画像ファイルを選択</button>
+        <button class="qr-reader-clipboard" type="button">📋 クリップボード画像を読み取る</button>
+        <button class="qr-reader-board" type="button">✂️ ボード上をはさみで囲む</button>
+        <input class="qr-reader-file-input" type="file" accept="image/*" hidden>
+        <div class="qr-reader-paste-zone" contenteditable="true" tabindex="0">ここを選択して Ctrl+V で画像を貼り付け</div>
+        <p class="qr-reader-status" role="status">画像の読み取り方法を選んでください。</p>
+        <textarea class="qr-reader-result hidden" readonly aria-label="QRコードの読み取り結果"></textarea>
+        <div class="qr-reader-result-actions">
+          <button class="qr-reader-copy hidden" type="button">結果をコピー</button>
+          <button class="qr-reader-open hidden" type="button">URLを開く</button>
+        </div>
+      </div>`;
+    document.body.appendChild(frame);
+    qrReaderWindow = frame;
+    const header = frame.querySelector("header");
+    enableFloatingWindowDrag(frame, header);
+    frame.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    frame.querySelector(".floating-app-window-close").addEventListener("click", () => {
+      qrLassoPending = false;
+      qrReaderWindow = null;
+      removeFloatingWindow(frame);
+    });
+    const fileInput = frame.querySelector(".qr-reader-file-input");
+    frame.querySelector(".qr-reader-file").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files?.[0];
+      if (file) readQrImage(file);
+      fileInput.value = "";
+    });
+    frame.querySelector(".qr-reader-clipboard").addEventListener("click", readQrFromClipboard);
+    frame.querySelector(".qr-reader-board").addEventListener("click", startQrLassoReader);
+    frame.querySelector(".qr-reader-paste-zone").addEventListener("paste", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const file = getImageFilesFromDataTransfer(event.clipboardData)[0];
+      if (file) readQrImage(file);
+      else setQrReaderMessage("貼り付けられたデータに画像がありません。");
+    });
+    frame.querySelector(".qr-reader-copy").addEventListener("click", async () => {
+      const value = frame.querySelector(".qr-reader-result").value;
+      await navigator.clipboard.writeText(value);
+      setQrReaderMessage(value, "result");
+      frame.querySelector(".qr-reader-status").textContent = "読み取り結果をコピーしました。";
+    });
+    frame.querySelector(".qr-reader-open").addEventListener("click", (event) => {
+      const url = event.currentTarget.dataset.url;
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    });
+    activateFloatingAppWindow(frame);
+    return frame;
+  }
+
   if (sharedToolsBtn && sharedToolsMenu) {
     sharedToolsBtn.addEventListener("mouseenter", openSharedToolsMenu);
     sharedToolsBtn.addEventListener("mouseleave", () => closeSharedToolsMenu(800));
@@ -17624,6 +17801,10 @@
   sharedRiddleToolBtn?.addEventListener("click", () => {
     closeSharedToolsMenu();
     createRiddleTool();
+  });
+  sharedQrReaderBtn?.addEventListener("click", () => {
+    closeSharedToolsMenu();
+    openQrReader();
   });
 
   if (listMenuBtn) {
@@ -17967,6 +18148,7 @@
         installDriveFolderDropTarget(item, folder.id, folder.boardId);
         item.addEventListener("contextmenu", (event) => {
           event.preventDefault();
+          event.stopPropagation();
           driveContextFolder = { ...folder, isRoot: true };
           showDriveFolderMenu(event.clientX, event.clientY);
         });
@@ -18064,6 +18246,7 @@
       installDriveFolderDropTarget(item, folder.id);
       item.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        event.stopPropagation();
         driveContextFolder = { ...folder, boardId: driveScopeBoardId, isRoot: false };
         showDriveFolderMenu(event.clientX, event.clientY);
       });
@@ -18116,6 +18299,7 @@
       });
       item.addEventListener("contextmenu", (event) => {
         event.preventDefault();
+        event.stopPropagation();
         if (!selectedDriveImageIds.has(image.id)) {
           selectedDriveImageIds.clear();
           driveSelectionOrder = [image.id];

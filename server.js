@@ -91,6 +91,9 @@ rootApp.use(APP_BASE_PATH, app);
 
 // JSON / 静的ファイル
 app.use(express.json());
+app.get("/vendor/jsQR.js", (_req, res) => {
+  res.sendFile(path.join(__dirname, "node_modules", "jsqr", "dist", "jsQR.js"));
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 // アップロード先（まだ使わないけど作っておく）
