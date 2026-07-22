@@ -14,7 +14,13 @@
     <div id="side-toolbar">
       <div class="side-stack">
         <button id="pen-tool-btn" class="side-button" title="ペン">✏️</button>
-        <button id="eraser-tool-btn" class="side-button" title="消しゴム">🩹</button>
+        <div class="side-eraser-tool">
+          <button id="eraser-tool-btn" class="side-button" title="消しゴム（通常モード）" aria-haspopup="menu" aria-expanded="false">🩹</button>
+          <div id="eraser-tool-menu" class="side-menu hidden" role="menu">
+            <button data-eraser-mode="normal" role="menuitem">通常モード</button>
+            <button data-eraser-mode="own" role="menuitem">自分の線だけ消す</button>
+          </div>
+        </div>
         <button id="select-tool-btn" class="side-button" title="選択">🖱️</button>
         <div class="side-lasso-tool">
           <button id="lasso-copy-tool-btn" class="side-button" title="投げ縄スクショ">✂</button>

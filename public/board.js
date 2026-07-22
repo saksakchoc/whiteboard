@@ -13,6 +13,7 @@
   const penToolBtn = document.getElementById("pen-tool-btn");
   const fillToolBtn = document.getElementById("fill-tool-btn");
   const eraserToolBtn = document.getElementById("eraser-tool-btn");
+  const eraserToolMenu = document.getElementById("eraser-tool-menu");
   const selectToolBtn = document.getElementById("select-tool-btn");
   const lassoCopyToolBtn = document.getElementById("lasso-copy-tool-btn");
   const lassoCopyToolMenu = document.getElementById("lasso-copy-tool-menu");
@@ -147,6 +148,7 @@
   let activeColorSwatch = null;
   let currentSize = parseInt(sizeRange.value, 10);
   let currentTool = "pen"; // "pen" | "fill" | "select" | "eraser" | "lasso-copy"
+  let eraserMode = "normal"; // "normal" | "own"
   let currentUser = "";
   let knownUsers = [];
   let onlineUsers = [];
@@ -4482,6 +4484,7 @@
   function getSharedToolbarState() {
     return {
       tool: pendingTextMode ? `text:${pendingTextMode}` : currentTool,
+      eraserMode,
       color: currentColor,
       size: currentSize,
       strokesDimmed,
@@ -8593,6 +8596,7 @@
         sizeLabel.textContent = String(state.size);
       }
       strokesDimmed = !!state.strokesDimmed;
+      eraserMode = state.eraserMode === "own" ? "own" : "normal";
       pendingTextMode = null;
       if (typeof state.tool === "string" && state.tool.startsWith("text:")) {
         pendingTextMode = state.tool.slice(5) === "grid" ? "grid" : "normal";
@@ -10381,6 +10385,7 @@
       for (let i = draftStrokes.length - 1; i >= 0; i--) {
         const s = draftStrokes[i];
         if (!canDeleteDraft(s)) continue;
+        if (eraserMode === "own" && s.user !== currentUser) continue;
         const bounds = getStrokeBoundsWorld(s);
         if (!bounds) continue;
         if (
@@ -10402,6 +10407,7 @@
     // テキスト（自分のレイヤーのみ）
     for (let i = texts.length - 1; i >= 0; i--) {
       const t = texts[i];
+      if (eraserMode === "own") continue;
       if (!isTextVisible(t)) continue;
       if (!canDeleteText(t)) continue;
       const b = getTextBoundsWorld(t);
@@ -10428,6 +10434,7 @@
     for (let i = strokes.length - 1; i >= 0; i--) {
       const stroke = strokes[i];
       if (!canDeleteStroke(stroke)) continue;
+      if (eraserMode === "own" && stroke.user !== currentUser) continue;
       if (!isStrokeVisible(stroke)) continue;
       const pts = stroke.points;
       const bounds = getStrokeBoundsWorld(stroke);
@@ -10444,6 +10451,7 @@
         for (let j = strokes.length - 1; j >= 0; j--) {
           const st = strokes[j];
           if (!st) continue;
+          if (eraserMode === "own" && st.user !== currentUser) continue;
           if (targetGroup) {
             if (st.groupId !== targetGroup) continue;
           } else if (st.id !== stroke.id) {
@@ -16568,8 +16576,16 @@
       fillToolBtn.title = creationLocked ? "このレイヤーでは塗りつぶしは使えません" : "塗りつぶし";
     }
     if (eraserToolBtn) {
-      eraserToolBtn.disabled = isEraser;
+      // 選択中でもホバー/長押しメニューを開けるよう、親ボタンは無効化しない。
+      eraserToolBtn.disabled = false;
       eraserToolBtn.classList.toggle("active", isEraser);
+      eraserToolBtn.title = `消しゴム（${eraserMode === "own" ? "自分の線だけ消す" : "通常モード"}）`;
+      eraserToolBtn.setAttribute("aria-expanded", String(!!eraserToolMenu && !eraserToolMenu.classList.contains("hidden")));
+    }
+    if (eraserToolMenu) {
+      eraserToolMenu.querySelectorAll("button[data-eraser-mode]").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-eraser-mode") === eraserMode);
+      });
     }
     if (selectToolBtn) {
       selectToolBtn.disabled = isSelect;
@@ -16781,21 +16797,61 @@
     });
   }
 
-  eraserToolBtn.addEventListener("click", () => {
+  function startEraserTool(mode = eraserMode) {
     if (!requireUser()) return;
     if (activeLayer === "image") {
       setActiveLayer(isAdminUser() ? "admin" : "user");
     }
     pendingTextListGridCopies = null;
     pendingTextMode = null;
+    eraserMode = mode === "own" ? "own" : "normal";
     currentTool = "eraser";
     lastUserLayerTool = "eraser";
     selected = null;
     clearLassoCopySelection();
     updateToolButtons();
-    showTransientFooterMessage("消しゴム：線に触れると一筆単位で削除されます。画像やテキストは消えません。", 5000);
+    showTransientFooterMessage(
+      eraserMode === "own"
+        ? "消しゴム（自分の線だけ消す）：自分が描いた線だけを一筆単位で削除します。"
+        : "消しゴム（通常モード）：触れた対象を一筆単位で削除します。",
+      5000
+    );
     resetShapeMode();
-  });
+  }
+
+  eraserToolBtn.addEventListener("click", () => startEraserTool());
+
+  if (eraserToolMenu) {
+    const openEraserToolMenu = () => {
+      if (textToolMenu) textToolMenu.classList.add("hidden");
+      if (lassoCopyToolMenu) lassoCopyToolMenu.classList.add("hidden");
+      closeListMenu();
+      closeOtherMenu();
+      closeSharedToolsMenu();
+      eraserToolMenu.classList.remove("hidden");
+      eraserToolBtn.setAttribute("aria-expanded", "true");
+      updateToolButtons();
+    };
+    const closeEraserToolMenu = () => {
+      eraserToolMenu.classList.add("hidden");
+      eraserToolBtn.setAttribute("aria-expanded", "false");
+    };
+    eraserToolBtn.addEventListener("mouseenter", openEraserToolMenu);
+    eraserToolMenu.addEventListener("mouseenter", openEraserToolMenu);
+    eraserToolBtn.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!eraserToolMenu.matches(":hover") && !eraserToolBtn.matches(":hover")) closeEraserToolMenu();
+    }, 120));
+    eraserToolMenu.addEventListener("mouseleave", () => setTimeout(() => {
+      if (!eraserToolMenu.matches(":hover") && !eraserToolBtn.matches(":hover")) closeEraserToolMenu();
+    }, 120));
+    installLongPressMenuTrigger(eraserToolBtn, openEraserToolMenu);
+    eraserToolMenu.querySelectorAll("button[data-eraser-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        startEraserTool(button.getAttribute("data-eraser-mode"));
+        closeEraserToolMenu();
+      });
+    });
+  }
 
   selectToolBtn.addEventListener("click", () => {
     pendingTextListGridCopies = null;
@@ -17357,7 +17413,11 @@
 
     // 消しゴム
     if (currentTool === "eraser") {
-      setFooterMessage("消しゴム：線に触れると一筆単位で削除されます。画像やテキストは消えません。");
+      setFooterMessage(
+        eraserMode === "own"
+          ? "消しゴム（自分の線だけ消す）：自分が描いた線だけを一筆単位で削除します。"
+          : "消しゴム（通常モード）：触れた対象を一筆単位で削除します。"
+      );
       return;
     }
 
@@ -17647,6 +17707,10 @@
       textToolMenu &&
       textToolBtn &&
       (textToolMenu.contains(target) || textToolBtn.contains(target));
+    const insideEraserTool =
+      eraserToolMenu &&
+      eraserToolBtn &&
+      (eraserToolMenu.contains(target) || eraserToolBtn.contains(target));
     const insideWatchUsers =
       watchUsersMenu &&
       watchUsersBtn &&
@@ -17658,6 +17722,10 @@
     if (!insideSharedTools) closeSharedToolsMenu();
     if (!insideWatchUsers) closeWatchUsersMenu();
     if (!insideTextTool && textToolMenu) textToolMenu.classList.add("hidden");
+    if (!insideEraserTool && eraserToolMenu) {
+      eraserToolMenu.classList.add("hidden");
+      eraserToolBtn?.setAttribute("aria-expanded", "false");
+    }
   });
   window.addEventListener("resize", () => {
     refreshCompactMode();

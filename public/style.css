@@ -2266,9 +2266,16 @@ button:hover {
 .side-shared-tools,
 .side-watch-tool,
 .side-lasso-tool,
+.side-eraser-tool,
 .side-text-tool {
   position: relative;
   overflow: visible;
+}
+
+#eraser-tool-menu button.active {
+  background: #e5efff;
+  color: #0b4ea2;
+  font-weight: 700;
 }
 
 .side-menu {
