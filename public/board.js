@@ -251,6 +251,10 @@
   let driveMarquee = null;
   let driveMarqueeElement = null;
   let driveDraggingImageIds = [];
+  const DRIVE_THUMBNAIL_MIN_SIZE = 88;
+  const DRIVE_THUMBNAIL_MAX_SIZE = 280;
+  const DRIVE_THUMBNAIL_STEP = 12;
+  let driveThumbnailSize = null;
   let hiddenCommandBuffer = "";
   let localScreenStream = null;
   let localScreenShareActive = false;
@@ -17062,6 +17066,19 @@
   driveGrid?.addEventListener("dragover", handleDriveGridDragOver);
   driveGrid?.addEventListener("dragleave", handleDriveGridDragLeave);
   driveGrid?.addEventListener("drop", handleDriveGridDrop);
+  driveGrid?.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    const currentSize = driveThumbnailSize
+      || Number.parseFloat(getComputedStyle(driveGrid).getPropertyValue("--drive-thumbnail-size"))
+      || 156;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    driveThumbnailSize = Math.max(
+      DRIVE_THUMBNAIL_MIN_SIZE,
+      Math.min(DRIVE_THUMBNAIL_MAX_SIZE, currentSize + direction * DRIVE_THUMBNAIL_STEP)
+    );
+    driveGrid.style.setProperty("--drive-thumbnail-size", `${driveThumbnailSize}px`);
+  }, { passive: false });
   driveSlidePrevBtn?.addEventListener("click", () => moveDriveSlide(-1));
   driveSlideNextBtn?.addEventListener("click", () => moveDriveSlide(1));
   driveSlideshowBackBtn?.addEventListener("click", closeDriveSlideshow);
