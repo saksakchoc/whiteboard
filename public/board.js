@@ -4364,7 +4364,6 @@
     if (!frame || !actions) return;
     frame.classList.add("shared-floating-window");
     frame.addEventListener("contextmenu", (event) => {
-      if (event.target.closest("input, textarea, [contenteditable='true'], iframe")) return;
       showSharedFloatingContextMenu(event, frame);
     });
     const toggle = document.createElement("button");
@@ -15169,7 +15168,8 @@
 
     // 右クリックリリース時にコンテキストメニューを出す
     if (wasRightButton) {
-      if (!isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
+      const releasedOverFloatingWindow = e.target?.closest?.(".floating-app-window");
+      if (!releasedOverFloatingWindow && !isPanning && rightDragDistance <= CONTEXT_DRAG_THRESHOLD) {
         hideContextMenu();
         openBoardContextMenuAt(
           rightButtonStart?.canvas || canvasPos,
@@ -15739,6 +15739,10 @@
 
   function suppressBoardContextMenu(e) {
     const target = e.target;
+    if (target?.closest?.(".floating-app-window")) {
+      hideContextMenu();
+      return;
+    }
     if (target?.closest?.(".text-memo-header, .text-memo-resize, .calculator-object, .spreadsheet-object")) return;
     const isBoardContext =
       target === canvas ||
