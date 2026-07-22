@@ -195,10 +195,10 @@
     newBoardBtn.addEventListener("click", async () => {
       newBoardBtn.disabled = true;
       try {
-        const res = await fetch("/api/boards", { method: "POST" });
+        const res = await fetch("api/boards", { method: "POST" });
         if (!res.ok) throw new Error("failed to create board");
         const board = await res.json();
-        window.location.href = board.url || `/b/${encodeURIComponent(board.id)}`;
+        window.location.href = board.url || `b/${encodeURIComponent(board.id)}`;
       } catch (err) {
         console.error(err);
         window.alert("ボード作成に失敗しました。");
@@ -225,7 +225,7 @@
     async function deleteBoard(board) {
       const label = board.title || board.id;
       if (!window.confirm(`「${label}」を削除します。元に戻せません。`)) return;
-      const res = await fetch(`/api/boards/${encodeURIComponent(board.id)}`, {
+      const res = await fetch(`api/boards/${encodeURIComponent(board.id)}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -250,7 +250,7 @@
         const info = document.createElement("div");
         const title = document.createElement("a");
         title.className = "board-title";
-        title.href = `/b/${encodeURIComponent(board.id)}`;
+        title.href = `b/${encodeURIComponent(board.id)}`;
         title.textContent = board.title || board.id;
 
         const meta = document.createElement("div");
@@ -266,7 +266,7 @@
         actions.className = "board-actions";
         const open = document.createElement("a");
         open.className = "button";
-        open.href = `/b/${encodeURIComponent(board.id)}`;
+        open.href = `b/${encodeURIComponent(board.id)}`;
         open.textContent = "開く";
         const remove = document.createElement("button");
         remove.type = "button";
@@ -283,7 +283,7 @@
     async function loadBoards() {
       statusEl.textContent = "読み込み中...";
       try {
-        const res = await fetch("/api/boards");
+        const res = await fetch("api/boards");
         if (!res.ok) throw new Error("failed to load boards");
         renderBoards(await res.json());
       } catch (err) {

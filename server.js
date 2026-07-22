@@ -57,9 +57,12 @@ const HOST = process.env.HOST || "0.0.0.0";
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH || "";
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH || "";
 const SSL_CA_PATH = process.env.SSL_CA_PATH || "";
+const APP_BASE_PATH = `/${String(process.env.APP_BASE_PATH || "whiteboard")
+  .replace(/^\/+|\/+$/g, "")}`;
 const dataDir = path.join(__dirname, "data");
 
-const app = express();
+const rootApp = express();
+const app = express.Router();
 
 function createHttpServer(app) {
   if (!SSL_KEY_PATH && !SSL_CERT_PATH) {
@@ -78,10 +81,13 @@ function createHttpServer(app) {
   return { server: https.createServer(options, app), protocol: "https" };
 }
 
-const { server, protocol } = createHttpServer(app);
+const { server, protocol } = createHttpServer(rootApp);
 const io = new Server(server, {
+  path: `${APP_BASE_PATH}/socket.io`,
   maxHttpBufferSize: Number(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE || 50 * 1024 * 1024),
 });
+
+rootApp.use(APP_BASE_PATH, app);
 
 // JSON / 静的ファイル
 app.use(express.json());
@@ -137,6 +143,27 @@ function safeFilePart(value, fallback = "file") {
   return String(value || fallback).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || fallback;
 }
 
+function appUrl(value) {
+  if (typeof value !== "string" || !value.startsWith("/")) return value;
+  if (value === APP_BASE_PATH || value.startsWith(`${APP_BASE_PATH}/`)) return value;
+  return `${APP_BASE_PATH}${value}`;
+}
+
+function publicImage(image) {
+  if (!image || typeof image !== "object") return image;
+  return {
+    ...image,
+    src: appUrl(image.src),
+    slideshowSlides: Array.isArray(image.slideshowSlides)
+      ? image.slideshowSlides.map((slide) => (
+          typeof slide === "string"
+            ? appUrl(slide)
+            : { ...slide, src: appUrl(slide?.src) }
+        ))
+      : image.slideshowSlides,
+  };
+}
+
 function dataUrlExtension(mime) {
   if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
   if (mime === "image/webp") return "webp";
@@ -157,7 +184,7 @@ function materializeImageSrc(boardId, image) {
   fs.writeFileSync(filePath, Buffer.from(match[2], "base64"));
   return {
     ...image,
-    src: `/uploads/${safeFilePart(boardId, "board")}/${filename}`,
+    src: appUrl(`/uploads/${safeFilePart(boardId, "board")}/${filename}`),
   };
 }
 
@@ -246,13 +273,13 @@ function createNewBoardId(req) {
 // 新しいボードを作成してリダイレクト
 app.post("/new", (req, res) => {
   const id = createNewBoardId(req);
-  res.redirect(`/b/${id}`);
+  res.redirect(appUrl(`/b/${id}`));
 });
 
 app.post("/api/boards", (req, res) => {
   try {
     const id = createNewBoardId(req);
-    res.status(201).json({ id, url: `/b/${id}` });
+    res.status(201).json({ id, url: appUrl(`/b/${id}`) });
   } catch (err) {
     console.error("Failed to create board", err);
     res.status(500).json({ error: "failed to create board" });
@@ -260,7 +287,7 @@ app.post("/api/boards", (req, res) => {
 });
 
 app.get("/new", (req, res) => {
-  res.redirect("/");
+  res.redirect(`${APP_BASE_PATH}/`);
 });
 
 app.get("/api/boards", (req, res) => {
@@ -371,7 +398,7 @@ function driveImageResponse(row) {
     id: row.id,
     folderId: row.folder_id || null,
     name: normalizeUploadedFilename(row.name),
-    src: row.src,
+    src: appUrl(row.src),
     mimeType: row.mime_type || "",
     size: row.size || 0,
     capturedAt: row.captured_at || null,
@@ -469,8 +496,10 @@ function readExifCapturedAt(filePath, mimeType) {
 }
 
 function removeDriveUpload(src) {
-  if (typeof src !== "string" || !src.startsWith("/uploads/drive/")) return;
-  const filename = path.basename(src);
+  if (typeof src !== "string") return;
+  const relativeSrc = src.startsWith(`${APP_BASE_PATH}/`) ? src.slice(APP_BASE_PATH.length) : src;
+  if (!relativeSrc.startsWith("/uploads/drive/")) return;
+  const filename = path.basename(relativeSrc);
   const target = path.resolve(driveUploadsDir, filename);
   if (path.dirname(target) !== path.resolve(driveUploadsDir)) return;
   fs.rmSync(target, { force: true });
@@ -630,7 +659,7 @@ app.post("/api/boards/:boardId/drive/images", (req, res) => {
         id: crypto.randomUUID(),
         folderId,
         name: normalizeUploadedFilename(file.originalname).slice(0, 255),
-        src: `/uploads/drive/${file.filename}`,
+        src: appUrl(`/uploads/drive/${file.filename}`),
         mimeType: file.mimetype,
         size: file.size,
         capturedAt: readExifCapturedAt(file.path, file.mimetype),
@@ -1095,7 +1124,7 @@ function ensureBoardState(boardId) {
       if (materialized.src !== img.src) {
         saveImage({ ...materialized, board_id: boardId });
       }
-      return materialized;
+      return publicImage(materialized);
     });
     boardStates.set(boardId, {
       title: dbState.title || boardId,

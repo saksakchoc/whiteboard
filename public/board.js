@@ -1,5 +1,7 @@
 // public/board.js
 (() => {
+  const APP_BASE_PATH = window.location.pathname.replace(/\/b\/[^/]+\/?$/, "");
+  const appUrl = (path) => `${APP_BASE_PATH}/${String(path || "").replace(/^\/+/, "")}`;
   const canvas = document.getElementById("board-canvas");
   const container = document.getElementById("canvas-container");
   const spreadsheetLayer = document.getElementById("spreadsheet-layer");
@@ -3578,7 +3580,7 @@
       return false;
     }
     popup.document.open();
-    popup.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title></title><link rel="stylesheet" href="/style.css"></head><body class="floating-popup-body"></body></html>');
+    popup.document.write(`<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title></title><link rel="stylesheet" href="${appUrl("style.css")}"></head><body class="floating-popup-body"></body></html>`);
     popup.document.close();
     popup.document.title = title;
     frame.classList.add("is-browser-popout");
@@ -5212,7 +5214,7 @@
 
   async function loadTemplates() {
     try {
-      const res = await fetch("/api/templates");
+      const res = await fetch(appUrl("api/templates"));
       if (!res.ok) throw new Error("failed");
       templates = await res.json();
     } catch {
@@ -5232,7 +5234,7 @@
 
   async function loadBoardUsersFromServer() {
     try {
-      const res = await fetch(`/api/boards/${boardId}/users`);
+      const res = await fetch(appUrl(`api/boards/${boardId}/users`));
       if (!res.ok) throw new Error("failed");
       const list = await res.json();
       if (Array.isArray(list)) {
@@ -5249,7 +5251,7 @@
     if (!trimmed) return;
     const favoriteColor = getUserRegisteredFavoriteColor(trimmed);
     try {
-      const res = await fetch(`/api/boards/${boardId}/users`, {
+      const res = await fetch(appUrl(`api/boards/${boardId}/users`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: trimmed, favoriteColor }),
@@ -7663,6 +7665,7 @@
 
   // --- ソケット接続 ---
   const socket = io({
+    path: appUrl("socket.io"),
     transports: ["websocket", "polling"],
   });
   let socketConnected = false;
@@ -8124,7 +8127,7 @@
       const isRemoteHttp =
         (parsed.protocol === "http:" || parsed.protocol === "https:") &&
         parsed.origin !== window.location.origin;
-      if (isRemoteHttp) return `/api/link-image?url=${encodeURIComponent(parsed.toString())}`;
+      if (isRemoteHttp) return appUrl(`api/link-image?url=${encodeURIComponent(parsed.toString())}`);
       return parsed.toString();
     } catch {
       return src;
@@ -13613,7 +13616,7 @@
 
   async function fetchLinkPreview(url) {
     try {
-      const res = await fetch(`/api/link-preview?url=${encodeURIComponent(url)}`);
+      const res = await fetch(appUrl(`api/link-preview?url=${encodeURIComponent(url)}`));
       if (!res.ok) throw new Error("preview failed");
       return await res.json();
     } catch {
@@ -17873,7 +17876,7 @@
   }
 
   function getDriveApiBase(scopeBoardId = driveScopeBoardId) {
-    return `/api/boards/${encodeURIComponent(scopeBoardId || boardId)}/drive`;
+    return appUrl(`api/boards/${encodeURIComponent(scopeBoardId || boardId)}/drive`);
   }
 
   async function loadDriveFolder(folderId = null) {
@@ -17931,7 +17934,7 @@
     driveOrderControl?.classList.add("hidden");
     setDriveStatus("読み込み中...");
     try {
-      const res = await fetch("/api/drive/home");
+      const res = await fetch(appUrl("api/drive/home"));
       if (!res.ok) throw new Error("drive home fetch failed");
       const data = await res.json();
       if (!driveVirtualHome) return;
@@ -18334,7 +18337,7 @@
     clearDriveDropTargets();
     setDriveStatus(`${imageIds.length}件を移動中...`);
     try {
-      const res = await fetch("/api/drive/move-images", {
+      const res = await fetch(appUrl("api/drive/move-images"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageIds, targetFolderId }),
@@ -18647,7 +18650,7 @@
     const value = window.prompt("画像名を入力してください", image.name);
     const name = String(value || "").trim();
     if (!name || name === image.name) return;
-    const imageApiBase = driveVirtualHome ? "/api/drive" : getDriveApiBase();
+    const imageApiBase = driveVirtualHome ? appUrl("api/drive") : getDriveApiBase();
     const res = await fetch(`${imageApiBase}/images/${encodeURIComponent(image.id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -18663,7 +18666,7 @@
     if (!selectedImages.length) return;
     hideDriveSelectionMenu();
     if (!window.confirm(`選択した画像 ${selectedImages.length}件を削除しますか？`)) return;
-    const imageApiBase = driveVirtualHome ? "/api/drive" : getDriveApiBase();
+    const imageApiBase = driveVirtualHome ? appUrl("api/drive") : getDriveApiBase();
     const results = await Promise.all(selectedImages.map((image) =>
       fetch(`${imageApiBase}/images/${encodeURIComponent(image.id)}`, { method: "DELETE" })
     ));
@@ -18874,7 +18877,7 @@
     try {
       const response = /^data:image\//i.test(url)
         ? await fetch(url)
-        : await fetch(`/api/link-image?url=${encodeURIComponent(url)}`);
+        : await fetch(appUrl(`api/link-image?url=${encodeURIComponent(url)}`));
       if (!response.ok) throw new Error("web image fetch failed");
       const blob = await response.blob();
       const rawMimeType = String(blob.type || "").split(";", 1)[0].toLowerCase();
@@ -19008,7 +19011,7 @@
       return;
     }
     const sourceImages = selectedNames.slice(0, 4).map((name) => ({
-      src: `/templates/${encodeURIComponent(name)}`,
+      src: appUrl(`templates/${encodeURIComponent(name)}`),
       name: name.replace(/\.png$/i, ""),
     }));
     await insertDriveSlideshowObject(sourceImages, 0, {
@@ -19743,7 +19746,7 @@
     const center = getCanvasCenterWorld();
     const link = {
       id: genId(),
-      url: "/api/translate",
+      url: appUrl("api/translate"),
       title: config.defaultTitle,
       description: "",
       image: "",
@@ -19867,7 +19870,7 @@
       content.querySelector(".floating-translation-submit").disabled = true;
       status.textContent = "翻訳中…";
       try {
-        const response = await fetch("/api/translate", {
+        const response = await fetch(appUrl("api/translate"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text, source: config.source, target: config.target }),
@@ -20023,7 +20026,7 @@
       output.classList.add("is-loading");
       output.textContent = "翻訳中...";
       try {
-        const response = await fetch("/api/translate", {
+        const response = await fetch(appUrl("api/translate"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text, source: config.source, target: config.target }),
@@ -22105,7 +22108,7 @@
       addSection(
         "テンプレ画像",
         templates.map((filename) => {
-          const src = `/templates/${filename}`;
+          const src = appUrl(`templates/${filename}`);
           const name = filename.replace(/\.png$/i, "");
           return { label: name, onClick: () => insertTemplateImage(src) };
         })

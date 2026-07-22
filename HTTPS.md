@@ -38,9 +38,25 @@ docker compose up -d --build
 ```
 
 The app will serve HTTPS on the configured `PORT`, currently `3001`.
+The application path defaults to `/whiteboard`; it can be changed with the
+`APP_BASE_PATH` environment variable.
 
 ## Notes
 
 - Browser screen sharing requires HTTPS, except on `localhost`.
-- If you want normal browser access without `:3001`, put Caddy, nginx, or another reverse proxy in front and proxy `https://YOUR_DOMAIN` to `http://127.0.0.1:3001`.
+- If you want normal browser access without `:3001`, put Caddy, nginx, or another reverse proxy in front. Preserve the `/whiteboard/` prefix when proxying it to `http://127.0.0.1:3001`.
 - For production, a reverse proxy on ports `80` and `443` is usually easier because it can renew certificates automatically.
+
+Example nginx location:
+
+```nginx
+location /whiteboard/ {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
