@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>画面設計ボード</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif;color:#172033;background:#eef1f5}*{box-sizing:border-box}body{margin:0}main{width:min(1000px,calc(100% - 32px));margin:auto;padding:32px 0}header,.panel-head,.board-row,.board-actions{display:flex;align-items:center}header,.panel-head{justify-content:space-between;gap:16px}header{margin-bottom:20px}h1{margin:0;font-size:28px}.subtitle{color:#68748a;font-size:13px;margin-top:4px}button,a.button{min-height:38px;border:1px solid #c8ced8;border-radius:8px;padding:8px 14px;background:#fff;color:#172033;font:inherit;text-decoration:none;cursor:pointer}.primary{border-color:#4f46e5!important;background:#4f46e5!important;color:#fff!important}.danger{border-color:#fda29b!important;color:#b42318!important}.panel{border:1px solid #d9dde5;border-radius:11px;background:#fff;overflow:hidden;box-shadow:0 12px 28px #34405412}.panel-head{padding:14px 16px;border-bottom:1px solid #e4e7ec}.panel-title{font-weight:700}.status,.board-meta{color:#68748a;font-size:13px}.board-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:16px;border-bottom:1px solid #edf0f4}.board-title{display:block;color:#172033;font-weight:700;text-decoration:none}.board-meta{display:flex;gap:8px 14px;flex-wrap:wrap;margin-top:6px}.board-actions{gap:8px}.empty{padding:32px 16px;color:#68748a;text-align:center}@media(max-width:640px){main{width:min(100% - 20px,1000px);padding:18px 0}header,.panel-head{align-items:stretch;flex-direction:column}.board-row{grid-template-columns:1fr}.board-actions{justify-content:flex-start}}
+  </style>
+</head>
+<body><main>
+  <header><div><h1>画面設計ボード</h1><div class="subtitle">ワイヤーフレーム、画面遷移、動作仕様を共同で決める</div></div><button id="new-board" class="primary">新しい画面設計を作成</button></header>
+  <section class="panel"><div class="panel-head"><div class="panel-title">画面設計一覧</div><div id="status" class="status">読み込み中…</div></div><div id="board-list"></div></section>
+</main><script>
+const list=document.getElementById("board-list"),status=document.getElementById("status"),create=document.getElementById("new-board");
+create.addEventListener("click",async()=>{create.disabled=true;try{const r=await fetch("../api/boards",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"design"})});if(!r.ok)throw Error();const b=await r.json();location.href=`./${encodeURIComponent(b.id)}`}catch{alert("画面設計の作成に失敗しました。");create.disabled=false}});
+const date=(v)=>new Intl.DateTimeFormat("ja-JP",{dateStyle:"short",timeStyle:"short"}).format(new Date(v));
+async function remove(b){if(!confirm(`「${b.title||b.id}」を削除します。元に戻せません。`))return;const r=await fetch(`../api/boards/${encodeURIComponent(b.id)}`,{method:"DELETE"});if(!r.ok)return alert("削除に失敗しました。");load()}
+function render(boards){list.innerHTML="";status.textContent=`${boards.length}件`;if(!boards.length){list.innerHTML='<div class="empty">まだ画面設計がありません。</div>';return}boards.forEach(b=>{const row=document.createElement("div");row.className="board-row";row.innerHTML=`<div><a class="board-title" href="./${encodeURIComponent(b.id)}">${b.title||b.id}</a><div class="board-meta"><span>ID: ${b.id}</span><span>作成: ${date(b.createdAt)}</span><span>設計要素 ${b.counts.designItems}</span></div></div>`;const actions=document.createElement("div");actions.className="board-actions";actions.innerHTML=`<a class="button primary" href="./${encodeURIComponent(b.id)}">設計を開く</a>`;const del=document.createElement("button");del.className="danger";del.textContent="削除";del.onclick=()=>remove(b);actions.append(del);row.append(actions);list.append(row)})}
+async function load(){try{const r=await fetch("../api/boards?mode=design");if(!r.ok)throw Error();render(await r.json())}catch{status.textContent="読み込み失敗"}}load();
+</script></body></html>

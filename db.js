@@ -16,7 +16,8 @@ const db = new Database(dbPath);
 db.exec(`
 CREATE TABLE IF NOT EXISTS boards (
   id TEXT PRIMARY KEY,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'whiteboard'
 );
 
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -188,8 +189,37 @@ CREATE TABLE IF NOT EXISTS drive_roots (
   activated INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS design_items (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  x REAL NOT NULL DEFAULT 0,
+  y REAL NOT NULL DEFAULT 0,
+  width REAL NOT NULL DEFAULT 240,
+  height REAL NOT NULL DEFAULT 160,
+  z_index INTEGER NOT NULL DEFAULT 0,
+  data TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_design_items_board ON design_items(board_id, z_index, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_drive_folders_parent ON drive_folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_drive_images_folder ON drive_images(folder_id);
+`);
+
+try {
+  db.exec("ALTER TABLE boards ADD COLUMN mode TEXT NOT NULL DEFAULT 'whiteboard'");
+} catch (e) {
+  // ignore if column already exists
+}
+db.exec(`
+  UPDATE boards
+  SET mode = 'design'
+  WHERE mode = 'whiteboard'
+    AND EXISTS (SELECT 1 FROM design_items WHERE design_items.board_id = boards.id)
 `);
 
 try {
@@ -427,11 +457,11 @@ try {
 });
 
 // --- boards ---
-function createBoard(id) {
+function createBoard(id, mode = "whiteboard") {
   const stmt = db.prepare(
-    "INSERT INTO boards (id, created_at) VALUES (?, ?)"
+    "INSERT INTO boards (id, created_at, mode) VALUES (?, ?, ?)"
   );
-  stmt.run(id, Date.now());
+  stmt.run(id, Date.now(), mode === "design" ? "design" : "whiteboard");
 }
 
 function getBoard(id) {
@@ -439,25 +469,30 @@ function getBoard(id) {
   return stmt.get(id);
 }
 
-function listBoards() {
+function listBoards(mode = null) {
+  const safeMode = mode === "design" || mode === "whiteboard" ? mode : null;
   const stmt = db.prepare(`
     SELECT
       b.id,
       b.created_at,
+      b.mode,
       COALESCE(m.title, b.id) AS title,
       (SELECT COUNT(*) FROM strokes_v2 WHERE board_id = b.id) AS stroke_count,
       (SELECT COUNT(*) FROM texts_v2 WHERE board_id = b.id) AS text_count,
       (SELECT COUNT(*) FROM images_v2 WHERE board_id = b.id) AS image_count,
-      (SELECT COUNT(*) FROM links_v1 WHERE board_id = b.id) AS link_count
+      (SELECT COUNT(*) FROM links_v1 WHERE board_id = b.id) AS link_count,
+      (SELECT COUNT(*) FROM design_items WHERE board_id = b.id) AS design_item_count
     FROM boards b
     LEFT JOIN board_meta m ON m.board_id = b.id
+    WHERE (? IS NULL OR b.mode = ?)
     ORDER BY b.created_at DESC
   `);
-  return stmt.all();
+  return stmt.all(safeMode, safeMode);
 }
 
 function deleteBoard(boardId) {
   const run = db.transaction((id) => {
+    db.prepare("DELETE FROM design_items WHERE board_id = ?").run(id);
     db.prepare("DELETE FROM draft_strokes WHERE board_id = ?").run(id);
     db.prepare("DELETE FROM links_v1 WHERE board_id = ?").run(id);
     db.prepare("DELETE FROM images_v2 WHERE board_id = ?").run(id);
@@ -469,6 +504,66 @@ function deleteBoard(boardId) {
     return result.changes;
   });
   return run(boardId);
+}
+
+// --- screen design items ---
+function saveDesignItem(item) {
+  const now = Date.now();
+  const createdAt = Number(item.createdAt) || now;
+  db.prepare(`
+    INSERT INTO design_items (
+      id, board_id, kind, x, y, width, height, z_index, data,
+      created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      kind = excluded.kind,
+      x = excluded.x,
+      y = excluded.y,
+      width = excluded.width,
+      height = excluded.height,
+      z_index = excluded.z_index,
+      data = excluded.data,
+      updated_at = excluded.updated_at
+  `).run(
+    item.id,
+    item.board_id || item.boardId,
+    item.kind,
+    Number(item.x) || 0,
+    Number(item.y) || 0,
+    Math.max(40, Number(item.width) || 240),
+    Math.max(28, Number(item.height) || 160),
+    Number(item.zIndex) || 0,
+    JSON.stringify(item.data || {}),
+    item.createdBy || item.user || null,
+    createdAt,
+    now
+  );
+  return { ...item, createdAt, updatedAt: now };
+}
+
+function deleteDesignItem(boardId, id) {
+  return db.prepare("DELETE FROM design_items WHERE board_id = ? AND id = ?").run(boardId, id).changes;
+}
+
+function getDesignItems(boardId) {
+  return db.prepare(`
+    SELECT id, kind, x, y, width, height, z_index, data, created_by, created_at, updated_at
+    FROM design_items
+    WHERE board_id = ?
+    ORDER BY z_index ASC, created_at ASC
+  `).all(boardId).map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    x: row.x,
+    y: row.y,
+    width: row.width,
+    height: row.height,
+    zIndex: row.z_index,
+    data: JSON.parse(row.data || "{}"),
+    createdBy: row.created_by || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 function getBoardTitle(boardId) {
@@ -1139,4 +1234,7 @@ module.exports = {
   moveDriveImages,
   deleteDriveImage,
   deleteDriveFolder,
+  saveDesignItem,
+  deleteDesignItem,
+  getDesignItems,
 };

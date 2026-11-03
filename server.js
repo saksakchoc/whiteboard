@@ -49,6 +49,9 @@ const {
   moveDriveImages,
   deleteDriveImage,
   deleteDriveFolder,
+  saveDesignItem,
+  deleteDesignItem,
+  getDesignItems,
 } = require("./db");
 
 // 設定
@@ -94,7 +97,7 @@ app.use(express.json());
 app.get("/vendor/jsQR.js", (_req, res) => {
   res.sendFile(path.join(__dirname, "node_modules", "jsqr", "dist", "jsQR.js"));
 });
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), { index: false }));
 
 // アップロード先（まだ使わないけど作っておく）
 const uploadsDir = path.join(__dirname, "uploads");
@@ -106,7 +109,7 @@ app.use("/uploads", express.static(uploadsDir));
 // multer 設定（ここも後で使う）
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const boardId = req.params.boardId || "common";
+    const boardId = safeFilePart(req.params.boardId || "common", "common");
     const dest = path.join(uploadsDir, boardId);
     if (!fs.existsSync(dest)) {
       fs.mkdirSync(dest, { recursive: true });
@@ -119,7 +122,18 @@ const storage = multer.diskStorage({
     cb(null, `${ts}_${safe}`);
   },
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  fileFilter: (_req, file, cb) => {
+    const extensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"]);
+    const mimeTypes = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp", "image/avif"]);
+    const extensionMatches = extensions.has(path.extname(file.originalname || "").toLowerCase());
+    const isImage = mimeTypes.has(String(file.mimetype || "").toLowerCase()) ||
+      (file.mimetype === "application/octet-stream" && extensionMatches);
+    cb(isImage ? null : new Error("images only"), isImage);
+  },
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+});
 
 const driveUploadsDir = path.join(uploadsDir, "drive");
 fs.mkdirSync(driveUploadsDir, { recursive: true });
@@ -236,9 +250,17 @@ function generateBoardId(length = 8) {
   return id;
 }
 
-// ルート：トップページ
-app.get("/", (req, res) => {
+// ルートは既存ホワイトボード側へ。画面設計は /d/ で完全に分離する。
+app.get("/", (_req, res) => {
+  res.redirect(appUrl("/b/"));
+});
+
+app.get("/b", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/d", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "design-index.html"));
 });
 
 function logBoardCreation(req, boardId) {
@@ -262,13 +284,13 @@ function logBoardCreation(req, boardId) {
   );
 }
 
-function createNewBoardId(req) {
+function createNewBoardId(req, mode = "whiteboard") {
   let id;
   do {
     id = generateBoardId();
   } while (getBoard(id)); // かぶり防止
 
-  createBoard(id);
+  createBoard(id, mode);
   logBoardCreation(req, id);
   return id;
 }
@@ -281,8 +303,9 @@ app.post("/new", (req, res) => {
 
 app.post("/api/boards", (req, res) => {
   try {
-    const id = createNewBoardId(req);
-    res.status(201).json({ id, url: appUrl(`/b/${id}`) });
+    const mode = req.body?.mode === "design" ? "design" : "whiteboard";
+    const id = createNewBoardId(req, mode);
+    res.status(201).json({ id, mode, url: appUrl(`/${mode === "design" ? "d" : "b"}/${id}`) });
   } catch (err) {
     console.error("Failed to create board", err);
     res.status(500).json({ error: "failed to create board" });
@@ -290,14 +313,16 @@ app.post("/api/boards", (req, res) => {
 });
 
 app.get("/new", (req, res) => {
-  res.redirect(`${APP_BASE_PATH}/`);
+  res.redirect(appUrl("/b/"));
 });
 
 app.get("/api/boards", (req, res) => {
   try {
+    const mode = req.query.mode === "design" || req.query.mode === "whiteboard" ? req.query.mode : null;
     res.json(
-      listBoards().map((board) => ({
+      listBoards(mode).map((board) => ({
         id: board.id,
+        mode: board.mode || "whiteboard",
         title: board.title || board.id,
         createdAt: board.created_at,
         counts: {
@@ -305,6 +330,7 @@ app.get("/api/boards", (req, res) => {
           texts: board.text_count || 0,
           images: board.image_count || 0,
           links: board.link_count || 0,
+          designItems: board.design_item_count || 0,
         },
       }))
     );
@@ -342,10 +368,314 @@ app.delete("/api/boards/:boardId", (req, res) => {
 app.get("/b/:boardId", (req, res) => {
   const boardId = req.params.boardId;
   const board = getBoard(boardId);
-  if (!board) {
+  if (!board || board.mode === "design") {
     return res.status(404).send("Board not found");
   }
   res.sendFile(path.join(__dirname, "public", "board.html"));
+});
+
+// 画面設計モード（元のホワイトボードとは別画面・同じ共同編集基盤）
+app.get("/d/:boardId", (req, res) => {
+  const board = getBoard(req.params.boardId);
+  if (!board || board.mode !== "design") return res.status(404).send("Board not found");
+  res.sendFile(path.join(__dirname, "public", "design.html"));
+});
+
+app.post("/api/boards/:boardId/design-image", (req, res) => {
+  const board = getBoard(req.params.boardId);
+  if (!board || board.mode !== "design") return res.status(404).json({ error: "board not found" });
+  upload.single("image")(req, res, (uploadError) => {
+    if (uploadError) return res.status(400).json({ error: uploadError.message || "upload failed" });
+    if (!req.file) return res.status(400).json({ error: "image is required" });
+    const boardPart = safeFilePart(req.params.boardId, "board");
+    res.json({
+      ok: true,
+      src: appUrl(`/uploads/${boardPart}/${path.basename(req.file.filename)}`),
+      name: req.file.originalname,
+    });
+  });
+});
+
+function normalizeDesignItem(boardId, raw, user = "") {
+  if (!raw || typeof raw !== "object") throw new Error("invalid design item");
+  const allowedKinds = new Set(["screen", "component", "transition", "note", "decision"]);
+  const kind = String(raw.kind || "");
+  if (!allowedKinds.has(kind)) throw new Error("invalid design item kind");
+  const data = raw.data && typeof raw.data === "object" && !Array.isArray(raw.data) ? raw.data : {};
+  if (Buffer.byteLength(JSON.stringify(data), "utf8") > 64 * 1024) throw new Error("design item is too large");
+  const clamp = (value, min, max, fallback) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+  };
+  return {
+    id: String(raw.id || crypto.randomUUID()).slice(0, 120),
+    boardId,
+    kind,
+    x: clamp(raw.x, -100000, 100000, 0),
+    y: clamp(raw.y, -100000, 100000, 0),
+    width: clamp(raw.width, 40, 5000, kind === "screen" ? 360 : 240),
+    height: clamp(raw.height, 28, 5000, kind === "screen" ? 640 : 140),
+    zIndex: Math.round(clamp(raw.zIndex, -100000, 100000, 0)),
+    data,
+    createdBy: String(raw.createdBy || user || "").slice(0, 80),
+    createdAt: Number(raw.createdAt) || Date.now(),
+  };
+}
+
+function buildDesignSpec(boardId) {
+  const board = getBoard(boardId);
+  if (!board) return null;
+  const items = getDesignItems(boardId);
+  const byKind = (kind) => items.filter((item) => item.kind === kind);
+  return {
+    schemaVersion: "1.0",
+    board: { id: boardId, title: getBoardTitle(boardId) || boardId },
+    generatedAt: new Date().toISOString(),
+    screens: byKind("screen"),
+    components: byKind("component"),
+    transitions: byKind("transition"),
+    interactionNotes: byKind("note"),
+    decisions: byKind("decision"),
+  };
+}
+
+function designSpecMarkdown(spec) {
+  const line = (value) => String(value || "").replace(/\r?\n/g, " ").trim();
+  const menuDirection = (item) => {
+    const requested = item.data?.menuDirection || "auto";
+    if (requested === "horizontal" || requested === "vertical") return requested;
+    const count = Math.max(1, Array.isArray(item.data?.menuItems) ? item.data.menuItems.length : 1);
+    return item.width >= item.height * 1.35 && item.width / count >= 72 ? "horizontal" : "vertical";
+  };
+  const out = [`# ${line(spec.board.title)} — 画面仕様`, "", `Board ID: \`${spec.board.id}\``, ""];
+  out.push("## 画面", "");
+  for (const screen of spec.screens) {
+    const d = screen.data || {};
+    out.push(`### ${line(d.name) || "名称未設定"}`, "", `- ID: \`${screen.id}\``);
+    if (d.description) out.push(`- 目的: ${line(d.description)}`);
+    const children = spec.components.filter((item) => item.data?.screenId === screen.id);
+    if (children.length) {
+      out.push("- 要素:");
+      children.forEach((item) => {
+        const linkTarget = spec.screens.find((candidate) => candidate.id === item.data?.linkScreenId)?.data?.name;
+        out.push(`  - ${line(item.data?.componentType) || "要素"}: ${line(item.data?.name) || "名称未設定"}${item.data?.componentType === "text" ? ` — 表示文言: ${line(item.data?.textContent ?? "ここにテキストが入ります")}` : ""}${item.data?.color ? ` — 背景色: ${line(item.data.color)}` : ""}${item.data?.imageSrc ? ` — 画像: ${line(item.data.imageSrc)}` : ""}${linkTarget ? ` — リンク先: ${line(linkTarget)}` : ""}${item.data?.linkNote ? ` — リンク補足: ${line(item.data.linkNote)}` : ""}${item.data?.behavior ? ` — 動作: ${line(item.data.behavior)}` : ""}${item.data?.memo ? ` — メモ: ${line(item.data.memo)}` : ""}`);
+        if (item.data?.componentType === "menu" && Array.isArray(item.data?.menuItems)) {
+          out.push(`    - 並び方: ${menuDirection(item) === "horizontal" ? "横並び" : "縦並び"}${(item.data?.menuDirection || "auto") === "auto" ? "（自動）" : ""}`);
+          item.data.menuItems.forEach((menuItem) => {
+            const menuTarget = spec.screens.find((candidate) => candidate.id === menuItem.linkScreenId)?.data?.name;
+            out.push(`    - メニュー項目: ${line(menuItem.label) || "名称未設定"}${menuTarget ? ` → ${line(menuTarget)}` : " — リンク未設定"}${menuItem.note ? `（${line(menuItem.note)}）` : ""}`);
+          });
+        }
+      });
+    }
+    out.push("");
+  }
+  out.push("## 画面遷移", "");
+  for (const item of spec.transitions) {
+    const d = item.data || {};
+    const from = spec.screens.find((screen) => screen.id === d.fromScreenId)?.data?.name || d.fromScreenId || "未設定";
+    const to = spec.screens.find((screen) => screen.id === d.toScreenId)?.data?.name || d.toScreenId || "未設定";
+    out.push(`- ${line(from)} → ${line(to)}：${line(d.trigger) || "操作未設定"}${d.condition ? `（条件: ${line(d.condition)}）` : ""}`);
+  }
+  out.push("", "## メモ", "");
+  spec.interactionNotes.forEach((item) => {
+    const target = [...spec.screens, ...spec.components].find((candidate) => candidate.id === item.data?.relatedItemId);
+    const targetName = target?.data?.name || "";
+    out.push(`- ${line(item.data?.title) || "メモ"}${targetName ? `（対象: ${line(targetName)}）` : ""}: ${line(item.data?.body)}`);
+  });
+  out.push("", "## 案", "");
+  spec.decisions.forEach((item) => {
+    const d = item.data || {};
+    const options = Array.isArray(d.options) ? d.options.filter(Boolean).join(" / ") : "";
+    const detail = d.status === "decided" ? ` — 決定事項: ${line(d.resolution) || "未入力"}` : options ? `（候補: ${line(options)}）` : "";
+    out.push(`- [${d.status === "decided" ? "x" : " "}] ${line(d.question) || "案"}${detail}`);
+  });
+  out.push("");
+  return out.join("\n");
+}
+
+function designPreviewHtml(spec) {
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
+  const textColorFor = (background) => {
+    const match = String(background || "").match(/^#([0-9a-f]{6})$/i);
+    if (!match) return "#172033";
+    const value = Number.parseInt(match[1], 16);
+    return (((value >> 16) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000) < 145 ? "#fff" : "#172033";
+  };
+  const menuDirectionFor = (item) => {
+    const requested = item.data?.menuDirection || "auto";
+    if (requested === "horizontal" || requested === "vertical") return requested;
+    const count = Math.max(1, Array.isArray(item.data?.menuItems) ? item.data.menuItems.length : 1);
+    return item.width >= item.height * 1.35 && item.width / count >= 72 ? "horizontal" : "vertical";
+  };
+  const items = [...spec.screens, ...spec.components, ...spec.interactionNotes, ...spec.decisions];
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const calloutBounds = [];
+  const addCalloutBound = (item, type, defaultY) => {
+    const saved = item.data?.calloutPositions?.[type];
+    calloutBounds.push({
+      x: item.x + (Number.isFinite(saved?.x) ? saved.x : item.width + 68),
+      y: item.y + (Number.isFinite(saved?.y) ? saved.y : defaultY),
+      width: 220,
+      height: 96,
+    });
+  };
+  spec.components.forEach((item) => {
+    if (item.data?.behavior) addCalloutBound(item, "behavior", -8);
+    if (item.data?.memo) addCalloutBound(item, "memo", item.data?.behavior ? 70 : -8);
+  });
+  spec.screens.forEach((item) => { if (item.data?.description) addCalloutBound(item, "description", 56); });
+  const allBounds = [...items, ...calloutBounds];
+  const minX = Math.min(0, ...allBounds.map((item) => item.x || 0)) - 80;
+  const minY = Math.min(0, ...allBounds.map((item) => item.y || 0)) - 80;
+  const maxX = Math.max(1200, ...allBounds.map((item) => (item.x || 0) + (item.width || 0))) + 80;
+  const maxY = Math.max(800, ...allBounds.map((item) => (item.y || 0) + (item.height || 0))) + 80;
+  const ox = -minX;
+  const oy = -minY;
+  const screenById = new Map(spec.screens.map((screen) => [screen.id, screen]));
+  const transitions = spec.transitions.map((item) => {
+    const from = screenById.get(item.data?.fromScreenId);
+    const to = screenById.get(item.data?.toScreenId);
+    if (!from || !to) return "";
+    const x1 = from.x + from.width + ox;
+    const y1 = from.y + Math.min(from.height / 2, 180) + oy;
+    const x2 = to.x + ox;
+    const y2 = to.y + Math.min(to.height / 2, 180) + oy;
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" />`;
+  }).join("");
+  const transitionLabels = spec.transitions.map((item) => {
+    const from = screenById.get(item.data?.fromScreenId);
+    const to = screenById.get(item.data?.toScreenId);
+    if (!from || !to) return "";
+    const x1 = from.x + from.width + ox;
+    const y1 = from.y + Math.min(from.height / 2, 180) + oy;
+    const x2 = to.x + ox;
+    const y2 = to.y + Math.min(to.height / 2, 180) + oy;
+    return `<span class="transition-label" style="left:${(x1 + x2) / 2}px;top:${(y1 + y2) / 2}px">${esc(item.data?.trigger || "操作未設定")}</span>`;
+  }).join("");
+  const componentLinks = spec.components.map((item) => {
+    const target = screenById.get(item.data?.linkScreenId);
+    if (!target) return null;
+    if (target.id === item.data?.screenId) {
+      return { self: true, x: item.x + item.width / 2 + ox, y: item.y - 12 + oy, label: target.data?.name || "現在の画面", note: item.data?.linkNote || "" };
+    }
+    const toRight = target.x + target.width / 2 >= item.x + item.width / 2;
+    const x1 = (toRight ? item.x + item.width : item.x) + ox;
+    const y1 = item.y + item.height / 2 + oy;
+    const x2 = (toRight ? target.x : target.x + target.width) + ox;
+    const y2 = target.y + Math.min(target.height / 2, 180) + oy;
+    return { self: false, x1, y1, x2, y2, label: target.data?.name || "リンク先画面", note: item.data?.linkNote || "" };
+  }).filter(Boolean);
+  const componentLinkLines = componentLinks.filter((link) => !link.self).map((link) => `<line class="link-line" x1="${link.x1}" y1="${link.y1}" x2="${link.x2}" y2="${link.y2}"/>`).join("");
+  const rectangleEdgePoint = (from, toward) => {
+    const centerX = from.x + from.width / 2;
+    const centerY = from.y + from.height / 2;
+    const dx = toward.x + toward.width / 2 - centerX;
+    const dy = toward.y + toward.height / 2 - centerY;
+    if (!dx && !dy) return { x: centerX, y: centerY };
+    const horizontal = Math.abs(dx) > 0 ? (from.width / 2) / Math.abs(dx) : Infinity;
+    const vertical = Math.abs(dy) > 0 ? (from.height / 2) / Math.abs(dy) : Infinity;
+    const factor = Math.min(horizontal, vertical);
+    return { x: centerX + dx * factor, y: centerY + dy * factor };
+  };
+  const relationLinkLines = [...spec.decisions, ...spec.interactionNotes].map((item) => {
+    const target = itemById.get(item.data?.relatedItemId);
+    if (!target || target.id === item.id) return "";
+    const start = rectangleEdgePoint(item, target);
+    const end = rectangleEdgePoint(target, item);
+    return `<line class="${item.kind}-link-line" x1="${start.x + ox}" y1="${start.y + oy}" x2="${end.x + ox}" y2="${end.y + oy}"/>`;
+  }).join("");
+  const linkLabel = (link, arrow, left, top, extraClass = "") => {
+    const noteStyle = link.note ? ";white-space:normal;text-align:left;min-width:180px;max-width:260px;border-radius:10px" : "";
+    const content = link.note
+      ? `<strong style="display:block">${arrow} ${esc(link.label)}</strong><small style="display:block;margin-top:3px;white-space:pre-wrap">${esc(link.note)}</small>`
+      : `${arrow} ${esc(link.label)}`;
+    return `<span class="link-label${extraClass}" style="left:${left}px;top:${top}px${noteStyle}">${content}</span>`;
+  };
+  const componentLinkLabels = componentLinks.map((link) => link.self
+    ? linkLabel(link, "↺", link.x, link.y, " self-link-label")
+    : linkLabel(link, "→", (link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2)).join("");
+  const itemHtml = items.map((item) => {
+    const d = item.data || {};
+    const style = `left:${item.x + ox}px;top:${item.y + oy}px;width:${item.width}px;height:${item.height}px`;
+    if (item.kind === "screen") return `<section class="item screen" style="${style}"><header>${esc(d.name || "名称未設定")}</header><div class="screen-body"></div></section>`;
+    if (item.kind === "component") {
+      const colorStyle = /^#[0-9a-f]{6}$/i.test(String(d.color || "")) ? `;background-color:${d.color};color:${textColorFor(d.color)}` : "";
+      let content;
+      if (d.componentType === "menu") {
+        const entries = (Array.isArray(d.menuItems) ? d.menuItems : []).map((menuItem) => {
+          const target = screenById.get(menuItem.linkScreenId);
+          const targetText = target ? `→ ${target.data?.name || "リンク先画面"}` : "リンク未設定";
+          return `<span class="menu-entry"><b>${esc(menuItem.label || "名称未設定")}</b><small>${esc(targetText)}</small>${menuItem.note ? `<em>${esc(menuItem.note)}</em>` : ""}</span>`;
+        }).join("");
+        content = `<strong class="menu-title">${esc(d.name || "メニュー")}</strong><span class="menu-list">${entries || '<span class="menu-empty">項目未設定</span>'}</span>`;
+      } else {
+        content = d.componentType === "image" && d.imageSrc
+          ? `<img src="${esc(d.imageSrc)}" alt="${esc(d.name || "画像")}">`
+          : esc(d.componentType === "text" ? (d.textContent ?? "ここにテキストが入ります") : (d.name || d.componentType || "UI部品"));
+      }
+      const menuClass = d.componentType === "menu" ? ` menu-${menuDirectionFor(item)}` : "";
+      return `<div class="item component type-${esc(d.componentType || "button")}${menuClass}" style="${style}${colorStyle}">${content}</div>`;
+    }
+    if (item.kind === "note") return `<aside class="item note" style="${style}"><strong>メモ: ${esc(d.title || "")}</strong><p>${esc(d.body || "")}</p></aside>`;
+    const detail = d.status === "decided"
+      ? `<p class="decision-resolution"><b>決定事項</b>${esc(d.resolution || "未入力")}</p>`
+      : `<p>${esc((d.options || []).join(" / "))}</p>`;
+    return `<aside class="item decision ${d.status === "decided" ? "decided" : ""}" style="${style}"><strong>${esc(d.question || "案")}</strong>${detail}</aside>`;
+  }).join("");
+  const callouts = spec.components.flatMap((item) => {
+    const result = [];
+    if (item.data?.behavior) result.push({ item, type: "behavior", label: "操作時の動作", text: item.data.behavior, defaultY: -8 });
+    if (item.data?.memo) result.push({ item, type: "memo", label: "補足メモ", text: item.data.memo, defaultY: item.data?.behavior ? 70 : -8 });
+    return result;
+  }).concat(spec.screens.filter((item) => item.data?.description).map((item) => ({
+    item, type: "description", label: "画面の説明", text: item.data.description, defaultY: 56,
+  })));
+  const calloutPosition = (item, type, defaultY) => {
+    const saved = item.data?.calloutPositions?.[type];
+    return {
+      x: item.x + (Number.isFinite(saved?.x) ? saved.x : item.width + 68) + ox,
+      y: item.y + (Number.isFinite(saved?.y) ? saved.y : defaultY) + oy,
+    };
+  };
+  const calloutLines = callouts.map(({ item, type, defaultY }) => {
+    const position = calloutPosition(item, type, defaultY);
+    const x1 = item.x + item.width + ox;
+    const y1 = item.y + (type === "description" ? 80 : item.height / 2) + oy;
+    return `<line class="${type === "description" ? "description-line" : `behavior-line ${type}-line`}" x1="${x1}" y1="${y1}" x2="${position.x}" y2="${position.y + 24}"/>`;
+  }).join("");
+  const calloutCards = callouts.map(({ item, type, label, text, defaultY }) => {
+    const position = calloutPosition(item, type, defaultY);
+    return `<aside class="behavior ${type}" style="left:${position.x}px;top:${position.y}px"><small>${label}</small>${esc(text)}</aside>`;
+  }).join("");
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(spec.board.title)} — 画面仕様</title><style>
+  *{box-sizing:border-box}body{margin:0;background:#eef1f5;color:#172033;font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif}header.page{position:sticky;top:0;z-index:100;background:#111827;color:#fff;padding:16px 24px;box-shadow:0 3px 15px #0003}header.page h1{font-size:18px;margin:0}header.page p{color:#aab4c5;font-size:12px;margin:4px 0 0}.viewport{overflow:auto;padding:24px}.canvas{position:relative;width:${maxX - minX}px;height:${maxY - minY}px;background-color:#f8f9fc;background-image:linear-gradient(#d8deea80 1px,transparent 1px),linear-gradient(90deg,#d8deea80 1px,transparent 1px);background-size:24px 24px;border:1px solid #d7dce6;box-shadow:0 15px 40px #3440541a}.lines{position:absolute;inset:0;z-index:70;pointer-events:none}.lines line{stroke:#7c3aed;stroke-width:2.5;marker-end:url(#arrow)}.lines .behavior-line{stroke:#e07a00;stroke-dasharray:5 4;marker-end:none}.lines .memo-line{stroke:#2563eb}.lines .description-line{stroke:#7c3aed;stroke-dasharray:3 4;marker-end:none}.lines .link-line{stroke:#0f766e;stroke-dasharray:7 4;marker-end:url(#link-arrow)}.item{position:absolute}.screen{z-index:10;background:#fff;border:2px solid #344054;border-radius:16px;overflow:hidden;box-shadow:0 12px 28px #1f29371a}.screen>header{height:48px;background:#f1f3f7;border-bottom:1px solid #d0d5dd;padding:0 14px;display:flex;align-items:center;font-weight:700}.screen-body{height:calc(100% - 48px)}.component{z-index:30;display:grid;place-items:center;padding:4px 8px;line-height:1.2;background:#fff;border:1.5px solid #667085;border-radius:8px;box-shadow:0 2px 5px #10182814}.type-button{background:#344054;color:#fff}.type-input,.type-dropdown{justify-items:start;color:#667085}.type-text{justify-items:start;align-content:start;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;border-color:transparent;box-shadow:none}.type-dropdown:after{content:'⌄';position:absolute;right:10px}.type-list{background:repeating-linear-gradient(#fff 0 27px,#d0d5dd 28px)}.type-image{padding:0;overflow:hidden;background:linear-gradient(135deg,#eef2f7 50%,#e0e7ef 50%)}.type-image img{display:block;width:100%;height:100%;object-fit:cover}.type-box{background:#fff;border-style:dashed}.type-header,.type-footer{background:#dbe4f0;font-weight:700}.type-sidebar,.type-sidebar-left,.type-sidebar-right{background:#e7ebf2;justify-items:start}.type-menu{display:block;padding:8px;background:#f8fafc;overflow:hidden}.menu-title{display:block;margin:0 2px 6px;font-size:11px;opacity:.68}.menu-list{display:grid;gap:5px}.menu-horizontal .menu-list{grid-auto-flow:column;grid-auto-columns:minmax(72px,1fr)}.menu-vertical .menu-list{grid-auto-flow:row}.menu-entry{display:block;padding:6px 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.menu-entry b,.menu-entry small,.menu-entry em{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.menu-entry b{font-size:11px}.menu-entry small{margin-top:2px;color:#0f766e;font-size:9px}.menu-entry em{margin-top:2px;color:#667085;font-size:9px;font-style:normal}.menu-empty{display:block;padding:8px;border:1px dashed #cbd5e1;border-radius:6px;color:#98a2b3;font-size:10px;text-align:center}.note,.decision{z-index:40;padding:14px;border-radius:10px;box-shadow:0 8px 20px #1018281a;overflow:hidden}.note{background:#fff7cc;border:1px solid #efd96a}.decision{background:#fff;border:2px dashed #f79009}.note p,.decision p{white-space:pre-wrap;font-size:12px;line-height:1.5}.decision b{font-size:11px;color:#067647}.behavior{position:absolute;z-index:80;width:220px;min-height:54px;padding:10px 12px;background:#fff8e8;border:1px solid #f0a53a;border-radius:9px;box-shadow:0 7px 18px #b5470822;font-size:12px;line-height:1.45}.behavior small{display:block;color:#b54708;font-weight:800;margin-bottom:3px}.behavior.memo{background:#eff6ff;border-color:#60a5fa;color:#1e3a8a}.behavior.memo small{color:#1d4ed8}.behavior.description{background:#f3efff;border-color:#a78bfa;color:#4c1d95}.behavior.description small{color:#6d28d9}.transition-label{position:absolute;z-index:82;transform:translate(-50%,-50%);max-width:180px;padding:4px 8px;border:1px solid #c4b5fd;border-radius:999px;background:#fff;color:#5b21b6;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 7px #5b21b622}.link-label{position:absolute;z-index:81;transform:translate(-50%,-50%);max-width:190px;padding:4px 9px;border:1px solid #5eead4;border-radius:999px;background:#f0fdfa;color:#115e59;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.legend{padding:0 24px 24px;color:#667085;font-size:12px}
+  .lines .decision-link-line{stroke:#f79009;stroke-width:2;stroke-dasharray:4 4;marker-end:url(#decision-arrow)}.lines .note-link-line{stroke:#2563eb;stroke-width:2;stroke-dasharray:4 4;marker-end:url(#note-arrow)}.decision-resolution{padding:8px 9px;border-radius:7px;background:#ecfdf3;color:#067647!important;font-weight:650}.decision-resolution b{display:block;margin-bottom:4px;font-size:10px}
+  </style></head><body><header class="page"><h1>${esc(spec.board.title)} — 画面仕様プレビュー</h1><p>生成日時: ${esc(spec.generatedAt)} / Board ID: ${esc(spec.board.id)}</p></header><div class="viewport"><main class="canvas"><svg class="lines" width="${maxX - minX}" height="${maxY - minY}"><defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#7c3aed"/></marker><marker id="link-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#0f766e"/></marker><marker id="decision-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f79009"/></marker><marker id="note-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#2563eb"/></marker></defs>${transitions}${componentLinkLines}${relationLinkLines}${calloutLines}</svg>${itemHtml}${transitionLabels}${componentLinkLabels}${calloutCards}</main></div><p class="legend">紫実線: 画面遷移 / 青緑点線: 部品のリンク / オレンジ点線: 案の関連 / 青点線: メモの関連 / 紫点線: 画面の説明 / オレンジ破線: 操作時の動作 / 青点線: 補足メモ</p></body></html>`;
+}
+
+app.get("/api/boards/:boardId/design-spec", (req, res) => {
+  const spec = buildDesignSpec(req.params.boardId);
+  if (!spec) return res.status(404).json({ error: "board not found" });
+  res.setHeader("Content-Disposition", `attachment; filename=design-spec-${safeFilePart(req.params.boardId)}.json`);
+  res.json(spec);
+});
+
+app.get("/api/boards/:boardId/design-spec.md", (req, res) => {
+  const spec = buildDesignSpec(req.params.boardId);
+  if (!spec) return res.status(404).send("Board not found");
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename=design-spec-${safeFilePart(req.params.boardId)}.md`);
+  res.send(designSpecMarkdown(spec));
+});
+
+app.get("/api/boards/:boardId/design-preview.html", (req, res) => {
+  const spec = buildDesignSpec(req.params.boardId);
+  if (!spec) return res.status(404).send("Board not found");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(designPreviewHtml(spec));
 });
 
 // テンプレ画像一覧
@@ -1158,6 +1488,7 @@ io.on("connection", (socket) => {
     state.images = dedupeById(state.images);
     state.links = dedupeById(state.links);
     socket.emit("init", state);
+    socket.emit("design:init", getDesignItems(boardId));
     const shares = boardScreenShares.get(boardId);
     const activeShares = shares ? Array.from(shares.entries()).map(([socketId, info]) => ({
       socketId,
@@ -1183,6 +1514,38 @@ io.on("connection", (socket) => {
     }
     const drafts = getDraftStrokes(boardId, user);
     socket.emit("draft:init", drafts);
+  });
+
+  socket.on("design:item:save", ({ boardId, item }, ack) => {
+    if (boardId !== currentBoardId) {
+      if (typeof ack === "function") ack({ ok: false, error: "board mismatch" });
+      return;
+    }
+    try {
+      const normalized = normalizeDesignItem(boardId, item, currentUserName);
+      if (normalized.kind === "transition") {
+        const duplicate = getDesignItems(boardId).find((candidate) => candidate.kind === "transition" && candidate.id !== normalized.id && candidate.data?.fromScreenId === normalized.data?.fromScreenId && candidate.data?.toScreenId === normalized.data?.toScreenId);
+        if (duplicate) {
+          if (typeof ack === "function") ack({ ok: false, error: "duplicate transition", duplicateTransitionId: duplicate.id });
+          return;
+        }
+      }
+      const saved = saveDesignItem(normalized);
+      socket.to(boardId).emit("design:item:save", saved);
+      if (typeof ack === "function") ack({ ok: true, item: saved });
+    } catch (err) {
+      if (typeof ack === "function") ack({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on("design:item:remove", ({ boardId, id }, ack) => {
+    if (boardId !== currentBoardId || !id) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const removed = deleteDesignItem(boardId, String(id));
+    if (removed) socket.to(boardId).emit("design:item:remove", { id: String(id) });
+    if (typeof ack === "function") ack({ ok: !!removed });
   });
 
   socket.on("stroke:add", ({ boardId, stroke }, ack) => {

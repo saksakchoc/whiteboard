@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>画面設計ボード</title>
+  <link rel="stylesheet" href="../design.css" />
+</head>
+<body>
+  <header class="appbar">
+    <div class="brand"><span class="brand-mark">◇</span><div><strong id="board-title">画面設計ボード</strong><small id="save-state">接続中…</small></div></div>
+    <div class="appbar-actions">
+      <span id="zoom-status" class="zoom-status" title="マウスホイールで拡大・縮小">100%</span>
+      <span id="online-users" class="presence">1人で編集中</span>
+      <a id="back-to-list" class="button quiet" href="#">画面設計一覧</a>
+      <a id="export-json" class="button quiet" href="#" download>JSON</a>
+      <a id="export-preview" class="button quiet" href="#" target="_blank">見た目HTML</a>
+      <a id="export-md" class="button primary" href="#" download>Codex仕様</a>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="palette" aria-label="追加する要素">
+      <h2>追加</h2>
+      <button data-create="screen"><span>▣</span>画面</button>
+      <div class="palette-group">
+        <p>UI部品</p>
+        <button data-create="component" data-component="button"><span>▭</span>ボタン</button>
+        <button data-create="component" data-component="input"><span>⌨</span>入力欄</button>
+        <button data-create="component" data-component="dropdown"><span>⌄</span>ドロップダウン</button>
+        <button data-create="component" data-component="text"><span>T</span>テキスト</button>
+        <button data-create="component" data-component="list"><span>☷</span>一覧</button>
+        <button data-create="component" data-component="image"><span>▧</span>画像</button>
+      </div>
+      <div class="palette-group">
+        <p>レイアウト</p>
+        <button data-create="component" data-component="box"><span>□</span>四角</button>
+        <button data-create="component" data-component="header"><span>▬</span>ヘッダー</button>
+        <button data-create="component" data-component="footer"><span>▬</span>フッター</button>
+        <button data-create="component" data-component="sidebar-left"><span>▥</span>サイドバー（左）</button>
+        <button data-create="component" data-component="sidebar-right"><span>▥</span>サイドバー（右）</button>
+        <button data-create="component" data-component="menu"><span>☰</span>メニュー</button>
+      </div>
+      <div class="palette-group">
+        <p>仕様</p>
+        <button id="transition-tool"><span>→</span>画面遷移</button>
+        <button data-create="note"><span>✎</span>メモ</button>
+        <button data-create="decision"><span>?</span>案</button>
+      </div>
+      <div class="palette-group">
+        <p>キャンバス</p>
+        <button id="expand-canvas" type="button"><span>↗</span>作業領域を広げる</button>
+      </div>
+      <div id="tool-help" class="tool-help">追加したい種類を選び、キャンバス上をドラッグして大きさを決めます。</div>
+    </aside>
+
+    <section id="canvas-viewport" class="canvas-viewport" aria-label="設計キャンバス">
+      <div id="canvas-stage" class="canvas-stage">
+        <div id="design-canvas" class="design-canvas">
+        <svg id="transition-layer" class="transition-layer" width="3200" height="2000" aria-hidden="true">
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" /></marker>
+            <marker id="link-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="link-arrow" points="0 0, 10 3.5, 0 7" /></marker>
+            <marker id="decision-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="decision-arrow" points="0 0, 10 3.5, 0 7" /></marker>
+            <marker id="note-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="note-arrow" points="0 0, 10 3.5, 0 7" /></marker>
+          </defs>
+        </svg>
+          <div id="empty-state" class="empty-state"><strong>最初の画面を置いてみましょう</strong><span>左の「画面」を押すと、ワイヤーフレームを作れます。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="inspector" aria-label="プロパティ">
+      <div id="inspector-empty" class="inspector-empty"><strong>要素を選択</strong><p>画面や部品を選ぶと、名前・説明・動作・メモを編集できます。</p></div>
+      <form id="inspector-form" class="hidden">
+        <div class="inspector-head"><div><span id="item-kind" class="eyebrow"></span><h2 id="item-heading">プロパティ</h2></div></div>
+        <label><span id="name-field-label">名前</span><input id="field-name" maxlength="120" /></label>
+        <label id="text-content-row" class="hidden">表示する文言（任意）<textarea id="field-text-content" rows="4" placeholder="ここにテキストが入ります"></textarea></label>
+        <label id="description-row"><span id="description-field-label">説明</span><textarea id="field-description" rows="4"></textarea></label>
+        <label id="behavior-row">操作時の動作<textarea id="field-behavior" rows="4" placeholder="例: 入力内容を保存して一覧へ戻る"></textarea></label>
+        <label id="memo-row">補足メモ<textarea id="field-memo" rows="4" placeholder="例: 青系の配色にする、角を丸くする"></textarea></label>
+        <div id="color-row" class="field-group hidden">
+          <label>背景色<div class="color-control"><input id="field-color" type="color" /><button id="reset-color" type="button">初期色に戻す</button></div></label>
+          <div id="recent-colors" class="recent-colors hidden"><span>最近使った色</span><div id="recent-color-swatches" class="recent-color-swatches"></div></div>
+        </div>
+        <label id="link-row" class="hidden">リンク先画面<select id="field-link-screen"><option value="">リンクなし</option></select></label>
+        <label id="link-note-row" class="hidden">リンクの補足・条件<textarea id="field-link-note" rows="3" placeholder="例: そのユーザーのプロフィールを表示"></textarea></label>
+        <div id="menu-fields" class="field-group hidden">
+          <div class="menu-editor-head"><strong>メニュー項目</strong><span>ボタンとリンクのセット</span></div>
+          <label>並び方
+            <select id="field-menu-direction">
+              <option value="auto">自動（大きさに合わせる）</option>
+              <option value="horizontal">横並び</option>
+              <option value="vertical">縦並び</option>
+            </select>
+          </label>
+          <div id="menu-items-editor" class="menu-items-editor"></div>
+          <button id="add-menu-item" class="add-menu-item" type="button">＋ 項目を追加</button>
+        </div>
+        <label id="image-row" class="hidden">画像ファイル<input id="field-image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/avif" /><small>選ぶと画像オブジェクト内に表示します。</small></label>
+        <div id="copy-layout-row" class="field-group hidden">
+          <button id="copy-layout-all" class="copy-layout-button" type="button">全画面にコピー</button>
+          <small>レイアウト本体だけをコピーし、今後作る画面にも自動追加します。</small>
+        </div>
+        <div id="transition-fields" class="field-group hidden">
+          <label>操作<input id="field-trigger" placeholder="例: 保存ボタンを押す" /></label>
+          <label>条件<input id="field-condition" placeholder="例: 入力が有効なとき" /></label>
+        </div>
+        <div id="note-fields" class="field-group hidden">
+          <p class="note-link-help">右側の青い丸から対象へドラッグすると関連付け、丸をクリックすると現在の関連を解除します。</p>
+          <label>関連する対象<select id="field-note-related-item"><option value="">関連付けなし</option></select></label>
+        </div>
+        <div id="decision-fields" class="field-group hidden">
+          <p class="decision-link-help">右側のオレンジ色の丸から対象へドラッグすると関連付け、丸をクリックすると現在の関連を解除します。</p>
+          <label>関連する対象<select id="field-related-item"><option value="">関連付けなし</option></select></label>
+          <label id="decision-options-row">候補（1行に1つ）<textarea id="field-options" rows="5"></textarea></label>
+          <label>決定事項<input id="field-resolution" /></label>
+          <label class="check"><input id="field-decided" type="checkbox" /> 決定済みにする</label>
+          <label class="check"><input id="field-done" type="checkbox" /> 済（キャンバスでは非表示）</label>
+        </div>
+        <div id="related-decisions-panel" class="field-group hidden">
+          <div class="related-decisions-head"><strong>このオブジェクトに関する案</strong><span id="related-decisions-count">0件</span></div>
+          <div id="related-decisions-list" class="related-decisions-list"></div>
+          <button id="inspector-add-decision" class="inspector-add-decision" type="button">＋ このオブジェクトに案を追加</button>
+        </div>
+        <div id="related-notes-panel" class="field-group hidden">
+          <div class="related-notes-head"><strong>このオブジェクトに関するメモ</strong><span id="related-notes-count">0件</span></div>
+          <div id="related-notes-list" class="related-notes-list"></div>
+          <button id="inspector-add-note" class="inspector-add-note" type="button">＋ このオブジェクトにメモを追加</button>
+        </div>
+        <button id="delete-item" class="delete-button" type="button">このオブジェクトを削除</button>
+        <p class="autosave">変更は自動保存されます</p>
+      </form>
+    </aside>
+  </main>
+
+  <div id="object-context-menu" class="context-menu hidden" role="menu">
+    <button id="context-duplicate" type="button" role="menuitem"><span>複製</span><kbd>Ctrl+D</kbd></button>
+    <button id="context-delete" class="danger" type="button" role="menuitem">削除</button>
+  </div>
+
+  <div id="user-modal" class="modal-backdrop">
+    <form id="user-form" class="modal-card">
+      <div class="modal-icon">◇</div><h1>画面設計ボードに参加</h1><p>編集者が分かるように名前を入力してください。</p>
+      <label>表示名<input id="user-name" maxlength="40" autocomplete="name" required autofocus /></label>
+      <button class="button primary wide" type="submit">参加する</button>
+    </form>
+  </div>
+  <script src="../socket.io/socket.io.js"></script>
+  <script src="../design.js"></script>
+</body>
+</html>
