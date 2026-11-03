@@ -651,14 +651,16 @@
       }
       if (item.data.componentType === "text") element.title = item.data.name || "テキスト";
     } else if (item.kind === "note") {
-      element.innerHTML = `<strong>✎ ${escapeHtml(item.data.title || "メモ")}</strong><p>${escapeHtml(item.data.body || "")}</p>`;
+      const title = String(item.data.title || "").trim();
+      element.innerHTML = `${title ? `<strong>✎ ${escapeHtml(title)}</strong>` : ""}<p>${escapeHtml(item.data.body || "")}</p>`;
     } else if (item.kind === "decision") {
       const decided = item.data.status === "decided";
       if (decided) element.classList.add("decided");
+      const title = String(item.data.question || "").trim();
       const detail = decided
         ? `<p class="decision-resolution"><b>決定事項</b>${escapeHtml(item.data.resolution || "未入力")}</p>`
         : `<p>${escapeHtml((item.data.options || []).filter(Boolean).join(" / "))}</p>`;
-      element.innerHTML = `<strong>${escapeHtml(item.data.question || "案")}</strong>${detail}`;
+      element.innerHTML = `${title ? `<strong>${escapeHtml(title)}</strong>` : ""}${detail}`;
     }
     element.addEventListener("click", (event) => {
       event.stopPropagation();

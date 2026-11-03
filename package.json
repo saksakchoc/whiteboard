@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check db.js && node --check public/board.js && node --check public/design.js && node scripts/smoke-test.js",
+    "test": "node --check server.js && node --check db.js && node --check public/board.js && node --check public/design.js && node scripts/test-design-spec-links.js && node scripts/smoke-test.js",
     "materialize-images": "node scripts/materialize-images.js"
   },
   "dependencies": {

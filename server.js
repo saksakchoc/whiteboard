@@ -7,6 +7,10 @@ const https = require("https");
 const crypto = require("crypto");
 const { Server } = require("socket.io");
 const multer = require("multer");
+const {
+  requestPublicBaseUrl,
+  absolutizeSpecValue,
+} = require("./lib/design-spec-links");
 
 const {
   createBoard,
@@ -422,14 +426,18 @@ function normalizeDesignItem(boardId, raw, user = "") {
   };
 }
 
-function buildDesignSpec(boardId) {
+function buildDesignSpec(boardId, publicBaseUrl) {
   const board = getBoard(boardId);
   if (!board) return null;
-  const items = getDesignItems(boardId);
+  const items = getDesignItems(boardId).map((item) => absolutizeSpecValue(item, publicBaseUrl));
   const byKind = (kind) => items.filter((item) => item.kind === kind);
   return {
     schemaVersion: "1.0",
-    board: { id: boardId, title: getBoardTitle(boardId) || boardId },
+    board: {
+      id: boardId,
+      title: getBoardTitle(boardId) || boardId,
+      url: `${publicBaseUrl}/d/${encodeURIComponent(boardId)}`,
+    },
     generatedAt: new Date().toISOString(),
     screens: byKind("screen"),
     components: byKind("component"),
@@ -481,14 +489,17 @@ function designSpecMarkdown(spec) {
   spec.interactionNotes.forEach((item) => {
     const target = [...spec.screens, ...spec.components].find((candidate) => candidate.id === item.data?.relatedItemId);
     const targetName = target?.data?.name || "";
-    out.push(`- ${line(item.data?.title) || "メモ"}${targetName ? `（対象: ${line(targetName)}）` : ""}: ${line(item.data?.body)}`);
+    const title = line(item.data?.title);
+    out.push(`- ${title ? `${title}${targetName ? `（対象: ${line(targetName)}）` : ""}: ` : targetName ? `対象: ${line(targetName)} — ` : ""}${line(item.data?.body)}`);
   });
   out.push("", "## 案", "");
   spec.decisions.forEach((item) => {
     const d = item.data || {};
     const options = Array.isArray(d.options) ? d.options.filter(Boolean).join(" / ") : "";
     const detail = d.status === "decided" ? ` — 決定事項: ${line(d.resolution) || "未入力"}` : options ? `（候補: ${line(options)}）` : "";
-    out.push(`- [${d.status === "decided" ? "x" : " "}] ${line(d.question) || "案"}${detail}`);
+    const title = line(d.question);
+    const content = title ? `${title}${detail}` : detail.replace(/^ — /, "");
+    out.push(`- [${d.status === "decided" ? "x" : " "}]${content ? ` ${content}` : ""}`);
   });
   out.push("");
   return out.join("\n");
@@ -619,11 +630,15 @@ function designPreviewHtml(spec) {
       const menuClass = d.componentType === "menu" ? ` menu-${menuDirectionFor(item)}` : "";
       return `<div class="item component type-${esc(d.componentType || "button")}${menuClass}" style="${style}${colorStyle}">${content}</div>`;
     }
-    if (item.kind === "note") return `<aside class="item note" style="${style}"><strong>メモ: ${esc(d.title || "")}</strong><p>${esc(d.body || "")}</p></aside>`;
+    if (item.kind === "note") {
+      const title = String(d.title || "").trim();
+      return `<aside class="item note" style="${style}">${title ? `<strong>メモ: ${esc(title)}</strong>` : ""}<p>${esc(d.body || "")}</p></aside>`;
+    }
+    const title = String(d.question || "").trim();
     const detail = d.status === "decided"
       ? `<p class="decision-resolution"><b>決定事項</b>${esc(d.resolution || "未入力")}</p>`
       : `<p>${esc((d.options || []).join(" / "))}</p>`;
-    return `<aside class="item decision ${d.status === "decided" ? "decided" : ""}" style="${style}"><strong>${esc(d.question || "案")}</strong>${detail}</aside>`;
+    return `<aside class="item decision ${d.status === "decided" ? "decided" : ""}" style="${style}">${title ? `<strong>${esc(title)}</strong>` : ""}${detail}</aside>`;
   }).join("");
   const callouts = spec.components.flatMap((item) => {
     const result = [];
@@ -657,14 +672,16 @@ function designPreviewHtml(spec) {
 }
 
 app.get("/api/boards/:boardId/design-spec", (req, res) => {
-  const spec = buildDesignSpec(req.params.boardId);
+  const publicBaseUrl = requestPublicBaseUrl(req, APP_BASE_PATH, process.env.PUBLIC_BASE_URL);
+  const spec = buildDesignSpec(req.params.boardId, publicBaseUrl);
   if (!spec) return res.status(404).json({ error: "board not found" });
   res.setHeader("Content-Disposition", `attachment; filename=design-spec-${safeFilePart(req.params.boardId)}.json`);
   res.json(spec);
 });
 
 app.get("/api/boards/:boardId/design-spec.md", (req, res) => {
-  const spec = buildDesignSpec(req.params.boardId);
+  const publicBaseUrl = requestPublicBaseUrl(req, APP_BASE_PATH, process.env.PUBLIC_BASE_URL);
+  const spec = buildDesignSpec(req.params.boardId, publicBaseUrl);
   if (!spec) return res.status(404).send("Board not found");
   res.setHeader("Content-Type", "text/markdown; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename=design-spec-${safeFilePart(req.params.boardId)}.md`);
@@ -672,7 +689,8 @@ app.get("/api/boards/:boardId/design-spec.md", (req, res) => {
 });
 
 app.get("/api/boards/:boardId/design-preview.html", (req, res) => {
-  const spec = buildDesignSpec(req.params.boardId);
+  const publicBaseUrl = requestPublicBaseUrl(req, APP_BASE_PATH, process.env.PUBLIC_BASE_URL);
+  const spec = buildDesignSpec(req.params.boardId, publicBaseUrl);
   if (!spec) return res.status(404).send("Board not found");
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(designPreviewHtml(spec));
