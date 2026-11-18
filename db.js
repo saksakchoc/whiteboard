@@ -541,6 +541,8 @@ function saveDesignItem(item) {
   return { ...item, createdAt, updatedAt: now };
 }
 
+const importDesignItems = db.transaction((items) => items.map(saveDesignItem));
+
 function deleteDesignItem(boardId, id) {
   return db.prepare("DELETE FROM design_items WHERE board_id = ? AND id = ?").run(boardId, id).changes;
 }
@@ -1235,6 +1237,7 @@ module.exports = {
   deleteDriveImage,
   deleteDriveFolder,
   saveDesignItem,
+  importDesignItems,
   deleteDesignItem,
   getDesignItems,
 };

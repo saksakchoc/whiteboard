@@ -54,6 +54,7 @@ const {
   deleteDriveImage,
   deleteDriveFolder,
   saveDesignItem,
+  importDesignItems,
   deleteDesignItem,
   getDesignItems,
 } = require("./db");
@@ -546,26 +547,21 @@ function designPreviewHtml(spec) {
   const ox = -minX;
   const oy = -minY;
   const screenById = new Map(spec.screens.map((screen) => [screen.id, screen]));
-  const transitions = spec.transitions.map((item) => {
+  const transitionGeometry = spec.transitions.flatMap((item) => {
     const from = screenById.get(item.data?.fromScreenId);
     const to = screenById.get(item.data?.toScreenId);
-    if (!from || !to) return "";
-    const x1 = from.x + from.width + ox;
-    const y1 = from.y + Math.min(from.height / 2, 180) + oy;
-    const x2 = to.x + ox;
-    const y2 = to.y + Math.min(to.height / 2, 180) + oy;
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" />`;
-  }).join("");
-  const transitionLabels = spec.transitions.map((item) => {
-    const from = screenById.get(item.data?.fromScreenId);
-    const to = screenById.get(item.data?.toScreenId);
-    if (!from || !to) return "";
-    const x1 = from.x + from.width + ox;
-    const y1 = from.y + Math.min(from.height / 2, 180) + oy;
-    const x2 = to.x + ox;
-    const y2 = to.y + Math.min(to.height / 2, 180) + oy;
-    return `<span class="transition-label" style="left:${(x1 + x2) / 2}px;top:${(y1 + y2) / 2}px">${esc(item.data?.trigger || "操作未設定")}</span>`;
-  }).join("");
+    if (!from || !to) return [];
+    const goesRight = from.x + from.width / 2 <= to.x + to.width / 2;
+    const x1 = (goesRight ? from.x + from.width : from.x) + ox;
+    const y1 = from.y + Math.min(from.height / 2, 180) + (goesRight ? -18 : 18) + oy;
+    const x2 = (goesRight ? to.x : to.x + to.width) + ox;
+    const y2 = to.y + Math.min(to.height / 2, 180) + (goesRight ? -18 : 18) + oy;
+    return [{ item, x1, y1, x2, y2 }];
+  });
+  const transitions = transitionGeometry.map(({ x1, y1, x2, y2 }) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" />`).join("");
+  const transitionLabels = transitionGeometry.map(({ item, x1, y1, x2, y2 }) =>
+    `<span class="transition-label" style="left:${(x1 + x2) / 2}px;top:${(y1 + y2) / 2}px">${esc(item.data?.trigger || "操作未設定")}</span>`).join("");
   const componentLinks = spec.components.map((item) => {
     const target = screenById.get(item.data?.linkScreenId);
     if (!target) return null;
@@ -677,6 +673,83 @@ app.get("/api/boards/:boardId/design-spec", (req, res) => {
   if (!spec) return res.status(404).json({ error: "board not found" });
   res.setHeader("Content-Disposition", `attachment; filename=design-spec-${safeFilePart(req.params.boardId)}.json`);
   res.json(spec);
+});
+
+app.post("/api/boards/:boardId/design-spec", (req, res) => {
+  const { boardId } = req.params;
+  if (getBoard(boardId)?.mode !== "design") return res.status(404).json({ error: "画面設計ボードが見つかりません。" });
+
+  const spec = req.body;
+  const groups = {
+    screens: "screen", components: "component", transitions: "transition",
+    interactionNotes: "note", decisions: "decision",
+  };
+  let imported;
+  try {
+    if (spec?.schemaVersion !== "1.0") throw new Error("設計JSONのバージョンが対応していません。");
+    const entries = new Map();
+    for (const [group, kind] of Object.entries(groups)) {
+      if (spec[group] === undefined && group !== "screens") continue;
+      if (!Array.isArray(spec[group])) throw new Error("設計要素の形式が正しくありません。");
+      for (const item of spec[group]) {
+        if (item?.kind !== kind || typeof item.id !== "string" || !item.id || entries.has(item.id)) {
+          throw new Error("設計要素の種類またはIDが正しくありません。");
+        }
+        entries.set(item.id, { id: crypto.randomUUID(), item });
+      }
+    }
+    if (!entries.size) throw new Error("取り込める設計要素がありません。");
+
+    const mappedId = (id, kind) => {
+      const entry = entries.get(id);
+      return entry && (!kind || entry.item.kind === kind) ? entry.id : null;
+    };
+    const arrows = new Set();
+    imported = [...entries.values()].map(({ id, item }) => {
+      const data = { ...item.data };
+      for (const field of ["screenId", "linkScreenId", "fromScreenId", "toScreenId"]) {
+        if (field in data) data[field] = mappedId(data[field], "screen");
+      }
+      if ("relatedItemId" in data) data.relatedItemId = mappedId(data.relatedItemId);
+      if (Array.isArray(data.menuItems)) {
+        data.menuItems = data.menuItems.map((menuItem) => ({
+          ...menuItem, id: crypto.randomUUID(), linkScreenId: mappedId(menuItem?.linkScreenId, "screen"),
+        }));
+      }
+      if (item.kind === "transition") {
+        const { fromScreenId, toScreenId } = data;
+        const arrow = `${fromScreenId}:${toScreenId}`;
+        if (!fromScreenId || !toScreenId || fromScreenId === toScreenId || arrows.has(arrow)) {
+          throw new Error("画面遷移の接続先が無効か、同じ方向の遷移が重複しています。");
+        }
+        arrows.add(arrow);
+      }
+      return normalizeDesignItem(boardId, { ...item, data, id });
+    });
+
+    const placed = imported.filter((item) => item.kind !== "transition");
+    const top = Math.min(...placed.map((item) => item.y));
+    const left = Math.min(...placed.map((item) => item.x));
+    const existing = getDesignItems(boardId).filter((item) => item.kind !== "transition");
+    const dx = Math.max(0, 16 - left);
+    const dy = existing.length ? Math.max(16, ...existing.map((item) => item.y + item.height + 80)) - top : Math.max(0, 16 - top);
+    for (const item of placed) {
+      item.x += dx;
+      item.y += dy;
+      if (item.x > 100000 || item.y > 100000) throw new Error("取り込む要素が作業領域の上限を超えています。");
+    }
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  try {
+    const saved = importDesignItems(imported);
+    io.to(boardId).emit("design:items:import", saved);
+    res.status(201).json({ items: saved });
+  } catch (error) {
+    console.error("Failed to import design items", error);
+    res.status(500).json({ error: "設計JSONを保存できませんでした。" });
+  }
 });
 
 app.get("/api/boards/:boardId/design-spec.md", (req, res) => {

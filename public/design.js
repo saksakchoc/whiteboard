@@ -53,6 +53,36 @@
   document.getElementById("export-preview").href = appUrl(`api/boards/${encodeURIComponent(boardId)}/design-preview.html`);
   userNameInput.value = localStorage.getItem("screen-design-user") || "";
 
+  const importButton = document.getElementById("import-json");
+  const importFile = document.getElementById("import-json-file");
+  importButton.addEventListener("click", () => importFile.click());
+  importFile.addEventListener("change", async () => {
+    const file = importFile.files[0];
+    importFile.value = "";
+    if (!file) return;
+    importButton.disabled = true;
+    toolHelp.textContent = "設計JSONを取り込んでいます…";
+    try {
+      if (file.size > 100 * 1024) throw new Error("100 KB以下の設計JSONを選んでください。");
+      const source = await file.text();
+      try { JSON.parse(source); } catch { throw new Error("JSONファイルの形式が正しくありません。"); }
+      const response = await fetch(document.getElementById("export-json").href, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: source,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      addImportedItems(result.items);
+      const first = result.items.find((item) => item.kind === "screen") || result.items[0];
+      selectItem(first.id);
+      viewport.scrollTo({ left: Math.max(0, first.x * zoom - 24), top: Math.max(0, first.y * zoom - 24) });
+      toolHelp.textContent = `${result.items.length}件の設計要素を取り込みました。`;
+    } catch (error) {
+      toolHelp.textContent = `取り込みに失敗しました。 ${error.message}`;
+    } finally {
+      importButton.disabled = false;
+    }
+  });
+
   const fields = {
     kind: document.getElementById("item-kind"), heading: document.getElementById("item-heading"),
     name: document.getElementById("field-name"), textContent: document.getElementById("field-text-content"),
@@ -702,10 +732,11 @@
     const from = items.get(item.data.fromScreenId);
     const to = items.get(item.data.toScreenId);
     if (!from || !to) return;
-    const x1 = from.x + from.width;
-    const y1 = from.y + Math.min(from.height / 2, 180);
-    const x2 = to.x;
-    const y2 = to.y + Math.min(to.height / 2, 180);
+    const goesRight = from.x + from.width / 2 <= to.x + to.width / 2;
+    const x1 = goesRight ? from.x + from.width : from.x;
+    const y1 = from.y + Math.min(from.height / 2, 180) + (goesRight ? -18 : 18);
+    const x2 = goesRight ? to.x : to.x + to.width;
+    const y2 = to.y + Math.min(to.height / 2, 180) + (goesRight ? -18 : 18);
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     line.setAttribute("x1", x1); line.setAttribute("y1", y1); line.setAttribute("x2", x2); line.setAttribute("y2", y2);
     transitionLayer.appendChild(line);
@@ -1541,6 +1572,14 @@
     renderAll();
     if (item.id === selectedId || item.data?.relatedItemId === selectedId || previous?.data?.relatedItemId === selectedId) renderInspector();
   });
+  function addImportedItems(imported) {
+    for (const item of imported) {
+      if (!items.has(item.id)) items.set(item.id, normalize(item));
+    }
+    renderAll();
+    renderInspector();
+  }
+  socket.on("design:items:import", addImportedItems);
   socket.on("design:item:remove", ({ id }) => {
     const removed = items.get(id);
     items.delete(id);
