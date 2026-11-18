@@ -1,0 +1,424 @@
+{
+  "schemaVersion": "1.0",
+  "board": {
+    "title": "PageLink 画面設計サンプル",
+    "url": "https://github.com/saksakchoc/PageLink"
+  },
+  "screens": [
+    {
+      "id": "search-view",
+      "kind": "screen",
+      "x": 80,
+      "y": 120,
+      "width": 360,
+      "height": 410,
+      "zIndex": 1,
+      "data": {
+        "name": "本を探す"
+      }
+    },
+    {
+      "id": "my-shelf-view",
+      "kind": "screen",
+      "x": 660,
+      "y": 390,
+      "width": 360,
+      "height": 545,
+      "zIndex": 2,
+      "data": {
+        "name": "本棚"
+      }
+    },
+    {
+      "id": "book-detail-view",
+      "kind": "screen",
+      "x": 1240,
+      "y": 120,
+      "width": 360,
+      "height": 590,
+      "zIndex": 3,
+      "data": {
+        "name": "本の詳細"
+      }
+    }
+  ],
+  "components": [
+    {
+      "id": "search-view-part-1",
+      "kind": "component",
+      "x": 100,
+      "y": 186,
+      "width": 320,
+      "height": 36,
+      "zIndex": 1,
+      "data": {
+        "screenId": "search-view",
+        "componentType": "input",
+        "name": "タイトルで検索"
+      }
+    },
+    {
+      "id": "search-view-part-2",
+      "kind": "component",
+      "x": 100,
+      "y": 234,
+      "width": 320,
+      "height": 36,
+      "zIndex": 2,
+      "data": {
+        "screenId": "search-view",
+        "componentType": "button",
+        "name": "検索",
+        "behavior": "入力したタイトルで検索し、結果一覧を更新"
+      }
+    },
+    {
+      "id": "search-view-part-3",
+      "kind": "component",
+      "x": 100,
+      "y": 282,
+      "width": 320,
+      "height": 72,
+      "zIndex": 3,
+      "data": {
+        "screenId": "search-view",
+        "componentType": "list",
+        "name": "検索結果（書名・著者など）"
+      }
+    },
+    {
+      "id": "search-view-part-4",
+      "kind": "component",
+      "x": 100,
+      "y": 366,
+      "width": 320,
+      "height": 36,
+      "zIndex": 4,
+      "data": {
+        "screenId": "search-view",
+        "componentType": "button",
+        "name": "積読に入れる",
+        "behavior": "検索結果の本を積読に追加し、ページを再読み込みする"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-5",
+      "kind": "component",
+      "x": 680,
+      "y": 456,
+      "width": 320,
+      "height": 36,
+      "zIndex": 5,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "積読",
+        "behavior": "積読一覧を表示"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-6",
+      "kind": "component",
+      "x": 680,
+      "y": 504,
+      "width": 320,
+      "height": 36,
+      "zIndex": 6,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "読了",
+        "behavior": "読了一覧を表示"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-7",
+      "kind": "component",
+      "x": 680,
+      "y": 552,
+      "width": 320,
+      "height": 72,
+      "zIndex": 7,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "list",
+        "name": "本の一覧（書名・進捗・著者・総ページ数）"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-8",
+      "kind": "component",
+      "x": 680,
+      "y": 636,
+      "width": 320,
+      "height": 36,
+      "zIndex": 8,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "オプション",
+        "behavior": "積読の本を選択して詳細を開く"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-9",
+      "kind": "component",
+      "x": 680,
+      "y": 684,
+      "width": 320,
+      "height": 36,
+      "zIndex": 9,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "今読んでいる本に登録／解除",
+        "behavior": "現在読んでいる本の登録を切り替える"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-10",
+      "kind": "component",
+      "x": 680,
+      "y": 732,
+      "width": 320,
+      "height": 36,
+      "zIndex": 10,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "積読から外す",
+        "behavior": "現在読んでいる本以外で表示"
+      }
+    },
+    {
+      "id": "my-shelf-view-part-11",
+      "kind": "component",
+      "x": 680,
+      "y": 780,
+      "width": 320,
+      "height": 36,
+      "zIndex": 11,
+      "data": {
+        "screenId": "my-shelf-view",
+        "componentType": "button",
+        "name": "積読に戻す",
+        "behavior": "読了一覧で表示"
+      }
+    },
+    {
+      "id": "book-detail-view-part-12",
+      "kind": "component",
+      "x": 1260,
+      "y": 186,
+      "width": 320,
+      "height": 36,
+      "zIndex": 12,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "text",
+        "name": "本の情報",
+        "textContent": "本の情報"
+      }
+    },
+    {
+      "id": "book-detail-view-part-13",
+      "kind": "component",
+      "x": 1260,
+      "y": 234,
+      "width": 320,
+      "height": 36,
+      "zIndex": 13,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "text",
+        "name": "読んでいる本の設定",
+        "textContent": "読んでいる本の設定"
+      }
+    },
+    {
+      "id": "book-detail-view-part-14",
+      "kind": "component",
+      "x": 1260,
+      "y": 282,
+      "width": 320,
+      "height": 36,
+      "zIndex": 14,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "input",
+        "name": "総ページ数（あとがき等含む）"
+      }
+    },
+    {
+      "id": "book-detail-view-part-15",
+      "kind": "component",
+      "x": 1260,
+      "y": 330,
+      "width": 320,
+      "height": 36,
+      "zIndex": 15,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "dropdown",
+        "name": "入力モード",
+        "behavior": "パーセンテージ／ページ数で入力"
+      }
+    },
+    {
+      "id": "book-detail-view-part-16",
+      "kind": "component",
+      "x": 1260,
+      "y": 378,
+      "width": 320,
+      "height": 36,
+      "zIndex": 16,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "button",
+        "name": "設定を保存"
+      }
+    },
+    {
+      "id": "book-detail-view-part-17",
+      "kind": "component",
+      "x": 1260,
+      "y": 426,
+      "width": 320,
+      "height": 36,
+      "zIndex": 17,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "text",
+        "name": "進捗を変更",
+        "textContent": "進捗を変更"
+      }
+    },
+    {
+      "id": "book-detail-view-part-18",
+      "kind": "component",
+      "x": 1260,
+      "y": 474,
+      "width": 320,
+      "height": 36,
+      "zIndex": 18,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "input",
+        "name": "進捗"
+      }
+    },
+    {
+      "id": "book-detail-view-part-19",
+      "kind": "component",
+      "x": 1260,
+      "y": 522,
+      "width": 320,
+      "height": 36,
+      "zIndex": 19,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "button",
+        "name": "進捗を保存"
+      }
+    },
+    {
+      "id": "book-detail-view-part-20",
+      "kind": "component",
+      "x": 1260,
+      "y": 570,
+      "width": 320,
+      "height": 36,
+      "zIndex": 20,
+      "data": {
+        "screenId": "book-detail-view",
+        "componentType": "button",
+        "name": "読了にする",
+        "behavior": "保存成功後、本棚の「読了」を表示"
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "id": "transition-1",
+      "kind": "transition",
+      "x": 0,
+      "y": 0,
+      "width": 40,
+      "height": 28,
+      "zIndex": 1,
+      "data": {
+        "fromScreenId": "search-view",
+        "toScreenId": "my-shelf-view",
+        "name": "本を探す → 本棚",
+        "trigger": "上部ナビ「本棚」",
+        "condition": "ナビが表示されている場合"
+      }
+    },
+    {
+      "id": "transition-2",
+      "kind": "transition",
+      "x": 0,
+      "y": 0,
+      "width": 40,
+      "height": 28,
+      "zIndex": 2,
+      "data": {
+        "fromScreenId": "my-shelf-view",
+        "toScreenId": "search-view",
+        "name": "本棚 → 本を探す",
+        "trigger": "上部ナビ「本を探す」",
+        "condition": "ナビが表示されている場合"
+      }
+    },
+    {
+      "id": "transition-3",
+      "kind": "transition",
+      "x": 0,
+      "y": 0,
+      "width": 40,
+      "height": 28,
+      "zIndex": 3,
+      "data": {
+        "fromScreenId": "my-shelf-view",
+        "toScreenId": "book-detail-view",
+        "name": "本棚 → 本の詳細",
+        "trigger": "オプション",
+        "condition": "積読一覧で本を選択"
+      }
+    },
+    {
+      "id": "transition-4",
+      "kind": "transition",
+      "x": 0,
+      "y": 0,
+      "width": 40,
+      "height": 28,
+      "zIndex": 4,
+      "data": {
+        "fromScreenId": "book-detail-view",
+        "toScreenId": "my-shelf-view",
+        "name": "本の詳細 → 本棚",
+        "trigger": "読了にする",
+        "condition": "読了の保存に成功した場合。上部ナビ「本棚」からも移動可能。"
+      }
+    },
+    {
+      "id": "transition-5",
+      "kind": "transition",
+      "x": 0,
+      "y": 0,
+      "width": 40,
+      "height": 28,
+      "zIndex": 5,
+      "data": {
+        "fromScreenId": "book-detail-view",
+        "toScreenId": "search-view",
+        "name": "本の詳細 → 本を探す",
+        "trigger": "上部ナビ「本を探す」",
+        "condition": "ナビが表示されている場合"
+      }
+    }
+  ],
+  "interactionNotes": [],
+  "decisions": []
+}
