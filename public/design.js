@@ -18,6 +18,14 @@
   const canvas = document.getElementById("design-canvas");
   const canvasStage = document.getElementById("canvas-stage");
   const viewport = document.getElementById("canvas-viewport");
+  const startRouteComparison = document.getElementById("start-route-comparison");
+  const closeRouteComparison = document.getElementById("close-route-comparison");
+  const comparisonPreviews = [
+    document.getElementById("comparison-source-preview"),
+    document.getElementById("comparison-target-preview"),
+  ];
+  const workspace = viewport.closest(".workspace");
+  let comparingRoutes = false;
   const zoomStatus = document.getElementById("zoom-status");
   const transitionLayer = document.getElementById("transition-layer");
   const emptyState = document.getElementById("empty-state");
@@ -652,14 +660,20 @@
     [...items.values()].filter((item) => item.kind === "screen" && String(item.data?.description || "").trim()).forEach(renderScreenDescriptionCallout);
     [...items.values()].filter((item) => item.kind === "component" && (String(item.data?.behavior || "").trim() || String(item.data?.memo || "").trim())).forEach(renderComponentCallouts);
     renderRoutes();
+    if (comparingRoutes) {
+      comparisonPreviews.forEach((preview, index) => renderComparisonPreview(preview, index));
+    }
     arrangeButton.disabled = arrangeButton.dataset.saving === "true" || !canvas.querySelector(".design-item.screen,.design-item.note,.design-item.decision,.behavior-callout") || socket.connected === false;
     emptyState.classList.toggle("hidden", items.size > 0);
   }
 
   function layoutScreenFor(item) {
     if (item.kind === "screen") return item.id;
-    const related = items.get(item.data?.relatedItemId);
-    return item.data?.screenId || (related?.kind === "screen" ? related.id : related?.data?.screenId);
+    if (item.kind === "note" || item.kind === "decision") {
+      const related = items.get(item.data?.relatedItemId);
+      return related?.kind === "screen" ? related.id : related?.data?.screenId;
+    }
+    return item.data?.screenId;
   }
 
   function arrangeAnnotationBounds(elements) {
@@ -670,24 +684,39 @@
       if (!element.matches(".design-item.note,.design-item.decision,.behavior-callout")) continue;
       const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
       const screenId = layoutScreenFor(owner);
+      if (!screenId && !element.dataset.calloutType) continue;
       if (!groups.has(screenId)) groups.set(screenId, []);
-      groups.get(screenId).push(element);
+      const screen = items.get(screenId);
+      let left = element.offsetLeft;
+      let top = element.offsetTop;
+      if (screen && !element.dataset.calloutType) {
+        const column = screen.x + screen.width + 68;
+        const maxGap = 320;
+        const isInAnnotationColumn = left === column && top >= screen.y;
+        if (!isInAnnotationColumn && (left > column + maxGap ||
+          left + element.offsetWidth < screen.x - maxGap ||
+          top > screen.y + screen.height + maxGap ||
+          top + element.offsetHeight < screen.y - maxGap)) {
+          left = column;
+          top = screen.y + 56;
+        }
+      }
+      groups.get(screenId).push({ element, left, top });
     }
 
     for (const annotations of groups.values()) {
       const placed = [];
-      annotations.sort((a, b) => a.offsetTop - b.offsetTop || a.offsetLeft - b.offsetLeft);
-      for (const element of annotations) {
-        const left = parseFloat(element.style.left);
+      annotations.sort((a, b) => a.top - b.top || a.left - b.left);
+      for (const annotation of annotations) {
+        const { element, left } = annotation;
         const right = left + element.offsetWidth;
-        const originalTop = parseFloat(element.style.top);
         const height = element.offsetHeight;
-        let top = originalTop;
+        let { top } = annotation;
         for (const bounds of placed) {
           if (top + height + gap <= bounds.top) break;
           if (left < bounds.right && right > bounds.left && top < bounds.bottom + gap) top = bounds.bottom + gap;
         }
-        if (top !== originalTop) moved.set(element, top);
+        if (left !== element.offsetLeft || top !== element.offsetTop) moved.set(element, { left, top });
         placed.push({ left, right, top, bottom: top + height });
         placed.sort((a, b) => a.top - b.top);
       }
@@ -707,6 +736,7 @@
     }
 
     const loose = [];
+    const boardAnnotations = [];
     const elements = canvas.querySelectorAll(".design-item,[data-layout-owner]");
     const movedAnnotations = arrangeAnnotationBounds(elements);
     const changes = new Map();
@@ -716,7 +746,7 @@
       });
       return changes.get(item.id);
     };
-    for (const [element, top] of movedAnnotations) {
+    for (const [element, { left, top }] of movedAnnotations) {
       const item = items.get(element.dataset.layoutOwner || element.dataset.id);
       const position = positionFor(item);
       const type = element.dataset.calloutType;
@@ -724,26 +754,39 @@
         const saved = item.data.calloutPositions?.[type];
         position.callouts ??= [];
         position.callouts.push({
-          type, x: parseFloat(element.style.left) - item.x, y: top - item.y,
+          type, x: left - item.x, y: top - item.y,
           previousX: saved?.x ?? null, previousY: saved?.y ?? null,
         });
-      } else position.y = top;
+      } else {
+        position.x = left;
+        position.y = top;
+      }
     }
     elements.forEach((element) => {
       const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
       if (!owner) return;
       const group = groups.get(layoutScreenFor(owner));
-      const left = element.offsetLeft;
-      const top = movedAnnotations.get(element) ?? element.offsetTop;
+      const moved = movedAnnotations.get(element);
+      const left = moved?.left ?? element.offsetLeft;
+      const top = moved?.top ?? element.offsetTop;
       const right = left + element.offsetWidth;
       const bottom = top + element.offsetHeight;
-      if (group) {
+      if (group && element.matches(".route-card")) {
+        group.routeCardWidth = Math.max(group.routeCardWidth ?? 0, element.offsetWidth);
+        group.bottom = Math.max(group.bottom, bottom);
+      } else if (group) {
         group.left = Math.min(group.left, left);
         group.right = Math.max(group.right, right);
         group.top = Math.min(group.top, top);
         group.bottom = Math.max(group.bottom, bottom);
+      } else if (element.matches(".design-item.note,.design-item.decision")) {
+        boardAnnotations.push({ item: owner, left, top, width: element.offsetWidth, height: element.offsetHeight });
       } else loose.push({ left, top, right, bottom });
     });
+
+    for (const group of groups.values()) {
+      if (group.routeCardWidth) group.right += 32 + group.routeCardWidth;
+    }
 
     canvas.querySelectorAll(".incoming-routes").forEach((panel) => {
       const group = groups.get(panel.dataset.screenId);
@@ -760,6 +803,7 @@
 
     const gap = 96;
     let rowTop = gap;
+    let rowRight = screens.length ? gap : 3200;
     loose.sort((a, b) => a.top - b.top);
     for (const row of rows) {
       let left = gap;
@@ -770,6 +814,7 @@
         left += group.right - group.left + gap;
         return { group, dx };
       });
+      rowRight = Math.max(rowRight, left - gap);
       for (const bounds of loose) {
         if (bounds.top >= rowTop + height + gap) break;
         if (bounds.bottom + gap > rowTop && placements.some(({ group, dx }) =>
@@ -786,6 +831,30 @@
         }
       }
       rowTop += height + gap;
+    }
+
+    let annotationLeft = gap;
+    let annotationRowBottom = rowTop;
+    const annotationGap = 24;
+    boardAnnotations.sort((a, b) => a.top - b.top || a.left - b.left);
+    for (const { item, width, height } of boardAnnotations) {
+      if (annotationLeft !== gap && annotationLeft + width > rowRight) {
+        annotationLeft = gap;
+        rowTop = annotationRowBottom + annotationGap;
+      }
+      let top = rowTop;
+      for (const bounds of loose) {
+        if (bounds.top >= top + height + annotationGap) break;
+        if (bounds.bottom + annotationGap > top &&
+          bounds.left < annotationLeft + width + annotationGap && bounds.right + annotationGap > annotationLeft) {
+          top = bounds.bottom + annotationGap;
+        }
+      }
+      if (annotationLeft !== item.x || top !== item.y) {
+        Object.assign(positionFor(item), { x: annotationLeft, y: top });
+      }
+      annotationLeft += width + annotationGap;
+      annotationRowBottom = Math.max(annotationRowBottom, top + height);
     }
     return [...changes.values()];
   }
@@ -1009,6 +1078,100 @@
     }
   }
 
+  function renderComparisonPreview(preview, index) {
+    const screen = items.get(preview.dataset.screenId);
+    if (!screen) {
+      const hint = document.createElement("p");
+      hint.textContent = index === 0
+        ? "中央のボードで遷移元カードをクリック"
+        : "中央のボードで遷移先カードをクリック";
+      preview.replaceChildren(hint);
+      delete preview.dataset.screenId;
+      return;
+    }
+
+    const left = preview.scrollLeft;
+    const top = preview.scrollTop;
+    const elements = [...canvas.children].filter((element) =>
+      element.matches(".design-item,.behavior-callout,.route-card,.incoming-routes"));
+    const bounds = elements.map((element) => {
+      const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
+      return {
+        element,
+        screenId: element.dataset.screenId || (owner && layoutScreenFor(owner)),
+        left: element.offsetLeft,
+        top: element.offsetTop,
+        right: element.offsetLeft + element.offsetWidth,
+        bottom: element.offsetTop + element.offsetHeight,
+      };
+    });
+    const related = bounds.filter((element) => element.screenId === screen.id);
+    const padding = 24;
+    const x = Math.max(0, Math.min(screen.x, ...related.map((item) => item.left)) - padding);
+    const y = Math.max(0, Math.min(screen.y, ...related.map((item) => item.top)) - padding);
+    const right = Math.max(screen.x + screen.width, ...related.map((item) => item.right)) + padding;
+    const bottom = Math.max(screen.y + screen.height, ...related.map((item) => item.bottom)) + padding;
+    const crop = document.createElement("div");
+    crop.className = "comparison-crop";
+    crop.style.width = `${right - x}px`;
+    crop.style.height = `${bottom - y}px`;
+    crop.inert = true;
+
+    const snapshot = document.createElement("div");
+    snapshot.className = "design-canvas";
+    snapshot.style.left = `${-x}px`;
+    snapshot.style.top = `${-y}px`;
+    snapshot.style.width = `${Math.max(canvasWidth, right)}px`;
+    snapshot.style.height = `${Math.max(canvasHeight, bottom)}px`;
+    snapshot.style.setProperty("--inverse-zoom", "1");
+
+    const arrows = transitionLayer.cloneNode(true);
+    arrows.removeAttribute("id");
+    arrows.querySelectorAll("defs,.route-hover-arrow").forEach((element) => element.remove());
+    snapshot.appendChild(arrows);
+    for (const item of bounds) {
+      if (item.right <= x || item.left >= right || item.bottom <= y || item.top >= bottom) continue;
+      const copy = item.element.cloneNode(true);
+      copy.querySelectorAll(".resize-handle,.relation-link-handle,.menu-preview-remove").forEach((handle) => handle.remove());
+      snapshot.appendChild(copy);
+    }
+    crop.appendChild(snapshot);
+    preview.replaceChildren(crop);
+    fitComparisonPreview(preview);
+    preview.scrollTo(left, top);
+  }
+
+  function fitComparisonPreview(preview) {
+    const crop = preview.querySelector(".comparison-crop");
+    if (!crop) return;
+    const width = Number.parseFloat(crop.style.width);
+    crop.style.zoom = Math.max(0.5, Math.min(1, (preview.clientWidth - 16) / width));
+  }
+
+  function endRouteComparison() {
+    comparingRoutes = false;
+    workspace.classList.remove("comparing");
+    closeRouteComparison.classList.add("hidden");
+    comparisonPreviews.forEach((preview) => {
+      preview.closest(".comparison-pane").classList.add("hidden");
+      preview.replaceChildren();
+      delete preview.dataset.screenId;
+    });
+    startRouteComparison.focus({ preventScroll: true });
+  }
+
+  function jumpToScreen(target) {
+    selectItem(target.id);
+    const incoming = canvas.querySelector(`.incoming-routes[data-screen-id="${CSS.escape(target.id)}"]`);
+    const left = incoming && (target.width + target.x - incoming.offsetLeft) * zoom + 48 <= viewport.clientWidth
+      ? Math.min(target.x, incoming.offsetLeft) : target.x;
+    viewport.scrollTo({
+      left: Math.max(0, left * zoom - 24),
+      top: Math.max(0, target.y * zoom - 24),
+    });
+    canvas.querySelector(".screen.selected .screen-header")?.focus({ preventScroll: true });
+  }
+
   function renderOutgoingRoutes(routes, anchor, activeScreen, annotationRight = -Infinity) {
     const visible = routes.map((route) => ({
       route,
@@ -1134,15 +1297,12 @@
     if (highlight) card.classList.add(`route-highlight-${highlight}`);
     if (target === activeScreen) jump.setAttribute("aria-current", "location");
     jump.addEventListener("click", () => {
-      selectItem(target.id);
-      const incoming = canvas.querySelector(`.incoming-routes[data-screen-id="${CSS.escape(target.id)}"]`);
-      const left = incoming && (target.width + target.x - incoming.offsetLeft) * zoom + 48 <= viewport.clientWidth
-        ? Math.min(target.x, incoming.offsetLeft) : target.x;
-      viewport.scrollTo({
-        left: Math.max(0, left * zoom - 24),
-        top: Math.max(0, target.y * zoom - 24),
-      });
-      canvas.querySelector(".screen.selected .screen-header")?.focus({ preventScroll: true });
+      if (!comparingRoutes) return jumpToScreen(target);
+      const index = incomingPanel ? 0 : 1;
+      const preview = comparisonPreviews[index];
+      if (preview.dataset.screenId !== target.id) preview.scrollTo(0, 0);
+      preview.dataset.screenId = target.id;
+      renderComparisonPreview(preview, index);
     });
     card.querySelector(".route-edit")?.addEventListener("click", () => {
       selectItem(item.id);
@@ -1817,7 +1977,32 @@
     if (suppressCanvasClick) { suppressCanvasClick = false; return; }
     if (!transitionSourceId && !placementTool) selectItem(null);
   });
+  const previewObserver = new ResizeObserver((entries) => {
+    entries.forEach(({ target }) => fitComparisonPreview(target));
+  });
+  comparisonPreviews.forEach((preview) => previewObserver.observe(preview));
+  startRouteComparison.addEventListener("click", () => {
+    hideContextMenu();
+    if (placementTool || transitionSourceId) cancelPlacement("配置や遷移の作成を中止しました。");
+    transitionSourceId = null;
+    transitionTool.classList.remove("active");
+    comparingRoutes = true;
+    workspace.classList.add("comparing");
+    closeRouteComparison.classList.remove("hidden");
+    comparisonPreviews.forEach((preview, index) => {
+      preview.closest(".comparison-pane").classList.remove("hidden");
+      renderComparisonPreview(preview, index);
+    });
+    closeRouteComparison.focus({ preventScroll: true });
+  });
+  closeRouteComparison.addEventListener("click", endRouteComparison);
   window.addEventListener("keydown", (event) => {
+    if (comparingRoutes && event.key === "Escape") {
+      event.preventDefault();
+      endRouteComparison();
+      return;
+    }
+    if (document.activeElement?.closest(".comparison-pane")) return;
     const tag = document.activeElement?.tagName?.toLowerCase();
     const editing = ["input", "textarea", "select"].includes(tag) || document.activeElement?.isContentEditable;
     if (event.key === "Escape") {

@@ -10,6 +10,7 @@
   <header class="appbar">
     <div class="brand"><span class="brand-mark">◇</span><div><strong id="board-title">画面設計ボード</strong><small id="save-state">接続中…</small></div></div>
     <div class="appbar-actions">
+      <button id="close-route-comparison" type="button" class="button primary hidden">比較モード終了</button>
       <span id="zoom-status" class="zoom-status" title="マウスホイールで拡大・縮小">100%</span>
       <span id="online-users" class="presence">1人で編集中</span>
       <a id="back-to-list" class="button quiet" href="#">画面設計一覧</a>
@@ -22,7 +23,7 @@
   </header>
 
   <main class="workspace">
-    <aside class="palette" aria-label="追加する要素">
+    <aside class="palette" aria-label="画面遷移と要素の追加">
       <h2>追加</h2>
       <button data-create="screen"><span>▣</span>画面</button>
       <div class="palette-group">
@@ -51,6 +52,7 @@
       </div>
       <div class="palette-group">
         <p>キャンバス</p>
+        <button id="start-route-comparison" type="button"><span aria-hidden="true">▥</span>比較モード</button>
         <button id="arrange-screens" type="button" disabled><span aria-hidden="true">▦</span>自動整頓</button>
         <button id="expand-canvas" type="button"><span>↗</span>作業領域を広げる</button>
       </div>
@@ -70,6 +72,15 @@
           <div id="empty-state" class="empty-state"><strong>最初の画面を置いてみましょう</strong><span>左の「画面」を押すと、ワイヤーフレームを作れます。</span></div>
         </div>
       </div>
+    </section>
+
+    <section class="comparison-pane comparison-source hidden" aria-labelledby="comparison-source-title">
+      <h2 id="comparison-source-title">遷移元</h2>
+      <div id="comparison-source-preview" class="comparison-preview" tabindex="0" aria-label="遷移元のホワイトボード"></div>
+    </section>
+    <section class="comparison-pane comparison-target hidden" aria-labelledby="comparison-target-title">
+      <h2 id="comparison-target-title">遷移先</h2>
+      <div id="comparison-target-preview" class="comparison-preview" tabindex="0" aria-label="遷移先のホワイトボード"></div>
     </section>
 
     <aside class="inspector" aria-label="プロパティ">
