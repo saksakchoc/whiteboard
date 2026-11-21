@@ -25,6 +25,18 @@ button,a { -webkit-tap-highlight-color:transparent; }
 .palette-group { border-top:1px solid #edf0f5; margin-top:10px; padding-top:8px; }
 .palette-group p { margin:5px 9px; font-size:11px; color:#98a2b3; font-weight:700; }
 .tool-help { margin:16px 5px 0; border-radius:9px; padding:10px; background:#f8fafc; color:#667085; font-size:11px; line-height:1.5; }
+.workspace.comparing { grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(0,1fr); }
+.workspace.comparing .palette,.workspace.comparing .inspector { display:none; }
+.workspace.comparing .canvas-viewport { grid-area:1 / 2; }
+.comparison-source { grid-area:1 / 1; border-right:1px solid var(--line); }
+.comparison-target { grid-area:1 / 3; border-left:1px solid var(--line); }
+.comparison-pane { min-width:0; min-height:0; display:flex; flex-direction:column; background:#f7f8fb; }
+.comparison-pane h2 { margin:0; padding:12px; border-bottom:1px solid var(--line); background:white; font-size:14px; }
+.comparison-preview { flex:1; overflow:auto; overscroll-behavior:contain; }
+.comparison-preview > p { margin:12px; color:var(--muted); font-size:12px; }
+.comparison-crop { position:relative; overflow:hidden; }
+.comparison-crop .design-canvas { position:absolute; }
+.workspace.comparing .route-edit { visibility:hidden; }
 .canvas-viewport { overflow:auto; position:relative; background:#e9edf3; overscroll-behavior:none; }
 .canvas-stage { width:3200px; height:2000px; position:relative; }
 .design-canvas { width:3200px; height:2000px; position:relative; transform-origin:0 0; background-color:#f7f8fb; background-image:linear-gradient(#d8deea80 1px,transparent 1px),linear-gradient(90deg,#d8deea80 1px,transparent 1px); background-size:24px 24px; }
