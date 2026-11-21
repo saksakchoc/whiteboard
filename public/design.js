@@ -27,14 +27,17 @@
   const descriptionFieldLabel = document.getElementById("description-field-label");
   const saveState = document.getElementById("save-state");
   const toolHelp = document.getElementById("tool-help");
+  const arrangeButton = document.getElementById("arrange-screens");
   const transitionTool = document.getElementById("transition-tool");
   const userModal = document.getElementById("user-modal");
   const userForm = document.getElementById("user-form");
   const userNameInput = document.getElementById("user-name");
   const items = new Map();
   let selectedId = null;
-  let currentUser = "";
+  const userNameKey = "screen-design-user";
+  let currentUser = sessionStorage.getItem(userNameKey) || "";
   let saveTimer = null;
+  let pendingSave = null;
   let transitionSourceId = null;
   let placementTool = null;
   let placementPreview = null;
@@ -51,7 +54,8 @@
   document.getElementById("export-json").href = appUrl(`api/boards/${encodeURIComponent(boardId)}/design-spec`);
   document.getElementById("export-md").href = appUrl(`api/boards/${encodeURIComponent(boardId)}/design-spec.md`);
   document.getElementById("export-preview").href = appUrl(`api/boards/${encodeURIComponent(boardId)}/design-preview.html`);
-  userNameInput.value = localStorage.getItem("screen-design-user") || "";
+  userNameInput.value = currentUser;
+  if (currentUser) userModal.classList.add("hidden");
 
   const importButton = document.getElementById("import-json");
   const importFile = document.getElementById("import-json-file");
@@ -387,7 +391,18 @@
       saveState.textContent = result?.ok ? "保存済み" : "保存できませんでした";
     });
     if (immediate) send();
-    else { clearTimeout(saveTimer); saveTimer = setTimeout(send, 260); }
+    else {
+      clearTimeout(saveTimer);
+      pendingSave = send;
+      saveTimer = setTimeout(flushPendingSave, 260);
+    }
+  }
+
+  function flushPendingSave() {
+    clearTimeout(saveTimer);
+    const send = pendingSave;
+    pendingSave = null;
+    send?.();
   }
 
   function saveMany(changedItems) {
@@ -630,15 +645,143 @@
 
   function renderAll() {
     expandCanvasToFitItems();
-    canvas.querySelectorAll(".design-item,.transition-label,.behavior-callout,.link-label,.screen-resize-handle").forEach((element) => element.remove());
-    transitionLayer.querySelectorAll("line").forEach((element) => element.remove());
+    canvas.querySelectorAll(".design-item,.route-card,.incoming-routes,.behavior-callout,.screen-resize-handle").forEach((element) => element.remove());
+    transitionLayer.querySelectorAll("line,.route-arrow,.route-hover-arrow").forEach((element) => element.remove());
     [...items.values()].filter((item) => item.kind !== "transition" && !(item.kind === "decision" && item.data?.done)).sort((a, b) => visualZ(a) - visualZ(b)).forEach(renderItem);
-    [...items.values()].filter((item) => item.kind === "transition").forEach(renderTransition);
     [...items.values()].filter((item) => (item.kind === "decision" || item.kind === "note") && item.data?.relatedItemId && !(item.kind === "decision" && item.data?.done)).forEach(renderObjectRelation);
-    [...items.values()].filter((item) => item.kind === "component" && item.data?.linkScreenId).forEach(renderComponentLink);
     [...items.values()].filter((item) => item.kind === "screen" && String(item.data?.description || "").trim()).forEach(renderScreenDescriptionCallout);
     [...items.values()].filter((item) => item.kind === "component" && (String(item.data?.behavior || "").trim() || String(item.data?.memo || "").trim())).forEach(renderComponentCallouts);
+    renderRoutes();
+    arrangeButton.disabled = arrangeButton.dataset.saving === "true" || !screenCount() || socket.connected === false;
     emptyState.classList.toggle("hidden", items.size > 0);
+  }
+
+  function layoutScreenFor(item) {
+    if (item.kind === "screen") return item.id;
+    const related = items.get(item.data?.relatedItemId);
+    return item.data?.screenId || (related?.kind === "screen" ? related.id : related?.data?.screenId);
+  }
+
+  function arrangedScreenPositions() {
+    const screens = [...items.values()].filter((item) => item.kind === "screen");
+    const groups = new Map(screens.map((screen) => [screen.id, {
+      screen, members: [screen], left: screen.x, right: screen.x + screen.width,
+      top: screen.y, bottom: screen.y + screen.height,
+    }]));
+    for (const item of items.values()) {
+      const group = groups.get(layoutScreenFor(item));
+      if (group && item.kind !== "screen" && item.kind !== "transition") group.members.push(item);
+    }
+
+    const loose = [];
+    canvas.querySelectorAll(".design-item,[data-layout-owner]").forEach((element) => {
+      const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
+      if (!owner) return;
+      const group = groups.get(layoutScreenFor(owner));
+      const left = element.offsetLeft;
+      const top = element.offsetTop;
+      const right = left + element.offsetWidth;
+      const bottom = top + element.offsetHeight;
+      if (group) {
+        group.left = Math.min(group.left, left);
+        group.right = Math.max(group.right, right);
+        group.top = Math.min(group.top, top);
+        group.bottom = Math.max(group.bottom, bottom);
+      } else loose.push({ left, top, right, bottom });
+    });
+
+    canvas.querySelectorAll(".incoming-routes").forEach((panel) => {
+      const group = groups.get(panel.dataset.screenId);
+      group.left = Math.min(group.left, group.screen.x - panel.offsetWidth - 20);
+      group.bottom = Math.max(group.bottom, group.screen.y + panel.offsetHeight);
+    });
+
+    const rows = [];
+    [...groups.values()].sort((a, b) => a.screen.y - b.screen.y || a.screen.x - b.screen.x).forEach((group) => {
+      const row = rows.at(-1);
+      if (row && group.screen.y - row[0].screen.y <= Math.min(120, row[0].screen.height / 2)) row.push(group);
+      else rows.push([group]);
+    });
+
+    const gap = 96;
+    const changes = [];
+    let rowTop = gap;
+    loose.sort((a, b) => a.top - b.top);
+    for (const row of rows) {
+      let left = gap;
+      const topInset = Math.max(...row.map((group) => group.screen.y - group.top));
+      const height = topInset + Math.max(...row.map((group) => group.bottom - group.screen.y));
+      const placements = row.sort((a, b) => a.screen.x - b.screen.x).map((group) => {
+        const dx = left - group.left;
+        left += group.right - group.left + gap;
+        return { group, dx };
+      });
+      for (const bounds of loose) {
+        if (bounds.top >= rowTop + height + gap) break;
+        if (bounds.bottom + gap > rowTop && placements.some(({ group, dx }) =>
+          bounds.left < group.right + dx + gap && bounds.right + gap > group.left + dx)) rowTop = bounds.bottom + gap;
+      }
+
+      for (const { group, dx } of placements) {
+        const dy = rowTop + topInset - group.screen.y;
+        for (const item of group.members) {
+          if (dx || dy) changes.push({ id: item.id, x: item.x + dx, y: item.y + dy, previousX: item.x, previousY: item.y });
+        }
+      }
+      rowTop += height + gap;
+    }
+    return changes;
+  }
+
+  function applyScreenPositions(positions) {
+    for (const { id, x, y } of positions) {
+      const item = items.get(id);
+      if (item) Object.assign(item, { x, y });
+    }
+    renderAll();
+  }
+
+  function arrangeScreens() {
+    const positions = arrangedScreenPositions();
+    if (!positions.length) {
+      toolHelp.textContent = "画面はすでに整頓されています。";
+      return;
+    }
+    if (positions.some(({ x, y }) => Math.abs(x) > 100000 || Math.abs(y) > 100000)) {
+      toolHelp.textContent = "画面が作業領域の上限を超えるため、自動整頓できませんでした。";
+      return;
+    }
+
+    flushPendingSave();
+    transitionSourceId = null;
+    cancelPlacement("画面を整頓しています…");
+    arrangeButton.dataset.saving = "true";
+    arrangeButton.disabled = true;
+    const finish = (error, result) => {
+      delete arrangeButton.dataset.saving;
+      if (error || !result?.ok) {
+        renderAll();
+        const failureMessage = {
+          stale_positions: "配置が更新されています。ページを再読み込みしてから、自動整頓を押してください。",
+          invalid_request: "整頓する位置を確認できませんでした。ページを再読み込みしてからお試しください。",
+          save_failed: "サーバーで配置を保存できませんでした。起動中のターミナルでエラーを確認してください。",
+        };
+        const reason = error ? "no_response" : result?.reason;
+        console.warn("[自動整頓] 保存失敗", reason, error?.message || "");
+        toolHelp.textContent = error
+          ? "サーバーから応答がありませんでした。npm start を起動し直してからお試しください。"
+          : failureMessage[reason] || "配置を保存できませんでした。サーバーを起動し直してからお試しください。";
+        return;
+      }
+      applyScreenPositions(result.positions);
+      const focus = items.get(getSelectedScreenId() || items.get(selectedId)?.data?.fromScreenId)
+        || [...items.values()].find((item) => item.kind === "screen");
+      if (focus) viewport.scrollTo({ left: Math.max(0, focus.x * zoom - 48), top: Math.max(0, focus.y * zoom - 48) });
+      toolHelp.textContent = "画面を整頓しました。";
+    };
+    if (typeof socket.timeout === "function") {
+      socket.timeout(10000).emit("design:positions:save", { boardId, positions }, finish);
+    } else finish(null, { ok: true, positions });
   }
 
   function renderItem(item) {
@@ -647,7 +790,7 @@
     element.dataset.id = item.id;
     element.style.cssText = `left:${item.x}px;top:${item.y}px;width:${item.width}px;height:${item.height}px;z-index:${visualZ(item)}`;
     if (item.kind === "screen") {
-      element.innerHTML = `<div class="screen-header"><strong>${escapeHtml(item.data.name || "名称未設定")}</strong></div><div class="screen-body"></div>`;
+      element.innerHTML = `<div class="screen-header" tabindex="0"><strong>${escapeHtml(item.data.name || "名称未設定")}</strong></div><div class="screen-body"></div>`;
     } else if (item.kind === "component") {
       element.dataset.type = item.data.componentType || "button";
       if (item.data.color) {
@@ -700,6 +843,15 @@
     });
     element.addEventListener("contextmenu", (event) => showContextMenu(event, item));
     const dragTarget = item.kind === "screen" ? element.querySelector(".screen-header") : element;
+    if (item.kind === "screen") {
+      dragTarget.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        if (transitionSourceId) return finishTransition(item.id);
+        selectItem(item.id);
+        canvas.querySelector(".screen.selected .screen-header")?.focus({ preventScroll: true });
+      });
+    }
     dragTarget.addEventListener("pointerdown", (event) => beginDrag(event, item));
     if (item.id === selectedId) {
       const resizeHandle = document.createElement("button");
@@ -728,26 +880,217 @@
     canvas.appendChild(element);
   }
 
-  function renderTransition(item) {
-    const from = items.get(item.data.fromScreenId);
-    const to = items.get(item.data.toScreenId);
-    if (!from || !to) return;
-    const goesRight = from.x + from.width / 2 <= to.x + to.width / 2;
-    const x1 = goesRight ? from.x + from.width : from.x;
-    const y1 = from.y + Math.min(from.height / 2, 180) + (goesRight ? -18 : 18);
-    const x2 = goesRight ? to.x : to.x + to.width;
-    const y2 = to.y + Math.min(to.height / 2, 180) + (goesRight ? -18 : 18);
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", x1); line.setAttribute("y1", y1); line.setAttribute("x2", x2); line.setAttribute("y2", y2);
-    transitionLayer.appendChild(line);
-    const label = document.createElement("button");
-    label.type = "button";
-    label.className = `transition-label${item.id === selectedId ? " selected" : ""}`;
-    label.style.left = `${(x1 + x2) / 2}px`; label.style.top = `${(y1 + y2) / 2}px`;
-    label.textContent = item.data.trigger || "操作を設定";
-    label.addEventListener("click", (event) => { event.stopPropagation(); selectItem(item.id); });
-    label.addEventListener("contextmenu", (event) => showContextMenu(event, item));
-    canvas.appendChild(label);
+  function renderRoutes() {
+    const selected = items.get(selectedId);
+    const screen = items.get(getSelectedScreenId() || selected?.data?.fromScreenId);
+    const components = [...items.values()].filter((item) => item.kind === "component");
+    const outgoing = new Map();
+    const incoming = new Map();
+    const addToGroup = (groups, id, route) => {
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push(route);
+    };
+
+    const addRoute = (item, sourceScreen, source, targetId, detail) => {
+      const target = items.get(targetId);
+      if (target?.kind !== "screen") return;
+      const fromActive = sourceScreen === screen && !!screen;
+      const route = { item, sourceScreen, source, target, detail,
+        highlight: target === screen ? "pink" : fromActive ? "blue" : "" };
+      addToGroup(outgoing, sourceScreen || source, route);
+      if (sourceScreen?.kind === "screen" && sourceScreen.id !== target.id) addToGroup(incoming, target, route);
+    };
+
+    items.forEach((item) => {
+      if (item.kind !== "transition") return;
+      const sourceScreen = items.get(item.data.fromScreenId);
+      if (sourceScreen?.kind !== "screen") return;
+      const operation = String(item.data.trigger || "").trim();
+      const name = operation.match(/^メニュー「(.+)」$/)?.[1] || operation;
+      const matches = name
+        ? components.filter((part) => part.data.screenId === sourceScreen.id && String(part.data.name || "").trim() === name)
+        : [];
+      addRoute(item, sourceScreen, matches.length === 1 ? matches[0] : sourceScreen,
+        item.data.toScreenId, [operation, item.data.condition].filter(Boolean).join(" / "));
+    });
+    components.forEach((item) => {
+      const sourceScreen = items.get(item.data.screenId);
+      addRoute(item, sourceScreen, item, item.data.linkScreenId, item.data.linkNote);
+      const entries = Array.isArray(item.data.menuItems) ? item.data.menuItems : [];
+      for (const entry of entries) {
+        addRoute(item, sourceScreen, item, entry?.linkScreenId, [entry?.label, entry?.note].filter(Boolean).join(" / "));
+      }
+    });
+
+    canvas.querySelectorAll(".design-item.screen").forEach((element) => {
+      element.classList.toggle("active-route-screen", element.dataset.id === screen?.id);
+    });
+
+    const annotationRight = new Map();
+    canvas.querySelectorAll(".behavior-callout,.design-item.note,.design-item.decision").forEach((element) => {
+      const item = items.get(element.dataset.layoutOwner || element.dataset.id);
+      if (!item) return;
+      const ownerId = layoutScreenFor(item) || item.id;
+      const right = element.offsetLeft + element.offsetWidth;
+      annotationRight.set(ownerId, Math.max(annotationRight.get(ownerId) ?? -Infinity, right));
+    });
+
+    outgoing.forEach((routes, anchor) => renderOutgoingRoutes(routes, anchor, screen, annotationRight.get(anchor.id)));
+    incoming.forEach((routes, target) => renderIncomingRoutes(routes, target, screen));
+    if (screen) {
+      for (const route of outgoing.get(screen) || []) {
+        bindRouteHover(route.outgoingCard, route);
+      }
+      for (const route of incoming.get(screen) || []) {
+        bindRouteHover(route.incomingCard, route);
+      }
+    }
+  }
+
+  function renderOutgoingRoutes(routes, anchor, activeScreen, annotationRight = -Infinity) {
+    const visible = routes.map((route) => ({
+      route,
+      y: route.source.y + (route.source.kind === "screen" ? 24 : route.source.height / 2),
+    })).sort((a, b) => a.y - b.y);
+    if (!visible.length) return;
+    const cardX = Math.max(anchor.x + anchor.width, annotationRight, ...routes.map(({ source }) => source.x + source.width)) + 32;
+    let nextTop = 0;
+    for (const { route, y } of visible) {
+      const top = Math.max(nextTop, y - 20);
+      const card = renderRouteCard(route, cardX, top, activeScreen);
+      card.dataset.layoutOwner = anchor.id;
+      route.outgoingCard = card;
+      const height = card.offsetHeight;
+      nextTop = top + height + 6;
+
+      const sourceX = route.source.x + route.source.width;
+      const endY = top + height / 2;
+      drawRouteArrow(`${sourceX},${y} ${cardX - 12},${endY} ${cardX},${endY}`);
+    }
+
+    const endX = cardX + 188;
+    if (endX > canvasWidth || nextTop > canvasHeight) {
+      setCanvasSize(Math.max(canvasWidth, endX + 24), Math.max(canvasHeight, nextTop + 24));
+    }
+  }
+
+  function renderIncomingRoutes(routes, screen, activeScreen) {
+    const panel = document.createElement("section");
+    panel.className = "incoming-routes";
+    panel.innerHTML = "<strong>遷移元</strong>";
+    panel.setAttribute("aria-label", "遷移元");
+    panel.dataset.screenId = screen.id;
+    for (const route of routes) {
+      route.incomingCard = renderRouteCard({ ...route, target: route.sourceScreen }, 0, 0, activeScreen, panel);
+    }
+
+    const occupied = [...canvas.querySelectorAll(".design-item,.behavior-callout,.route-card:not(.incoming-routes .route-card),.incoming-routes")]
+      .map((element) => ({
+        left: element.offsetLeft, right: element.offsetLeft + element.offsetWidth,
+        top: element.offsetTop, bottom: element.offsetTop + element.offsetHeight,
+      }));
+    canvas.appendChild(panel);
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
+    let left = screen.x - width - 20;
+    let top = Math.max(0, screen.y);
+    const overlaps = (bounds, right) =>
+      left < bounds.right + 6 && right > bounds.left - 6 &&
+      top < bounds.bottom + 6 && top + height > bounds.top - 6;
+
+    if (left < 8 || occupied.some((bounds) => bounds.left < screen.x && overlaps(bounds, screen.x))) {
+      panel.classList.add("below");
+      left = Math.max(8, screen.x);
+      top = Math.max(8, screen.y + screen.height + 20);
+      occupied.sort((a, b) => a.top - b.top).forEach((bounds) => {
+        if (overlaps(bounds, left + width)) top = bounds.bottom + 8;
+      });
+    }
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    if (left + width > canvasWidth || top + height > canvasHeight) {
+      setCanvasSize(Math.max(canvasWidth, left + width + 24), Math.max(canvasHeight, top + height + 24));
+    }
+  }
+
+  function drawRouteArrow(points) {
+    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    arrow.classList.add("route-arrow");
+    arrow.setAttribute("points", points);
+    transitionLayer.appendChild(arrow);
+  }
+
+  function bindRouteHover(card, { outgoingCard, incomingCard }) {
+    if (!outgoingCard || !incomingCard) return;
+    let arrow;
+    card.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "touch") return;
+      const canvasBounds = canvas.getBoundingClientRect();
+      const from = outgoingCard.getBoundingClientRect();
+      const to = incomingCard.getBoundingClientRect();
+      const startX = (from.right - canvasBounds.left) / zoom;
+      const endX = (to.left - canvasBounds.left) / zoom;
+      const startY = (from.top + from.height / 2 - canvasBounds.top) / zoom;
+      const endY = (to.top + to.height / 2 - canvasBounds.top) / zoom;
+      const approachX = Math.max(0, endX - 48);
+      let path = `M ${startX} ${startY}`;
+      if (startX < approachX) {
+        const middleX = (startX + approachX) / 2;
+        path += ` C ${middleX} ${startY}, ${middleX} ${endY}, ${approachX} ${endY}`;
+      } else {
+        const above = (Math.min(from.top, to.top) - canvasBounds.top) / zoom - 48;
+        const below = (Math.max(from.bottom, to.bottom) - canvasBounds.top) / zoom + 48;
+        const turnY = startY < endY && above >= 16 ? above : below;
+        const corner = turnY < endY ? 14 : -14;
+        const entryRadius = Math.min(14, (endX - approachX) / 2);
+        const exitX = startX + 24;
+        path += ` Q ${exitX} ${startY}, ${exitX} ${startY - corner}`;
+        path += ` V ${turnY + corner} Q ${exitX} ${turnY}, ${exitX - 14} ${turnY}`;
+        path += ` H ${approachX + 14} Q ${approachX} ${turnY}, ${approachX} ${turnY + corner}`;
+        path += ` V ${endY - corner} Q ${approachX} ${endY}, ${approachX + entryRadius} ${endY}`;
+      }
+
+      arrow?.remove();
+      arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      arrow.classList.add("route-hover-arrow");
+      arrow.setAttribute("d", `${path} L ${endX} ${endY}`);
+      transitionLayer.appendChild(arrow);
+    });
+    card.addEventListener("pointerleave", () => arrow?.remove());
+  }
+
+  function renderRouteCard({ item, target, detail, highlight }, x, y, activeScreen, incomingPanel) {
+    const name = itemDisplayName(target);
+    const card = document.createElement("div");
+    card.className = `route-card${item.id === selectedId ? " selected" : ""}`;
+    if (!incomingPanel) {
+      card.style.left = `${x}px`;
+      card.style.top = `${y}px`;
+    }
+    card.innerHTML = `<button type="button" class="route-jump"><strong>${escapeHtml(name)}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</button>${incomingPanel ? '<span class="incoming-direction" aria-hidden="true"></span>' : '<button type="button" class="route-edit" aria-label="遷移を編集" title="遷移を編集">✎</button>'}`;
+    const jump = card.querySelector(".route-jump");
+    if (highlight) card.classList.add(`route-highlight-${highlight}`);
+    if (target === activeScreen) jump.setAttribute("aria-current", "location");
+    jump.addEventListener("click", () => {
+      selectItem(target.id);
+      const incoming = canvas.querySelector(`.incoming-routes[data-screen-id="${CSS.escape(target.id)}"]`);
+      const left = incoming && (target.width + target.x - incoming.offsetLeft) * zoom + 48 <= viewport.clientWidth
+        ? Math.min(target.x, incoming.offsetLeft) : target.x;
+      viewport.scrollTo({
+        left: Math.max(0, left * zoom - 24),
+        top: Math.max(0, target.y * zoom - 24),
+      });
+      canvas.querySelector(".screen.selected .screen-header")?.focus({ preventScroll: true });
+    });
+    card.querySelector(".route-edit")?.addEventListener("click", () => {
+      selectItem(item.id);
+      (item.kind === "transition" ? fields.trigger : fields.name).focus();
+    });
+    card.addEventListener("pointerdown", (event) => { if (event.button === 0) event.stopPropagation(); });
+    card.addEventListener("click", (event) => event.stopPropagation());
+    if (!incomingPanel) card.addEventListener("contextmenu", (event) => showContextMenu(event, item));
+    (incomingPanel || canvas).appendChild(card);
+    return card;
   }
 
   function rectangleEdgePoint(from, toward) {
@@ -845,53 +1188,6 @@
     window.addEventListener("pointerup", up, { once: true });
   }
 
-  function setLinkLabelContent(label, arrow, targetName, note) {
-    const text = String(note || "").trim();
-    if (!text) {
-      label.textContent = `${arrow} ${targetName}`;
-      return;
-    }
-    label.classList.add("has-note");
-    label.innerHTML = `<strong>${arrow} ${escapeHtml(targetName)}</strong><small>${escapeHtml(text)}</small>`;
-  }
-
-  function renderComponentLink(item) {
-    const target = items.get(item.data.linkScreenId);
-    if (!target || target.kind !== "screen") return;
-    if (target.id === item.data?.screenId) {
-      const label = document.createElement("button");
-      label.type = "button";
-      label.className = `link-label self-link-label${item.id === selectedId ? " selected" : ""}`;
-      label.style.left = `${item.x + item.width / 2}px`;
-      label.style.top = `${item.y - 12}px`;
-      setLinkLabelContent(label, "↺", target.data?.name || "現在の画面", item.data.linkNote);
-      label.addEventListener("click", (event) => { event.stopPropagation(); selectItem(item.id); });
-      label.addEventListener("contextmenu", (event) => showContextMenu(event, item));
-      canvas.appendChild(label);
-      return;
-    }
-    const sourceCenterX = item.x + item.width / 2;
-    const targetCenterX = target.x + target.width / 2;
-    const toRight = targetCenterX >= sourceCenterX;
-    const x1 = toRight ? item.x + item.width : item.x;
-    const y1 = item.y + item.height / 2;
-    const x2 = toRight ? target.x : target.x + target.width;
-    const y2 = target.y + Math.min(target.height / 2, 180);
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.classList.add("link-line");
-    line.setAttribute("x1", x1); line.setAttribute("y1", y1); line.setAttribute("x2", x2); line.setAttribute("y2", y2);
-    transitionLayer.appendChild(line);
-    const label = document.createElement("button");
-    label.type = "button";
-    label.className = `link-label${item.id === selectedId ? " selected" : ""}`;
-    label.style.left = `${(x1 + x2) / 2}px`;
-    label.style.top = `${(y1 + y2) / 2}px`;
-    setLinkLabelContent(label, "→", target.data?.name || "リンク先画面", item.data.linkNote);
-    label.addEventListener("click", (event) => { event.stopPropagation(); selectItem(item.id); });
-    label.addEventListener("contextmenu", (event) => showContextMenu(event, item));
-    canvas.appendChild(label);
-  }
-
   function renderComponentCallouts(item) {
     const x1 = item.x + item.width;
     const y1 = item.y + item.height / 2;
@@ -908,6 +1204,7 @@
       transitionLayer.appendChild(line);
       const callout = document.createElement("button");
       callout.type = "button";
+      callout.dataset.layoutOwner = item.id;
       callout.className = `behavior-callout ${data.type}-callout${item.id === selectedId ? " selected" : ""}`;
       callout.style.left = `${calloutX}px`; callout.style.top = `${calloutY}px`;
       callout.innerHTML = `<small>${data.label}</small>${escapeHtml(data.text)}`;
@@ -931,6 +1228,7 @@
     transitionLayer.appendChild(line);
     const callout = document.createElement("button");
     callout.type = "button";
+    callout.dataset.layoutOwner = item.id;
     callout.className = `behavior-callout description-callout${item.id === selectedId ? " selected" : ""}`;
     callout.style.left = `${calloutX}px`;
     callout.style.top = `${calloutY}px`;
@@ -1392,6 +1690,7 @@
     activatePlacement(button.dataset.create, button.dataset.component || null, button);
   }));
   transitionTool.addEventListener("click", startTransition);
+  arrangeButton.addEventListener("click", arrangeScreens);
   document.getElementById("expand-canvas").addEventListener("click", () => {
     setCanvasSize(canvasWidth + 1600, canvasHeight + 1000);
     toolHelp.textContent = `作業領域を ${canvasWidth} × ${canvasHeight} に広げました。右ドラッグで移動できます。`;
@@ -1546,7 +1845,7 @@
     event.preventDefault();
     currentUser = userNameInput.value.trim();
     if (!currentUser) return;
-    localStorage.setItem("screen-design-user", currentUser);
+    sessionStorage.setItem(userNameKey, currentUser);
     userModal.classList.add("hidden");
     socket.emit("user:identify", { boardId, user: currentUser, presence: true });
   });
@@ -1556,7 +1855,10 @@
     socket.emit("join", { boardId });
     if (currentUser) socket.emit("user:identify", { boardId, user: currentUser, presence: true });
   });
-  socket.on("disconnect", () => { saveState.textContent = "再接続中…"; });
+  socket.on("disconnect", () => {
+    saveState.textContent = "再接続中…";
+    arrangeButton.disabled = true;
+  });
   socket.on("init", (state) => { document.getElementById("board-title").textContent = state.title || "画面設計ボード"; });
   socket.on("design:init", (serverItems) => {
     items.clear();
@@ -1580,6 +1882,7 @@
     renderInspector();
   }
   socket.on("design:items:import", addImportedItems);
+  socket.on("design:positions:save", applyScreenPositions);
   socket.on("design:item:remove", ({ id }) => {
     const removed = items.get(id);
     items.delete(id);

@@ -1629,6 +1629,38 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("design:positions:save", (payload, ack = () => {}) => {
+    const { boardId, positions } = payload || {};
+    if (typeof ack !== "function") ack = () => {};
+    if (!boardId || boardId !== currentBoardId || !Array.isArray(positions) || !positions.length) {
+      ack({ ok: false, reason: "invalid_request" });
+      return;
+    }
+    try {
+      const existing = new Map(getDesignItems(boardId).map((item) => [item.id, item]));
+      const changes = [];
+      for (const { id, x, y, previousX, previousY } of positions) {
+        const item = existing.get(id);
+        if (!item || item.x !== previousX || item.y !== previousY) {
+          ack({ ok: false, reason: "stale_positions" });
+          return;
+        }
+        if (item.kind === "transition" || ![x, y].every((value) => Number.isFinite(value) && Math.abs(value) <= 100000)) {
+          ack({ ok: false, reason: "invalid_request" });
+          return;
+        }
+        existing.delete(id);
+        changes.push({ ...item, boardId, x, y });
+      }
+      const saved = importDesignItems(changes).map(({ id, x, y }) => ({ id, x, y }));
+      socket.to(boardId).emit("design:positions:save", saved);
+      ack({ ok: true, positions: saved });
+    } catch (error) {
+      console.error("Failed to save arranged screen positions", error);
+      ack({ ok: false, reason: "save_failed" });
+    }
+  });
+
   socket.on("design:item:remove", ({ boardId, id }, ack) => {
     if (boardId !== currentBoardId || !id) {
       if (typeof ack === "function") ack({ ok: false });
