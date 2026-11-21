@@ -652,7 +652,7 @@
     [...items.values()].filter((item) => item.kind === "screen" && String(item.data?.description || "").trim()).forEach(renderScreenDescriptionCallout);
     [...items.values()].filter((item) => item.kind === "component" && (String(item.data?.behavior || "").trim() || String(item.data?.memo || "").trim())).forEach(renderComponentCallouts);
     renderRoutes();
-    arrangeButton.disabled = arrangeButton.dataset.saving === "true" || !screenCount() || socket.connected === false;
+    arrangeButton.disabled = arrangeButton.dataset.saving === "true" || !canvas.querySelector(".design-item.screen,.design-item.note,.design-item.decision,.behavior-callout") || socket.connected === false;
     emptyState.classList.toggle("hidden", items.size > 0);
   }
 
@@ -660,6 +660,39 @@
     if (item.kind === "screen") return item.id;
     const related = items.get(item.data?.relatedItemId);
     return item.data?.screenId || (related?.kind === "screen" ? related.id : related?.data?.screenId);
+  }
+
+  function arrangeAnnotationBounds(elements) {
+    const groups = new Map();
+    const moved = new Map();
+    const gap = 16;
+    for (const element of elements) {
+      if (!element.matches(".design-item.note,.design-item.decision,.behavior-callout")) continue;
+      const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
+      const screenId = layoutScreenFor(owner);
+      if (!groups.has(screenId)) groups.set(screenId, []);
+      groups.get(screenId).push(element);
+    }
+
+    for (const annotations of groups.values()) {
+      const placed = [];
+      annotations.sort((a, b) => a.offsetTop - b.offsetTop || a.offsetLeft - b.offsetLeft);
+      for (const element of annotations) {
+        const left = parseFloat(element.style.left);
+        const right = left + element.offsetWidth;
+        const originalTop = parseFloat(element.style.top);
+        const height = element.offsetHeight;
+        let top = originalTop;
+        for (const bounds of placed) {
+          if (top + height + gap <= bounds.top) break;
+          if (left < bounds.right && right > bounds.left && top < bounds.bottom + gap) top = bounds.bottom + gap;
+        }
+        if (top !== originalTop) moved.set(element, top);
+        placed.push({ left, right, top, bottom: top + height });
+        placed.sort((a, b) => a.top - b.top);
+      }
+    }
+    return moved;
   }
 
   function arrangedScreenPositions() {
@@ -674,12 +707,34 @@
     }
 
     const loose = [];
-    canvas.querySelectorAll(".design-item,[data-layout-owner]").forEach((element) => {
+    const elements = canvas.querySelectorAll(".design-item,[data-layout-owner]");
+    const movedAnnotations = arrangeAnnotationBounds(elements);
+    const changes = new Map();
+    const positionFor = (item) => {
+      if (!changes.has(item.id)) changes.set(item.id, {
+        id: item.id, x: item.x, y: item.y, previousX: item.x, previousY: item.y,
+      });
+      return changes.get(item.id);
+    };
+    for (const [element, top] of movedAnnotations) {
+      const item = items.get(element.dataset.layoutOwner || element.dataset.id);
+      const position = positionFor(item);
+      const type = element.dataset.calloutType;
+      if (type) {
+        const saved = item.data.calloutPositions?.[type];
+        position.callouts ??= [];
+        position.callouts.push({
+          type, x: parseFloat(element.style.left) - item.x, y: top - item.y,
+          previousX: saved?.x ?? null, previousY: saved?.y ?? null,
+        });
+      } else position.y = top;
+    }
+    elements.forEach((element) => {
       const owner = items.get(element.dataset.layoutOwner || element.dataset.id);
       if (!owner) return;
       const group = groups.get(layoutScreenFor(owner));
       const left = element.offsetLeft;
-      const top = element.offsetTop;
+      const top = movedAnnotations.get(element) ?? element.offsetTop;
       const right = left + element.offsetWidth;
       const bottom = top + element.offsetHeight;
       if (group) {
@@ -704,7 +759,6 @@
     });
 
     const gap = 96;
-    const changes = [];
     let rowTop = gap;
     loose.sort((a, b) => a.top - b.top);
     for (const row of rows) {
@@ -725,18 +779,26 @@
       for (const { group, dx } of placements) {
         const dy = rowTop + topInset - group.screen.y;
         for (const item of group.members) {
-          if (dx || dy) changes.push({ id: item.id, x: item.x + dx, y: item.y + dy, previousX: item.x, previousY: item.y });
+          if (!dx && !dy) continue;
+          const position = positionFor(item);
+          position.x += dx;
+          position.y += dy;
         }
       }
       rowTop += height + gap;
     }
-    return changes;
+    return [...changes.values()];
   }
 
   function applyScreenPositions(positions) {
-    for (const { id, x, y } of positions) {
+    for (const { id, x, y, callouts } of positions) {
       const item = items.get(id);
-      if (item) Object.assign(item, { x, y });
+      if (!item) continue;
+      Object.assign(item, { x, y });
+      if (callouts?.length) {
+        item.data.calloutPositions = { ...item.data.calloutPositions };
+        for (const entry of callouts) item.data.calloutPositions[entry.type] = { x: entry.x, y: entry.y };
+      }
     }
     renderAll();
   }
@@ -1205,6 +1267,7 @@
       const callout = document.createElement("button");
       callout.type = "button";
       callout.dataset.layoutOwner = item.id;
+      callout.dataset.calloutType = data.type;
       callout.className = `behavior-callout ${data.type}-callout${item.id === selectedId ? " selected" : ""}`;
       callout.style.left = `${calloutX}px`; callout.style.top = `${calloutY}px`;
       callout.innerHTML = `<small>${data.label}</small>${escapeHtml(data.text)}`;
@@ -1229,6 +1292,7 @@
     const callout = document.createElement("button");
     callout.type = "button";
     callout.dataset.layoutOwner = item.id;
+    callout.dataset.calloutType = "description";
     callout.className = `behavior-callout description-callout${item.id === selectedId ? " selected" : ""}`;
     callout.style.left = `${calloutX}px`;
     callout.style.top = `${calloutY}px`;
