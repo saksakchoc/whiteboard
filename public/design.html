@@ -51,9 +51,10 @@
       </div>
       <div class="palette-group">
         <p>キャンバス</p>
+        <button id="arrange-screens" type="button" disabled><span aria-hidden="true">▦</span>自動整頓</button>
         <button id="expand-canvas" type="button"><span>↗</span>作業領域を広げる</button>
       </div>
-      <div id="tool-help" class="tool-help">追加したい種類を選び、キャンバス上をドラッグして大きさを決めます。</div>
+      <div id="tool-help" class="tool-help">画面を選ぶと、関連する遷移元・遷移先カードが強調されます。要素を追加するには種類を選び、キャンバス上をドラッグします。</div>
     </aside>
 
     <section id="canvas-viewport" class="canvas-viewport" aria-label="設計キャンバス">
@@ -62,7 +63,6 @@
         <svg id="transition-layer" class="transition-layer" width="3200" height="2000" aria-hidden="true">
           <defs>
             <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" /></marker>
-            <marker id="link-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="link-arrow" points="0 0, 10 3.5, 0 7" /></marker>
             <marker id="decision-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="decision-arrow" points="0 0, 10 3.5, 0 7" /></marker>
             <marker id="note-arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="note-arrow" points="0 0, 10 3.5, 0 7" /></marker>
           </defs>
