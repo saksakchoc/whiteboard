@@ -1639,20 +1639,42 @@ io.on("connection", (socket) => {
     try {
       const existing = new Map(getDesignItems(boardId).map((item) => [item.id, item]));
       const changes = [];
-      for (const { id, x, y, previousX, previousY } of positions) {
+      const validCoordinate = (value) => Number.isFinite(value) && Math.abs(value) <= 100000;
+      for (const { id, x, y, previousX, previousY, callouts = [] } of positions) {
         const item = existing.get(id);
         if (!item || item.x !== previousX || item.y !== previousY) {
           ack({ ok: false, reason: "stale_positions" });
           return;
         }
-        if (item.kind === "transition" || ![x, y].every((value) => Number.isFinite(value) && Math.abs(value) <= 100000)) {
+        if (item.kind === "transition" || ![x, y].every(validCoordinate) || !Array.isArray(callouts) || callouts.length > 2) {
+          ack({ ok: false, reason: "invalid_request" });
+          return;
+        }
+        const types = item.kind === "screen" ? ["description"] : item.kind === "component" ? ["behavior", "memo"] : [];
+        const updates = { ...item.data.calloutPositions };
+        for (const entry of callouts) {
+          if (!types.includes(entry?.type) || ![entry.x, entry.y].every(validCoordinate)) {
+            ack({ ok: false, reason: "invalid_request" });
+            return;
+          }
+          const current = updates[entry.type];
+          if ((current?.x ?? null) !== entry.previousX || (current?.y ?? null) !== entry.previousY) {
+            ack({ ok: false, reason: "stale_positions" });
+            return;
+          }
+          updates[entry.type] = { x: entry.x, y: entry.y };
+        }
+        const data = callouts.length ? { ...item.data, calloutPositions: updates } : item.data;
+        if (Buffer.byteLength(JSON.stringify(data), "utf8") > 64 * 1024) {
           ack({ ok: false, reason: "invalid_request" });
           return;
         }
         existing.delete(id);
-        changes.push({ ...item, boardId, x, y });
+        changes.push({ ...item, boardId, x, y, data });
       }
-      const saved = importDesignItems(changes).map(({ id, x, y }) => ({ id, x, y }));
+      const saved = importDesignItems(changes).map(({ id, x, y }, index) => ({
+        id, x, y, callouts: positions[index].callouts,
+      }));
       socket.to(boardId).emit("design:positions:save", saved);
       ack({ ok: true, positions: saved });
     } catch (error) {
