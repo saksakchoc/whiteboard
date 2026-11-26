@@ -72,7 +72,7 @@
               <button id="watch-users-btn" title="メンバー追跡">👀 メンバー追跡</button>
               <div id="watch-users-menu" class="side-menu watch-users-menu hidden"></div>
             </div>
-            <button id="drive-menu-btn">画像ドライブ</button>
+            <button id="drive-menu-btn" aria-controls="drive-modal" aria-expanded="false">画像ドライブ</button>
             <button id="stroke-alpha-toggle-btn">半透明</button>
             <button id="change-user-btn">ユーザー名変更</button>
           </div>
@@ -186,40 +186,39 @@
       <div id="link-list-body" class="text-list-body link-list-body"></div>
     </div>
 
-    <div id="drive-modal" class="modal-backdrop hidden">
-      <section class="modal drive-modal" role="dialog" aria-modal="true" aria-labelledby="drive-title">
-        <header class="drive-header">
-          <div>
-            <h3 id="drive-title">画像ドライブ</h3>
-            <nav id="drive-breadcrumb" class="drive-breadcrumb" aria-label="フォルダ階層"></nav>
-          </div>
-          <button id="drive-close-btn" type="button" aria-label="閉じる">×</button>
-        </header>
-        <div class="drive-toolbar">
-          <button id="drive-new-folder-btn" type="button">＋ 新しいフォルダ</button>
-          <button id="drive-upload-btn" type="button">↑ 画像を追加</button>
-          <button id="drive-import-board-images-btn" type="button">全画像をドライブに移動</button>
-          <button id="drive-select-all-btn" type="button">全件選択</button>
-          <label id="drive-sort-control" class="drive-order-control">
-            表示順
-            <select id="drive-sort-order">
-              <option value="upload">アップロード日時</option>
-              <option value="name">ファイル名</option>
-              <option value="captured">作成日時（撮影日）</option>
-            </select>
-          </label>
-          <label id="drive-order-control" class="drive-order-control hidden">
-            貼り付け順
-            <select id="drive-selection-order">
-              <option value="display">表示順</option>
-              <option value="selection">選択順</option>
-            </select>
-          </label>
-          <span id="drive-status" class="drive-status" aria-live="polite"></span>
+    <section id="drive-modal" class="drive-panel hidden" aria-labelledby="drive-title">
+      <header class="drive-header">
+        <div>
+          <h3 id="drive-title">画像ドライブ</h3>
+          <nav id="drive-breadcrumb" class="drive-breadcrumb" aria-label="フォルダ階層"></nav>
         </div>
-        <div id="drive-grid" class="drive-grid"></div>
-      </section>
-    </div>
+        <button id="drive-close-btn" type="button" aria-label="閉じる">×</button>
+      </header>
+      <div class="drive-toolbar">
+        <button id="drive-new-folder-btn" type="button">＋ 新しいフォルダ</button>
+        <button id="drive-upload-btn" type="button">↑ 画像を追加</button>
+        <button id="drive-import-board-images-btn" type="button">全画像をドライブに移動</button>
+        <button id="drive-select-all-btn" type="button">全件選択</button>
+        <label id="drive-sort-control" class="drive-order-control">
+          表示順
+          <select id="drive-sort-order">
+            <option value="upload">アップロード日時</option>
+            <option value="name">ファイル名</option>
+            <option value="captured">作成日時（撮影日）</option>
+          </select>
+        </label>
+        <label id="drive-order-control" class="drive-order-control hidden">
+          貼り付け順
+          <select id="drive-selection-order">
+            <option value="display">表示順</option>
+            <option value="selection">選択順</option>
+          </select>
+        </label>
+        <span id="drive-status" class="drive-status" aria-live="polite"></span>
+      </div>
+      <p class="drive-drop-hint">画像をここにドロップして追加</p>
+      <div id="drive-grid" class="drive-grid"></div>
+    </section>
 
     <div id="drive-slideshow-modal" class="modal-backdrop drive-slideshow-backdrop hidden">
       <section class="drive-slideshow" role="dialog" aria-modal="true" aria-label="画像スライドショー">
