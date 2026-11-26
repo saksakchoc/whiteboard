@@ -15469,6 +15469,7 @@
   function hasImageFiles(dataTransfer) {
     if (!dataTransfer) return false;
     if (Array.from(dataTransfer.files || []).some(isImageFile)) return true;
+    if (Array.from(dataTransfer.types || []).includes("Files")) return true;
     return Array.from(dataTransfer.items || []).some((item) =>
       item.kind === "file" && String(item.type || "").startsWith("image/")
     );
@@ -15538,13 +15539,16 @@
     e.preventDefault();
     e.stopPropagation();
     const files = getImageFilesFromDataTransfer(e.dataTransfer);
-    if (!files.length) return;
-    if (!canCreateOnCurrentLayer()) return;
+    const draggedDriveImages = driveDraggingImageIds.map((id) =>
+      driveContents.images.find((image) => image.id === id)
+    ).filter(Boolean);
+    if (!files.length && !draggedDriveImages.length) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const worldPos = screenToWorld(x, y);
-    addImageFilesAt(files, worldPos.x, worldPos.y, getImageTargetLayer());
+    if (draggedDriveImages.length) insertDriveImages(draggedDriveImages, worldPos);
+    else addImageFilesAt(files, worldPos.x, worldPos.y, getImageTargetLayer());
   }
 
   // --- ドラッグ＆ドロップ（画像） ---
@@ -15561,8 +15565,8 @@
     if (!clipboard) return;
 
     const pastedImageFiles = getImageFilesFromDataTransfer(clipboard);
-    const driveIsOpen = driveModal && !driveModal.classList.contains("hidden");
-    if (driveIsOpen && pastedImageFiles.length) {
+    const pasteIntoDrive = driveModal?.contains(e.target);
+    if (pasteIntoDrive && pastedImageFiles.length) {
       e.preventDefault();
       if (driveVirtualHome) {
         setDriveStatus("保存先のボードフォルダを開いてから貼り付けてください");
@@ -16049,7 +16053,9 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    if (driveModal && !driveModal.classList.contains("hidden")) return;
+    if (driveModal?.contains(e.target) ||
+        driveSelectionMenu?.contains(e.target) || driveFolderMenu?.contains(e.target) ||
+        (driveSlideshowModal && !driveSlideshowModal.classList.contains("hidden"))) return;
     if (e.key === "Alt") {
       activeAltSide = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT ? "right" : "left";
     }
@@ -17063,9 +17069,11 @@
   driveGrid?.addEventListener("pointermove", updateDriveMarqueeSelection);
   driveGrid?.addEventListener("pointerup", finishDriveMarqueeSelection);
   driveGrid?.addEventListener("pointercancel", finishDriveMarqueeSelection);
-  driveGrid?.addEventListener("dragover", handleDriveGridDragOver);
-  driveGrid?.addEventListener("dragleave", handleDriveGridDragLeave);
-  driveGrid?.addEventListener("drop", handleDriveGridDrop);
+  driveModal?.addEventListener("dragover", handleDriveDragOver);
+  driveModal?.addEventListener("dragleave", (event) => {
+    if (!driveModal.contains(event.relatedTarget)) driveModal.classList.remove("drive-drop-target");
+  });
+  driveModal?.addEventListener("drop", handleDriveDrop);
   driveGrid?.addEventListener("wheel", (event) => {
     if (!event.ctrlKey) return;
     event.preventDefault();
@@ -17104,19 +17112,16 @@
     if (driveSelectionMenu && !driveSelectionMenu.contains(event.target)) hideDriveSelectionMenu();
     if (driveFolderMenu && !driveFolderMenu.contains(event.target)) hideDriveFolderMenu();
   });
-  driveModal?.addEventListener("click", (event) => {
-    if (event.target === driveModal) closeDrive();
-  });
   driveSlideshowModal?.addEventListener("click", (event) => {
     if (event.target === driveSlideshowModal) closeDriveSlideshow();
   });
   document.addEventListener("keydown", (event) => {
     const slideshowOpen = driveSlideshowModal && !driveSlideshowModal.classList.contains("hidden");
-    const driveOpen = driveModal && !driveModal.classList.contains("hidden");
+    const driveFocused = driveModal?.contains(event.target);
     if (slideshowOpen && event.key === "ArrowLeft") moveDriveSlide(-1);
     else if (slideshowOpen && event.key === "ArrowRight") moveDriveSlide(1);
     else if (slideshowOpen && event.key === "Escape") closeDriveSlideshow();
-    else if (driveOpen && event.key === "Escape") {
+    else if (driveFocused && event.key === "Escape") {
       if (driveSelectionMode) clearDriveSelection();
       else closeDrive();
     }
@@ -18241,7 +18246,7 @@
       driveSelectAllBtn.textContent = "全件選択";
     }
     if (!folders.length && !driveImages.length) {
-      driveGrid.innerHTML = '<div class="drive-empty">このフォルダは空です。<br>「画像を追加」から画像を保存できます。</div>';
+      driveGrid.innerHTML = '<div class="drive-empty">このフォルダは空です。</div>';
       return;
     }
 
@@ -18278,7 +18283,7 @@
       const item = document.createElement("article");
       item.className = "drive-item";
       item.dataset.driveImageId = image.id;
-      item.draggable = false;
+      item.draggable = true;
       const main = document.createElement("button");
       main.type = "button";
       main.className = "drive-item-main";
@@ -18328,13 +18333,12 @@
         showDriveSelectionMenu(event.clientX, event.clientY);
       });
       item.addEventListener("dragstart", (event) => {
-        if (!selectedDriveImageIds.has(image.id)) {
-          event.preventDefault();
-          return;
-        }
-        driveDraggingImageIds = Array.from(selectedDriveImageIds);
+        clearDriveLongPress();
+        driveDraggingImageIds = selectedDriveImageIds.has(image.id)
+          ? getSelectedDriveImages().map((selectedImage) => selectedImage.id)
+          : [image.id];
         item.classList.add("is-dragging");
-        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.effectAllowed = "copyMove";
         event.dataTransfer.setData("application/x-whiteboard-drive-images", driveDraggingImageIds.join(","));
         event.dataTransfer.setData("text/plain", `${driveDraggingImageIds.length}件の画像`);
       });
@@ -18474,7 +18478,7 @@
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = isDriveMove ? "move" : "copy";
-      driveGrid?.classList.remove("drive-drop-target");
+      driveModal?.classList.remove("drive-drop-target");
       element.classList.add("drive-drop-target");
     });
     element.addEventListener("dragleave", (event) => {
@@ -18497,27 +18501,28 @@
     });
   }
 
-  function handleDriveGridDragOver(event) {
-    const canImport = hasImageFiles(event.dataTransfer) || hasDraggedWebImage(event.dataTransfer);
-    if (driveDraggingImageIds.length || driveVirtualHome || !canImport) return;
+  function handleDriveDragOver(event) {
+    if (driveDraggingImageIds.length) return;
+    if (!hasImageFiles(event.dataTransfer) && !hasDraggedWebImage(event.dataTransfer)) return;
     event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "copy";
-    driveGrid?.classList.add("drive-drop-target");
+    event.dataTransfer.dropEffect = driveVirtualHome ? "none" : "copy";
+    driveModal.classList.toggle("drive-drop-target", !driveVirtualHome);
   }
 
-  function handleDriveGridDragLeave(event) {
-    if (!driveGrid?.contains(event.relatedTarget)) driveGrid?.classList.remove("drive-drop-target");
-  }
-
-  function handleDriveGridDrop(event) {
-    if (driveDraggingImageIds.length || driveVirtualHome) return;
+  function handleDriveDrop(event) {
+    if (driveDraggingImageIds.length) return;
+    event.preventDefault();
+    clearDriveDropTargets();
     const imageFiles = getImageFilesFromDataTransfer(event.dataTransfer);
     const imageUrl = imageFiles.length ? "" : getDraggedWebImageUrl(event.dataTransfer);
-    if (!imageFiles.length && !imageUrl) return;
-    event.preventDefault();
-    event.stopPropagation();
-    driveGrid?.classList.remove("drive-drop-target");
+    if (!imageFiles.length && !imageUrl) {
+      setDriveStatus("画像ファイルをドロップしてください");
+      return;
+    }
+    if (driveVirtualHome) {
+      setDriveStatus("保存先のボードフォルダにドロップしてください");
+      return;
+    }
     if (imageFiles.length) uploadDriveImages(imageFiles);
     else uploadDriveImageUrl(imageUrl);
   }
@@ -18616,7 +18621,6 @@
     driveGrid?.querySelectorAll("[data-drive-image-id]").forEach((item) => {
       const isSelected = selectedDriveImageIds.has(item.dataset.driveImageId);
       item.classList.toggle("is-selected", isSelected);
-      item.draggable = isSelected;
       const toggle = item.querySelector(".drive-select-toggle");
       toggle?.setAttribute("aria-pressed", String(isSelected));
       if (toggle) toggle.dataset.selectionNumber = String(selectionNumbers.get(item.dataset.driveImageId) || "");
@@ -18882,13 +18886,25 @@
 
   function openDrive() {
     if (!driveModal) return;
+    if (!driveModal.classList.contains("hidden")) {
+      driveCloseBtn?.focus();
+      return;
+    }
     driveScopeBoardId = boardId;
     driveModal.classList.remove("hidden");
+    driveMenuBtn?.setAttribute("aria-expanded", "true");
+    document.body.classList.add("drive-open");
+    resizeCanvas();
+    driveCloseBtn?.focus();
     loadDriveFolder(null);
   }
 
   function closeDrive() {
     driveModal?.classList.add("hidden");
+    driveMenuBtn?.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("drive-open");
+    clearDriveDropTargets();
+    resizeCanvas();
     closeDriveSlideshow();
     clearDriveSelection(false);
     hideDriveFolderMenu();
@@ -19173,10 +19189,14 @@
     renderDriveSlide();
   }
 
-  async function insertSelectedDriveImages() {
-    const selectedImages = getSelectedDriveImages();
+  function insertSelectedDriveImages() {
+    return insertDriveImages(getSelectedDriveImages(), getCanvasCenterWorld());
+  }
+
+  async function insertDriveImages(selectedImages, position) {
     if (!selectedImages.length || !requireUser() || !canCreateOnCurrentLayer()) return;
     hideDriveSelectionMenu();
+    const targetLayer = getImageTargetLayer();
     try {
       const files = await Promise.all(selectedImages.map(async (image) => {
         const res = await fetch(image.src);
@@ -19184,9 +19204,7 @@
         const blob = await res.blob();
         return new File([blob], image.name || "drive-image", { type: blob.type || image.mimeType || "image/png" });
       }));
-      const center = getCanvasCenterWorld();
-      await addImageFilesAt(files, center.x, center.y, getImageTargetLayer());
-      closeDrive();
+      await addImageFilesAt(files, position.x, position.y, targetLayer);
       showTransientFooterMessage(`ドライブの画像 ${files.length}件をボードに貼り付けました。`, 3000);
     } catch (err) {
       console.error(err);
@@ -19305,7 +19323,7 @@
       multiSelection = null;
       resetShapeMode();
       switchToSelectTool();
-      closeDrive();
+      closeDriveSlideshow();
       updateFooterByState();
       redraw();
       showTransientFooterMessage(
